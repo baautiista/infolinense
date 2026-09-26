@@ -135,6 +135,8 @@ def render_article(article_id):
         prs=Presentation(work)
         if slide_no<1 or slide_no>len(prs.slides): raise RuntimeError('La plantilla no tiene la diapositiva de esta sección')
         slide=prs.slides[slide_no-1]
+        names={sh.name for sh in slide.shapes}
+        legacy_canva=legacy_canva or {'Freeform 2','TextBox 18','TextBox 22'}.issubset(names)
         # Replace the PHOTO shape, or the largest picture fill in the chosen slide.
         if art.get('image_local') and Path(art['image_local']).exists():
             pictures=[]
@@ -162,7 +164,7 @@ def render_article(article_id):
             # white backing disappears when python-pptx replaces the text runs.
             # Keep the slide's graphics and photo, then draw legible text on top.
             for sh in list(slide.shapes):
-                if sh.name in {f'TextBox {n}' for n in range(17,23)}:
+                if sh.name in {f'TextBox {n}' for n in range(17,23)} or (getattr(sh,'has_text_frame',False) and any(x in sh.text for x in ('{{HEADLINE}}','{{SUMMARY}}','{{SECTION}}'))):
                     slide.shapes._spTree.remove(sh._element)
         # known text shapes in provided template
         title=_fit_title(art.get('headline') or '')

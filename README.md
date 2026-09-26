@@ -27,7 +27,13 @@ El ZIP contiene un backend FastAPI con panel privado de reserva, radar editorial
 - `POST /api/scan` examina las fuentes configuradas. Sin clave crea fichas atribuidas a la fuente y pendientes de verificación; la búsqueda web y la investigación con IA requieren `OPENAI_API_KEY`.
 - Con `AUTO_PIPELINE=true`, puntuaciones 42–69 pasan a Revisión como pieza rápida y 70+ se investigan si hay clave. Sin clave todas las piezas se marcan como ficha de fuente, sin afirmar que exista contraste independiente.
 - La plantilla PPTX original tiene 12 variantes por sección. Los nuevos PPTX admitidos tienen una o 12 diapositivas y deben incluir `{{HEADLINE}}` en cada una; `{{SUMMARY}}` y `{{SECTION}}` son opcionales. Nombra `PHOTO` al elemento principal de foto o deja que se seleccione la imagen mayor. Subir una plantilla la activa para noticias **nuevas**. Para aprobar una pieza, el servidor exige una imagen real descargada con licencia identificada y `publish_safe=true`; una foto de una fuente externa u oficial sin derechos verificados requiere autorización y no se puede aprobar desde el flujo actual.
-- Publicar en infolinense.com **no está conectado** de forma predeterminada. `/api/articles/{id}/publish` exige aprobación y un `PUBLISH_MODE` configurado con un webhook o un esquema Supabase validado. La API de WordPress de InfoLinense aún no está mapeada.
+- Publicar en infolinense.com **no está conectado** de forma predeterminada. Para activarlo en Railway configura `PUBLISH_MODE=wordpress`, `WORDPRESS_URL=https://infolinense.com`, `WORDPRESS_USERNAME` y `WORDPRESS_APP_PASSWORD` (contraseña de aplicación creada en el perfil de WordPress). Nunca guardes esta contraseña en GitHub. Solo se publica mediante el botón de una noticia aprobada; el backend adjunta la imagen final exportada de Canva como imagen destacada. También se conservan los modos webhook y Supabase.
+
+### Plantilla principal de Canva
+
+La plantilla de marca `EAHWTjWEEnA` usa `HEADLINE`, `SUMMARY`, `SECTION` y `PHOTO`. La API comprueba los campos mediante `GET /api/canva/template`. El diseño se crea después de seleccionar una foto propia o con licencia reutilizable, desde Revisión → Crear en Canva. La exportación PNG de la primera página reemplaza la imagen provisional del kit de redes. Guardar cambios de texto o foto invalida la exportación anterior; hay que regenerarla antes de aprobar.
+
+La app de Canva necesita los permisos `asset:read`, `asset:write`, `brandtemplate:content:read`, `design:content:read`, `design:content:write` y `design:meta:read`. Tras activar `design:content:read` en Canva Developers, pulsa **Reconectar Canva** en Ajustes. El permiso de exportación se consulta sin mostrar tokens en `GET /api/canva/permissions`. La URL de retorno debe ser `https://infolinense-api-production.up.railway.app/api/canva/callback`.
 
 ## Desarrollo local
 

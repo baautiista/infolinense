@@ -9,7 +9,7 @@ from pydantic import BaseModel
 from pptx import Presentation
 from . import db, sources, pipeline, renderer, publishers, photos, canva
 from .auth import login, require_auth
-from .config import BASE_DIR, RENDER_DIR, TEMPLATE_DIR, SCAN_INTERVAL_MINUTES, AUTO_PIPELINE, OPENAI_API_KEY, ADMIN_PASSWORD, JWT_SECRET, PUBLISH_MODE, CORS_ORIGINS, PUBLIC_BASE_URL
+from .config import BASE_DIR, RENDER_DIR, TEMPLATE_DIR, UPLOAD_DIR, SCAN_INTERVAL_MINUTES, AUTO_PIPELINE, OPENAI_API_KEY, ADMIN_PASSWORD, JWT_SECRET, PUBLISH_MODE, CORS_ORIGINS, PUBLIC_BASE_URL
 
 app=FastAPI(title='InfoLinense Desk',version='2.0.2')
 app.add_middleware(CORSMiddleware,allow_origins=CORS_ORIGINS,allow_credentials=False,allow_methods=['*'],allow_headers=['Authorization','Content-Type'])
@@ -114,6 +114,30 @@ def choose_photo(aid:int,p:PhotoChoice):
     try: renderer.render_article(aid)
     except Exception as e: db.log('render_error',str(e))
     return {'ok':True}
+
+@app.post('/api/articles/{aid}/photo/upload',dependencies=[Depends(require_auth)])
+async def upload_article_photo(aid:int,file:UploadFile=File(...),license:str=Form(...),source:str=Form('Fotografía propia'),author:str=Form('')):
+    if not db.row('SELECT id FROM articles WHERE id=?',(aid,)): raise HTTPException(404)
+    if not license.strip() or not source.strip(): raise HTTPException(400,'Indica la licencia y la procedencia de la fotografía')
+    data=await file.read(20_000_001)
+    if len(data)>20_000_000: raise HTTPException(400,'La fotografía debe pesar menos de 20 MB')
+    try:
+        from PIL import Image
+        from uuid import uuid4
+        im=Image.open(BytesIO(data))
+        if im.format not in ('JPEG','PNG','WEBP'): raise ValueError('Formato no permitido')
+        if im.width*im.height>40_000_000: raise ValueError('La imagen tiene demasiados píxeles')
+        im.load()
+        dest=UPLOAD_DIR/(uuid4().hex+'.jpg')
+        im.convert('RGB').save(dest,'JPEG',quality=92)
+    except Exception as e: raise HTTPException(400,'No se pudo leer la fotografía: '+str(e))
+    selected={'url':'upload:'+dest.stem,'source':source.strip()[:180],'license':license.strip()[:180],
+              'author':author.strip()[:120],'kind':'user_upload','publish_safe':True}
+    db.exec_('UPDATE articles SET image_url=?,image_source=?,image_license=?,image_local=?,image_candidates_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=?',
+             (selected['url'],selected['source'],selected['license'],str(dest),json.dumps([selected]),aid))
+    try: renderer.render_article(aid)
+    except Exception as e: db.log('render_error',str(e))
+    return {'ok':True,'photo':selected}
 @app.post('/api/articles/{aid}/render',dependencies=[Depends(require_auth)])
 def rerender(aid:int):
     try: return {'path':renderer.render_article(aid),'url':f'/media/render/{aid}.png'}

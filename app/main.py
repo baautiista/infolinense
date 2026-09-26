@@ -92,6 +92,7 @@ def edit_article(aid:int,body:EditArticle):
         fields.append(f'{k}=?'); vals.append(v)
     if fields:
         db.exec_(f"UPDATE articles SET {','.join(fields)},updated_at=CURRENT_TIMESTAMP WHERE id=?",tuple(vals+[aid]))
+        db.exec_('UPDATE canva_designs SET exported=0 WHERE article_id=?',(aid,))
     try: renderer.render_article(aid)
     except Exception as e: db.log('render_error',str(e))
     return db.row('SELECT * FROM articles WHERE id=?',(aid,))
@@ -111,6 +112,7 @@ def choose_photo(aid:int,p:PhotoChoice):
     try: local=photos.download_image(p.url)
     except Exception as e: raise HTTPException(400,'No se pudo descargar la foto: '+str(e))
     db.exec_("UPDATE articles SET image_url=?,image_source=?,image_license=?,image_local=?,ai_image_suggestion='' WHERE id=?",(p.url,p.source,p.license,local,aid))
+    db.exec_('UPDATE canva_designs SET exported=0 WHERE article_id=?',(aid,))
     try: renderer.render_article(aid)
     except Exception as e: db.log('render_error',str(e))
     return {'ok':True}
@@ -135,11 +137,16 @@ async def upload_article_photo(aid:int,file:UploadFile=File(...),license:str=For
               'author':author.strip()[:120],'kind':'user_upload','publish_safe':True}
     db.exec_('UPDATE articles SET image_url=?,image_source=?,image_license=?,image_local=?,image_candidates_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=?',
              (selected['url'],selected['source'],selected['license'],str(dest),json.dumps([selected]),aid))
+    db.exec_('UPDATE canva_designs SET exported=0 WHERE article_id=?',(aid,))
     try: renderer.render_article(aid)
     except Exception as e: db.log('render_error',str(e))
     return {'ok':True,'photo':selected}
 @app.post('/api/articles/{aid}/render',dependencies=[Depends(require_auth)])
 def rerender(aid:int):
+    artwork=db.row('SELECT exported FROM canva_designs WHERE article_id=?',(aid,))
+    if artwork and artwork['exported']:
+        p=RENDER_DIR/f'article_{aid}.png'
+        if p.is_file(): return {'path':str(p),'url':f'/media/render/{aid}.png'}
     try: return {'path':renderer.render_article(aid),'url':f'/media/render/{aid}.png'}
     except Exception as e: raise HTTPException(500,str(e))
 @app.post('/api/articles/{aid}/approve',dependencies=[Depends(require_auth)])
@@ -154,6 +161,10 @@ def approve(aid:int):
     selected=next((p for p in candidates if p.get('url')==a.get('image_url')),None)
     if not selected or not selected.get('publish_safe'):
         raise HTTPException(400,'No se ha verificado el permiso de reutilización de esta fotografía')
+    if canva.ready() and canva.connected():
+        artwork=db.row('SELECT exported FROM canva_designs WHERE article_id=?',(aid,))
+        if not artwork or not artwork['exported']:
+            raise HTTPException(400,'Crea y exporta primero el diseño final con la plantilla de Canva')
     db.exec_("UPDATE articles SET status='approved',updated_at=CURRENT_TIMESTAMP WHERE id=?",(aid,))
     return {'ok':True}
 @app.post('/api/articles/{aid}/reject',dependencies=[Depends(require_auth)])

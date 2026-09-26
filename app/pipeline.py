@@ -10,6 +10,8 @@ def process_candidate(cid,force_research=False):
     if not quick:
         try: research_data=ai.research(c,src_text)
         except Exception as e: research_data={'facts':[],'sources':[],'caveats':[str(e)]}
+    elif not ai.OPENAI_API_KEY:
+        research_data=ai.research(c,src_text)
     draft=ai.draft(c,src_text,json.dumps(research_data,ensure_ascii=False),quick=quick)
     image_candidates=photos.search_real_photos(c,draft.get('section','CIUDAD'))
     chosen=image_candidates[0] if image_candidates else None; local=''
@@ -22,7 +24,7 @@ def process_candidate(cid,force_research=False):
         cid,draft.get('section','CIUDAD'),draft.get('headline',''),draft.get('subtitle',''),draft.get('body','')[:2200],draft.get('body','')[:2200],draft.get('graphic_summary','')[:240],
         json.dumps(research_data,ensure_ascii=False),json.dumps((research_data or {}).get('sources',[]),ensure_ascii=False),
         chosen.get('url','') if chosen else '',chosen.get('source','') if chosen else '',chosen.get('license','') if chosen else '',local,json.dumps(image_candidates,ensure_ascii=False),
-        draft.get('ai_image_suggestion','') if not chosen else '',active_template['id'] if active_template else 1,'quick' if quick else 'researched','review_ready'))
+        draft.get('ai_image_suggestion','') if not chosen else '',active_template['id'] if active_template else 1,'quick' if quick or not ai.OPENAI_API_KEY else 'researched','review_ready'))
     db.exec_('UPDATE candidates SET status=?,section=? WHERE id=?',('review_ready',draft.get('section','CIUDAD'),cid))
     try: renderer.render_article(aid)
     except Exception as e: db.log('render_error',f'{aid}: {e}')

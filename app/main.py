@@ -11,7 +11,7 @@ from . import db, sources, pipeline, renderer, publishers, photos
 from .auth import login, require_auth
 from .config import BASE_DIR, RENDER_DIR, TEMPLATE_DIR, SCAN_INTERVAL_MINUTES, AUTO_PIPELINE, OPENAI_API_KEY, ADMIN_PASSWORD, JWT_SECRET, PUBLISH_MODE, CORS_ORIGINS, PUBLIC_BASE_URL
 
-app=FastAPI(title='InfoLinense Desk',version='2.0.0')
+app=FastAPI(title='InfoLinense Desk',version='2.0.2')
 app.add_middleware(CORSMiddleware,allow_origins=CORS_ORIGINS,allow_credentials=False,allow_methods=['*'],allow_headers=['Authorization','Content-Type'])
 db.init_db()
 
@@ -25,7 +25,7 @@ class PhotoChoice(BaseModel): url:str; source:str=''; license:str=''; author:str
 def auth_login(body:LoginIn): return {'token':login(body.password)}
 @app.get('/api/health')
 def health():
-    return {'ok':True,'version':'2.0.1','auth_configured':bool(ADMIN_PASSWORD and JWT_SECRET),'openai_configured':bool(OPENAI_API_KEY),'publish_mode':PUBLISH_MODE}
+    return {'ok':True,'version':'2.0.2','auth_configured':bool(ADMIN_PASSWORD and JWT_SECRET),'openai_configured':bool(OPENAI_API_KEY),'draft_mode':'ai' if OPENAI_API_KEY else 'source_brief','publish_mode':PUBLISH_MODE}
 @app.get('/api/capabilities',dependencies=[Depends(require_auth)])
 def capabilities():
     return {'real_photo_only':True,'ai_image_generation':False,'max_social_chars':2200,'auto_pipeline':AUTO_PIPELINE,'public_base_url':PUBLIC_BASE_URL}
@@ -35,13 +35,12 @@ def dashboard():
 @app.post('/api/scan',dependencies=[Depends(require_auth)])
 def scan():
     r=sources.scan_all()
-    if AUTO_PIPELINE and r['added'] and OPENAI_API_KEY: r['pipeline']=pipeline.auto_process(r['added'])
+    if AUTO_PIPELINE and r['added']: r['pipeline']=pipeline.auto_process(r['added'])
     return r
 @app.get('/api/candidates',dependencies=[Depends(require_auth)])
 def candidates(status:str='new'): return db.rows('SELECT * FROM candidates WHERE status=? ORDER BY score DESC,id DESC',(status,))
 @app.post('/api/candidates/{cid}/prepare',dependencies=[Depends(require_auth)])
 def prepare(cid:int,research:bool=False):
-    if not OPENAI_API_KEY: raise HTTPException(400,'Configura OPENAI_API_KEY para redactar automáticamente')
     try:
         aid=pipeline.process_candidate(cid,force_research=research); return db.row('SELECT * FROM articles WHERE id=?',(aid,))
     except Exception as e: raise HTTPException(500,str(e))
@@ -181,7 +180,7 @@ def scheduler_loop():
     while True:
         try:
             r=sources.scan_all()
-            if AUTO_PIPELINE and r['added'] and OPENAI_API_KEY: pipeline.auto_process(r['added'])
+            if AUTO_PIPELINE and r['added']: pipeline.auto_process(r['added'])
         except Exception as e: db.log('scheduler_error',str(e))
         time.sleep(max(15,SCAN_INTERVAL_MINUTES)*60)
 @app.on_event('startup')

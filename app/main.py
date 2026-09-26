@@ -40,6 +40,11 @@ def canva_template_status():
     try: return canva.template_status()
     except ValueError as e: raise HTTPException(400,str(e))
 
+@app.get('/api/canva/permissions',dependencies=[Depends(require_auth)])
+def canva_permissions():
+    try: return canva.permission_status()
+    except ValueError as e: raise HTTPException(400,str(e))
+
 @app.get('/api/canva/callback')
 def canva_callback(code:str='',state:str='',error:str=''):
     if error: raise HTTPException(400,'Canva no autorizó la conexión')

@@ -123,6 +123,22 @@ def template_status():
             'fields': {k: dataset.get(k, {}).get('type') for k in expected}}
 
 
+def permission_status():
+    if not connected():
+        return {'connected': False, 'can_export_png': False}
+    try:
+        response = requests.post(API + '/oauth/introspect',
+                                 auth=(CLIENT_ID, CLIENT_SECRET),
+                                 data={'token': access_token()}, timeout=20)
+        response.raise_for_status()
+        payload = response.json()
+        scopes = set((payload.get('scope') or '').split())
+        return {'connected': bool(payload.get('active')),
+                'can_export_png': 'design:content:read' in scopes}
+    except requests.RequestException as exc:
+        raise ValueError('No se pudieron comprobar los permisos de Canva') from exc
+
+
 def create_design(article):
     if not connected():
         raise ValueError('Conecta tu cuenta de Canva desde Ajustes')

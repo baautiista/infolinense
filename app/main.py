@@ -81,8 +81,12 @@ def dashboard():
 def radar_stats():
     midnight=datetime.now(ZoneInfo('Europe/Madrid')).replace(hour=0,minute=0,second=0,microsecond=0)
     start=midnight.astimezone(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')
-    count=db.row('SELECT COUNT(*) n FROM candidates WHERE created_at>=?',(start,))['n']
-    return {'date':midnight.date().isoformat(),'timezone':'Europe/Madrid','target':50,'found':count,
+    entries=db.rows('SELECT published_at FROM candidates WHERE created_at>=?',(start,))
+    dated=[sources.publication_datetime(x['published_at']) for x in entries]
+    confirmed=sum(1 for date in dated if date and date>=midnight.astimezone(timezone.utc))
+    undated=sum(1 for date in dated if date is None)
+    return {'date':midnight.date().isoformat(),'timezone':'Europe/Madrid','target':50,'found':confirmed,
+            'discovered_today':len(entries),'undated_today':undated,
             'source_count':db.row('SELECT COUNT(*) n FROM sources WHERE active=1')['n'],
             'sources':db.rows('''SELECT s.id,s.name,s.kind,s.active,s.last_checked_at,s.last_success_at,
                        s.last_error,s.items_seen,s.items_added,

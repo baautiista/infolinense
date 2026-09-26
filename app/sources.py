@@ -26,7 +26,7 @@ def clean(value):
     return re.sub(r'\s+', ' ', value).strip()
 
 def fetch(url, timeout=18):
-    return requests.get(url, timeout=(5, timeout), headers={
+    return requests.get(url, timeout=(12, timeout), headers={
         'User-Agent': UA, 'Accept-Language': 'es-ES,es;q=0.9',
         'Accept': 'application/rss+xml,application/atom+xml,application/xml,text/html,*/*;q=0.5',
     })
@@ -132,13 +132,18 @@ def exact_locality(text):
         return False
     return True
 
-def recent_enough(value):
-    if not value: return True  # HTML listings often omit dates; URL dedup handles repeats.
+def publication_datetime(value):
+    if not value: return None
     try: date = parsedate_to_datetime(value)
     except (ValueError, TypeError, IndexError):
         try: date = datetime.fromisoformat(value.replace('Z', '+00:00'))
-        except ValueError: return True
+        except ValueError: return None
     if not date.tzinfo: date = date.replace(tzinfo=timezone.utc)
+    return date.astimezone(timezone.utc)
+
+def recent_enough(value):
+    date = publication_datetime(value)
+    if date is None: return True  # HTML listings often omit dates; URL dedup handles repeats.
     return date >= datetime.now(timezone.utc) - timedelta(days=MAX_CANDIDATE_AGE_DAYS)
 
 def heuristic_score(title, excerpt, source):

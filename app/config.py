@@ -1,0 +1,29 @@
+import os, secrets
+from pathlib import Path
+from dotenv import load_dotenv
+BASE_DIR = Path(__file__).resolve().parent.parent
+load_dotenv(BASE_DIR / '.env')
+DATA_DIR = Path(os.getenv('DATA_DIR', str(BASE_DIR / 'data')))
+RENDER_DIR = Path(os.getenv('RENDER_DIR', str(BASE_DIR / 'renders')))
+UPLOAD_DIR = Path(os.getenv('UPLOAD_DIR', str(BASE_DIR / 'uploads')))
+TEMPLATE_DIR = Path(os.getenv('TEMPLATE_DIR', str(BASE_DIR / 'templates')))
+DB_PATH = Path(os.getenv('DB_PATH', str(DATA_DIR / 'infolinense.db')))
+OPENAI_API_KEY = os.getenv('OPENAI_API_KEY','').strip()
+OPENAI_MODEL = os.getenv('OPENAI_MODEL','gpt-5.6-luna').strip()
+OPENAI_WEB_SEARCH = os.getenv('OPENAI_WEB_SEARCH','true').lower() in {'1','true','yes','on'}
+SCAN_INTERVAL_MINUTES = int(os.getenv('SCAN_INTERVAL_MINUTES','60'))
+AUTO_PIPELINE = os.getenv('AUTO_PIPELINE','true').lower() in {'1','true','yes','on'}
+QUICK_SCORE_MAX = int(os.getenv('QUICK_SCORE_MAX','69'))
+MIN_AUTO_SCORE = int(os.getenv('MIN_AUTO_SCORE','42'))
+PUBLISH_MODE = os.getenv('PUBLISH_MODE','none').strip().lower()
+LOVABLE_WEBHOOK_URL = os.getenv('LOVABLE_WEBHOOK_URL','').strip()
+LOVABLE_WEBHOOK_TOKEN = os.getenv('LOVABLE_WEBHOOK_TOKEN','').strip()
+SUPABASE_URL = os.getenv('SUPABASE_URL','').rstrip('/')
+SUPABASE_SERVICE_ROLE_KEY = os.getenv('SUPABASE_SERVICE_ROLE_KEY','').strip()
+SUPABASE_ARTICLES_TABLE = os.getenv('SUPABASE_ARTICLES_TABLE','articles').strip()
+ADMIN_PASSWORD = os.getenv('ADMIN_PASSWORD','').strip()
+JWT_SECRET = os.getenv('JWT_SECRET','').strip()
+TOKEN_TTL_HOURS = int(os.getenv('TOKEN_TTL_HOURS','168'))
+CORS_ORIGINS = [x.strip() for x in os.getenv('CORS_ORIGINS','http://localhost:5173,http://127.0.0.1:8000').split(',') if x.strip()]
+PUBLIC_BASE_URL = os.getenv('PUBLIC_BASE_URL','').rstrip('/')
+for d in (DATA_DIR, RENDER_DIR, UPLOAD_DIR, TEMPLATE_DIR): d.mkdir(parents=True, exist_ok=True)

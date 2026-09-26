@@ -1,4 +1,5 @@
 import os, json, shutil, tempfile, subprocess, zipfile
+import textwrap
 from pathlib import Path
 from io import BytesIO
 from PIL import Image, ImageOps
@@ -17,15 +18,23 @@ def _replace_text_keep_style(shape,text,fit_title=False):
         if p.runs:
             r=p.runs[0]; proto=(r.font.name,r.font.size,r.font.bold,r.font.italic,r.font.color.type, getattr(r.font.color,'rgb',None))
             break
-    tf.clear(); lines=text.split('\n')
-    for i,line in enumerate(lines):
+    tf.clear(); content_lines=text.split('\n')
+    for i,line in enumerate(content_lines):
         p=tf.paragraphs[0] if i==0 else tf.add_paragraph(); r=p.add_run(); r.text=line
         if proto:
             name,size,bold,italic,ctype,rgb=proto
             if name:r.font.name=name
             if size:
-                lines=max(3,len(text.split('\n')))
-                r.font.size=Pt(max(34,size.pt*3/lines)) if fit_title else size
+                if fit_title:
+                    # Canva's title box has a fixed size. Fit both its height and
+                    # its longest line instead of letting PowerPoint overflow.
+                    longest=max((len(s) for s in content_lines),default=1)
+                    font_pt=min(size.pt, shape.height.pt / (max(1,len(content_lines))*1.19), shape.width.pt / (max(1,longest)*0.61))
+                    r.font.size=Pt(max(18,font_pt))
+                else:
+                    longest=max((len(s) for s in content_lines),default=1)
+                    font_pt=min(size.pt,shape.height.pt/(max(1,len(content_lines))*1.18),shape.width.pt/(max(1,longest)*0.56))
+                    r.font.size=Pt(max(12,font_pt))
             if bold is not None:r.font.bold=bold
             if italic is not None:r.font.italic=italic
             if rgb is not None:
@@ -33,22 +42,26 @@ def _replace_text_keep_style(shape,text,fit_title=False):
                 except:pass
 
 def _fit_title(title):
-    # 3-line intentional wrap, max ~18 chars per line while keeping words
-    words=title.strip().split(); lines=[]; cur=''
-    for w in words:
-        if len((cur+' '+w).strip())<=19 or not cur:
-            cur=(cur+' '+w).strip()
-        else:
-            lines.append(cur); cur=w
-    if cur: lines.append(cur)
-    if len(lines)>3:
-        # slightly looser second pass
-        lines=[]; cur=''
-        for w in words:
-            if len((cur+' '+w).strip())<=24 or not cur: cur=(cur+' '+w).strip()
-            else: lines.append(cur); cur=w
-        if cur: lines.append(cur)
-    return '\n'.join(lines)
+    # The exported Canva artwork has room for three lines. Keep full headlines
+    # where possible and shorten only those too long to remain legible.
+    title=' '.join((title or '').split())
+    if len(title)>116: title=title[:115].rsplit(' ',1)[0]+'…'
+    width=max(19,(len(title)+2)//3+2)
+    lines=textwrap.wrap(title,width=width,break_long_words=False,break_on_hyphens=False)
+    while len(lines)>3 and width<58:
+        width+=2
+        lines=textwrap.wrap(title,width=width,break_long_words=False,break_on_hyphens=False)
+    return '\n'.join(lines[:3])
+
+def _fit_summary(summary):
+    summary=' '.join((summary or '').upper().split())
+    if len(summary)>132: summary=summary[:131].rsplit(' ',1)[0]+'…'
+    width=max(35,(len(summary)+2)//3+3)
+    lines=textwrap.wrap(summary,width=width,break_long_words=False,break_on_hyphens=False)
+    while len(lines)>3 and width<78:
+        width+=2
+        lines=textwrap.wrap(summary,width=width,break_long_words=False,break_on_hyphens=False)
+    return '\n'.join(lines[:3])
 
 def _crop_to(im,size):
     return ImageOps.fit(im,size,method=Image.Resampling.LANCZOS,centering=(0.5,0.5))
@@ -89,7 +102,7 @@ def render_article(article_id):
         slide=prs.slides[slide_no-1]
         # known text shapes in provided template
         title=_fit_title(art.get('headline') or '')
-        summary=(art.get('graphic_summary') or art.get('subtitle') or '').upper()
+        summary=_fit_summary(art.get('graphic_summary') or art.get('subtitle') or '')
         for sh in slide.shapes:
             if not getattr(sh,'has_text_frame',False): continue
             t=(sh.text or '').strip()

@@ -40,6 +40,13 @@ def init_db():
     CREATE TABLE IF NOT EXISTS activity(
       id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT, message TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP
     );
+    CREATE TABLE IF NOT EXISTS canva_oauth(
+      id INTEGER PRIMARY KEY CHECK(id=1), access_token TEXT NOT NULL,
+      refresh_token TEXT NOT NULL, expires_at INTEGER NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS canva_oauth_state(
+      state TEXT PRIMARY KEY, verifier TEXT NOT NULL, expires_at INTEGER NOT NULL
+    );
     ''')
     defaults=[
       ('Ayuntamiento de La Línea','https://lalinea.es/feed/','rss',100,1),

@@ -2,12 +2,12 @@ import os, json, threading, time
 from io import BytesIO
 from pathlib import Path
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Depends
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from pptx import Presentation
-from . import db, sources, pipeline, renderer, publishers, photos
+from . import db, sources, pipeline, renderer, publishers, photos, canva
 from .auth import login, require_auth
 from .config import BASE_DIR, RENDER_DIR, TEMPLATE_DIR, SCAN_INTERVAL_MINUTES, AUTO_PIPELINE, OPENAI_API_KEY, ADMIN_PASSWORD, JWT_SECRET, PUBLISH_MODE, CORS_ORIGINS, PUBLIC_BASE_URL
 
@@ -28,7 +28,26 @@ def health():
     return {'ok':True,'version':'2.0.2','auth_configured':bool(ADMIN_PASSWORD and JWT_SECRET),'openai_configured':bool(OPENAI_API_KEY),'draft_mode':'ai' if OPENAI_API_KEY else 'source_brief','publish_mode':PUBLISH_MODE}
 @app.get('/api/capabilities',dependencies=[Depends(require_auth)])
 def capabilities():
-    return {'real_photo_only':True,'ai_image_generation':False,'max_social_chars':2200,'auto_pipeline':AUTO_PIPELINE,'public_base_url':PUBLIC_BASE_URL}
+    return {'real_photo_only':True,'ai_image_generation':False,'max_social_chars':2200,'auto_pipeline':AUTO_PIPELINE,'public_base_url':PUBLIC_BASE_URL,'canva_configured':canva.ready(),'canva_connected':canva.connected(),'canva_redirect_uri':canva.callback_url()}
+
+@app.get('/api/canva/connect',dependencies=[Depends(require_auth)])
+def connect_canva():
+    try: return {'url':canva.authorization_url()}
+    except ValueError as e: raise HTTPException(400,str(e))
+
+@app.get('/api/canva/callback')
+def canva_callback(code:str='',state:str='',error:str=''):
+    if error: raise HTTPException(400,'Canva no autorizó la conexión')
+    try: canva.complete(code,state)
+    except ValueError as e: raise HTTPException(400,str(e))
+    return RedirectResponse('https://infolinense-desk.lovable.app/?canva=connected',status_code=303)
+
+@app.post('/api/articles/{aid}/canva',dependencies=[Depends(require_auth)])
+def create_canva_design(aid:int):
+    a=db.row('SELECT * FROM articles WHERE id=?',(aid,))
+    if not a: raise HTTPException(404)
+    try: return canva.create_design(a)
+    except ValueError as e: raise HTTPException(400,str(e))
 @app.get('/api/dashboard',dependencies=[Depends(require_auth)])
 def dashboard():
     return {'counts':{'new':db.row("SELECT COUNT(*) n FROM candidates WHERE status='new'")['n'],'review':db.row("SELECT COUNT(*) n FROM articles WHERE status='review_ready'")['n'],'approved':db.row("SELECT COUNT(*) n FROM articles WHERE status='approved'")['n'],'published':db.row("SELECT COUNT(*) n FROM articles WHERE status='published'")['n']},'latest':db.rows('SELECT * FROM candidates ORDER BY id DESC LIMIT 15'),'activity':db.rows('SELECT * FROM activity ORDER BY id DESC LIMIT 12')}

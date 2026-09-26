@@ -1,4 +1,4 @@
-# InfoLinense Desk 2.0.1 — despliegue
+# InfoLinense Desk 2.1 — despliegue
 
 El ZIP contiene un backend FastAPI con panel privado de reserva, radar editorial, redacción, plantillas PPTX y render de imágenes. El backend se despliega en Railway; el panel de Lovable consume la misma API desde otro dominio. La plantilla original de InfoLinense está incluida.
 
@@ -24,8 +24,9 @@ El ZIP contiene un backend FastAPI con panel privado de reserva, radar editorial
 
 ## Flujo editorial
 
-- `POST /api/scan` examina las fuentes configuradas. Sin clave crea fichas atribuidas a la fuente y pendientes de verificación; la búsqueda web y la investigación con IA requieren `OPENAI_API_KEY`.
-- Con `AUTO_PIPELINE=true`, puntuaciones 42–69 pasan a Revisión como pieza rápida y 70+ se investigan si hay clave. Sin clave todas las piezas se marcan como ficha de fuente, sin afirmar que exista contraste independiente.
+- `POST /api/scan` examina fuentes gratuitas sin clave de IA: Ayuntamiento, Europa Sur, prensa comarcal indexada, BOE, BOP Cádiz, edictos y licitaciones indexadas y publicaciones públicas indexadas en Facebook e Instagram. También prueba el tablón municipal directo. El estado y último error de cada fuente aparecen en **Fuentes**; `GET /api/radar/stats` muestra hallazgos del día de Madrid y objetivo editorial de 50. El volumen de noticias reales varía y no se inventan candidatas para alcanzar una cifra.
+- El listado admite nuevas webs RSS/Atom, portadas HTML y páginas concretas de Facebook o Instagram, así como editar, pausar y comprobar cada fuente. Las redes sociales se descubren por indexación pública, con cobertura parcial; una integración completa necesita permisos de Meta. El tablón de edictos municipal puede responder 502: en tal caso conserva el error y las fuentes complementarias de anuncios siguen activas.
+- Solo se importan elementos con relación comprobable con La Línea o provenientes de una sección dedicada exclusivamente a la ciudad; se descartan duplicados y entradas RSS anteriores a `MAX_CANDIDATE_AGE_DAYS` (3 por defecto). En Inicio y Radar cada noticia muestra el siguiente paso: **Investigar → Redactar → Enviar a Revisión**. El borrador puede corregirse antes de pasar a Revisión. `AUTO_PIPELINE=false` por defecto deja la decisión en manos del editor. Sin clave todas las piezas se marcan como ficha de fuente, sin afirmar que exista contraste independiente.
 - La plantilla PPTX original tiene 12 variantes por sección. Los nuevos PPTX admitidos tienen una o 12 diapositivas y deben incluir `{{HEADLINE}}` en cada una; `{{SUMMARY}}` y `{{SECTION}}` son opcionales. Nombra `PHOTO` al elemento principal de foto o deja que se seleccione la imagen mayor. Subir una plantilla la activa para noticias **nuevas**. Para aprobar una pieza, el servidor exige una imagen real descargada con licencia identificada y `publish_safe=true`; una foto de una fuente externa u oficial sin derechos verificados requiere autorización y no se puede aprobar desde el flujo actual.
 - Publicar en infolinense.com **no está conectado** de forma predeterminada. Para activarlo en Railway configura `PUBLISH_MODE=wordpress`, `WORDPRESS_URL=https://infolinense.com`, `WORDPRESS_USERNAME` y `WORDPRESS_APP_PASSWORD` (contraseña de aplicación creada en el perfil de WordPress). Nunca guardes esta contraseña en GitHub. Solo se publica mediante el botón de una noticia aprobada; el backend adjunta la imagen final exportada de Canva como imagen destacada. También se conservan los modos webhook y Supabase.
 

@@ -40,7 +40,12 @@ def draft(candidate,source_text='',research='',quick=False):
 
 def research(candidate,source_text=''):
     if not OPENAI_API_KEY:
-        return {'facts': [], 'context': [], 'sources': [{'name': candidate.get('source_name') or urlparse(candidate.get('url') or '').netloc or 'Fuente original', 'url': candidate.get('url') or ''}], 'caveats': ['Ficha generada a partir de la fuente original sin contraste independiente. Comprobar fechas, cifras y contexto antes de publicar.']}
+        excerpt = BeautifulSoup(candidate.get('excerpt') or '', 'html.parser').get_text(' ', strip=True)
+        excerpt = re.sub(r'\s+', ' ', excerpt)[:350]
+        facts = [excerpt] if excerpt and excerpt.casefold() != (candidate.get('title') or '').casefold() else []
+        return {'facts': facts, 'context': [],
+                'sources': [{'name': candidate.get('source_name') or urlparse(candidate.get('url') or '').netloc or 'Fuente original', 'url': candidate.get('url') or ''}],
+                'caveats': ['Extracto de la fuente original, sin contraste independiente. Comprobar fechas, cifras y contexto antes de publicar.']}
     prompt=f'''Investiga y contrasta esta posible noticia exclusivamente en relación con La Línea de la Concepción. Busca fuentes públicas actuales, dando prioridad a fuentes oficiales y documentos. No redactes aún la noticia. Devuelve JSON con: facts (lista), context (lista), sources (lista de objetos name,url), caveats (lista).\nTEMA: {candidate['title']}\nURL INICIAL: {candidate.get('url','')}\nTEXTO INICIAL: {source_text[:9000]}'''
     return json_from_text(ask(SYSTEM,prompt,web=True))
 

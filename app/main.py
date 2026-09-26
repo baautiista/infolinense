@@ -1,4 +1,7 @@
-import os, json, threading, time
+import os, json, threading, time, ipaddress
+from datetime import datetime, timezone
+from urllib.parse import urlparse
+from zoneinfo import ZoneInfo
 from io import BytesIO
 from pathlib import Path
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Depends
@@ -11,12 +14,18 @@ from . import db, sources, pipeline, renderer, publishers, photos, canva
 from .auth import login, require_auth
 from .config import BASE_DIR, RENDER_DIR, TEMPLATE_DIR, UPLOAD_DIR, SCAN_INTERVAL_MINUTES, AUTO_PIPELINE, OPENAI_API_KEY, ADMIN_PASSWORD, JWT_SECRET, PUBLISH_MODE, CORS_ORIGINS, PUBLIC_BASE_URL
 
-app=FastAPI(title='InfoLinense Desk',version='2.0.2')
+app=FastAPI(title='InfoLinense Desk',version='2.1.0')
 app.add_middleware(CORSMiddleware,allow_origins=CORS_ORIGINS,allow_credentials=False,allow_methods=['*'],allow_headers=['Authorization','Content-Type'])
 db.init_db()
 
 class LoginIn(BaseModel): password:str
-class SourceIn(BaseModel): name:str; url:str; kind:str='rss'; priority:int=50; official:bool=False
+class SourceIn(BaseModel):
+    name:str
+    url:str
+    kind:str='rss'
+    priority:int=50
+    official:bool=False
+    local_scope:bool=False
 class EditArticle(BaseModel):
     section:str|None=None; headline:str|None=None; subtitle:str|None=None; body:str|None=None; graphic_summary:str|None=None
 class PhotoChoice(BaseModel): url:str; source:str=''; license:str=''; author:str=''
@@ -25,7 +34,7 @@ class PhotoChoice(BaseModel): url:str; source:str=''; license:str=''; author:str
 def auth_login(body:LoginIn): return {'token':login(body.password)}
 @app.get('/api/health')
 def health():
-    return {'ok':True,'version':'2.0.2','auth_configured':bool(ADMIN_PASSWORD and JWT_SECRET),'openai_configured':bool(OPENAI_API_KEY),'draft_mode':'ai' if OPENAI_API_KEY else 'source_brief','publish_mode':PUBLISH_MODE}
+    return {'ok':True,'version':'2.1.0','auth_configured':bool(ADMIN_PASSWORD and JWT_SECRET),'openai_configured':bool(OPENAI_API_KEY),'draft_mode':'ai' if OPENAI_API_KEY else 'source_brief','publish_mode':PUBLISH_MODE}
 @app.get('/api/capabilities',dependencies=[Depends(require_auth)])
 def capabilities():
     return {'real_photo_only':True,'ai_image_generation':False,'max_social_chars':2200,'auto_pipeline':AUTO_PIPELINE,'public_base_url':PUBLIC_BASE_URL,'canva_configured':canva.ready(),'canva_connected':canva.connected(),'canva_redirect_uri':canva.callback_url(),'primary_template':'canva' if canva.ready() else 'pptx','canva_template_url':'https://www.canva.com/brand/brand-templates/'+canva.TEMPLATE_ID if canva.TEMPLATE_ID else None}
@@ -60,14 +69,64 @@ def create_canva_design(aid:int):
     except ValueError as e: raise HTTPException(400,str(e))
 @app.get('/api/dashboard',dependencies=[Depends(require_auth)])
 def dashboard():
-    return {'counts':{'new':db.row("SELECT COUNT(*) n FROM candidates WHERE status='new'")['n'],'review':db.row("SELECT COUNT(*) n FROM articles WHERE status='review_ready'")['n'],'approved':db.row("SELECT COUNT(*) n FROM articles WHERE status='approved'")['n'],'published':db.row("SELECT COUNT(*) n FROM articles WHERE status='published'")['n']},'latest':db.rows('SELECT * FROM candidates ORDER BY id DESC LIMIT 15'),'activity':db.rows('SELECT * FROM activity ORDER BY id DESC LIMIT 12')}
+    return {'counts':{'new':db.row("SELECT COUNT(*) n FROM candidates WHERE status='new'")['n'],
+                      'researched':db.row("SELECT COUNT(*) n FROM candidates WHERE status='researched'")['n'],
+                      'draft':db.row("SELECT COUNT(*) n FROM candidates WHERE status='draft'")['n'],
+                      'review':db.row("SELECT COUNT(*) n FROM articles WHERE status='review_ready'")['n'],
+                      'approved':db.row("SELECT COUNT(*) n FROM articles WHERE status='approved'")['n'],
+                      'published':db.row("SELECT COUNT(*) n FROM articles WHERE status='published'")['n']},
+            'latest':db.rows("SELECT * FROM candidates WHERE status IN ('new','researched','draft') ORDER BY id DESC LIMIT 15"),
+            'activity':db.rows('SELECT * FROM activity ORDER BY id DESC LIMIT 12')}
+@app.get('/api/radar/stats',dependencies=[Depends(require_auth)])
+def radar_stats():
+    midnight=datetime.now(ZoneInfo('Europe/Madrid')).replace(hour=0,minute=0,second=0,microsecond=0)
+    start=midnight.astimezone(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')
+    count=db.row('SELECT COUNT(*) n FROM candidates WHERE created_at>=?',(start,))['n']
+    return {'date':midnight.date().isoformat(),'timezone':'Europe/Madrid','target':50,'found':count,
+            'source_count':db.row('SELECT COUNT(*) n FROM sources WHERE active=1')['n'],
+            'sources':db.rows('''SELECT s.id,s.name,s.kind,s.active,s.last_checked_at,s.last_success_at,
+                       s.last_error,s.items_seen,s.items_added,
+                       (SELECT COUNT(*) FROM candidates c WHERE c.source_id=s.id AND c.created_at>=?) today
+                       FROM sources s ORDER BY s.priority DESC''',(start,))}
 @app.post('/api/scan',dependencies=[Depends(require_auth)])
 def scan():
     r=sources.scan_all()
-    if AUTO_PIPELINE and r['added']: r['pipeline']=pipeline.auto_process(r['added'])
+    if AUTO_PIPELINE and not r.get('busy'): r['pipeline']=pipeline.auto_process(r['added'])
     return r
 @app.get('/api/candidates',dependencies=[Depends(require_auth)])
-def candidates(status:str='new'): return db.rows('SELECT * FROM candidates WHERE status=? ORDER BY score DESC,id DESC',(status,))
+def candidates(status:str='new'):
+    if status=='pending':
+        return db.rows("SELECT * FROM candidates WHERE status IN ('new','researched','draft') ORDER BY score DESC,id DESC")
+    return db.rows('SELECT * FROM candidates WHERE status=? ORDER BY score DESC,id DESC',(status,))
+@app.post('/api/candidates/{cid}/investigate',dependencies=[Depends(require_auth)])
+def investigate(cid:int):
+    try: return {'ok':True,'research':pipeline.investigate_candidate(cid)}
+    except ValueError as e: raise HTTPException(400,str(e))
+    except RuntimeError as e: raise HTTPException(404,str(e))
+@app.post('/api/candidates/{cid}/draft',dependencies=[Depends(require_auth)])
+def draft_candidate(cid:int):
+    try:
+        aid=pipeline.draft_candidate(cid)
+        return db.row('SELECT * FROM articles WHERE id=?',(aid,))
+    except ValueError as e: raise HTTPException(400,str(e))
+    except RuntimeError as e: raise HTTPException(404,str(e))
+@app.get('/api/candidates/{cid}/draft',dependencies=[Depends(require_auth)])
+def get_candidate_draft(cid:int):
+    a=db.row("SELECT * FROM articles WHERE candidate_id=? AND status='draft'",(cid,))
+    if not a: raise HTTPException(404,'Borrador no disponible')
+    return a
+@app.post('/api/candidates/{cid}/submit',dependencies=[Depends(require_auth)])
+def submit_candidate(cid:int):
+    try: return {'id':pipeline.submit_candidate(cid)}
+    except ValueError as e: raise HTTPException(400,str(e))
+@app.post('/api/candidates/{cid}/archive',dependencies=[Depends(require_auth)])
+def archive_candidate(cid:int):
+    c=db.row('SELECT id,status FROM candidates WHERE id=?',(cid,))
+    if not c: raise HTTPException(404)
+    if c['status'] not in ('new','researched','draft'): raise HTTPException(400,'Esta pieza ya está en revisión')
+    db.exec_("UPDATE candidates SET status='archived' WHERE id=?",(cid,))
+    db.exec_("UPDATE articles SET status='rejected' WHERE candidate_id=? AND status='draft'",(cid,))
+    return {'ok':True}
 @app.post('/api/candidates/{cid}/prepare',dependencies=[Depends(require_auth)])
 def prepare(cid:int,research:bool=False):
     try:
@@ -198,12 +257,48 @@ def publish(aid:int):
     except Exception as e: raise HTTPException(400,str(e))
 @app.get('/api/sources',dependencies=[Depends(require_auth)])
 def list_sources(): return db.rows('SELECT * FROM sources ORDER BY priority DESC')
+def validate_source(s):
+    url=urlparse(s.url.strip())
+    host=(url.hostname or '').lower()
+    if url.scheme!='https' or not host or url.username or url.password or host in {'localhost','localhost.localdomain'} or host.endswith(('.local','.internal')):
+        raise HTTPException(400,'La fuente debe tener una URL HTTPS pública')
+    try:
+        if not ipaddress.ip_address(host).is_global: raise HTTPException(400,'No se permiten direcciones privadas')
+    except ValueError: pass
+    if s.kind not in ('rss','html','bop','procurement','social') or not 0<=s.priority<=100 or not s.name.strip() or len(s.name)>120:
+        raise HTTPException(400,'Revisa el nombre, tipo y prioridad de la fuente')
+    if s.kind=='social' and host not in ('facebook.com','www.facebook.com','instagram.com','www.instagram.com'):
+        raise HTTPException(400,'Las fuentes sociales aceptan páginas de Facebook o Instagram')
+    if s.kind=='social' and not url.path.strip('/'):
+        raise HTTPException(400,'Indica la página o cuenta pública')
+    if s.kind=='procurement' and host!='contratos.gobierto.es':
+        raise HTTPException(400,'El extractor de licitaciones corresponde a Gobierto')
+    if s.kind=='bop' and host not in ('bopcadiz.es','www.bopcadiz.es'):
+        raise HTTPException(400,'El extractor del BOP corresponde a Cádiz')
+    return s.name.strip(),s.url.strip(),s.kind,s.priority,int(s.official),int(s.local_scope)
 @app.post('/api/sources',dependencies=[Depends(require_auth)])
 def add_source(s:SourceIn):
-    try: return {'id':db.exec_('INSERT INTO sources(name,url,kind,priority,official) VALUES(?,?,?,?,?)',(s.name,s.url,s.kind,s.priority,1 if s.official else 0))}
+    values=validate_source(s)
+    try: return {'id':db.exec_('INSERT INTO sources(name,url,kind,priority,official,local_scope) VALUES(?,?,?,?,?,?)',values)}
     except Exception as e: raise HTTPException(400,str(e))
+@app.put('/api/sources/{sid}',dependencies=[Depends(require_auth)])
+def edit_source(sid:int,s:SourceIn):
+    if not db.row('SELECT id FROM sources WHERE id=?',(sid,)): raise HTTPException(404)
+    values=validate_source(s)
+    try:
+        db.exec_('''UPDATE sources SET name=?,url=?,kind=?,priority=?,official=?,local_scope=?,
+                   last_checked_at=NULL,last_error=NULL WHERE id=?''',(*values,sid))
+    except Exception as e: raise HTTPException(400,str(e))
+    return {'ok':True}
 @app.post('/api/sources/{sid}/toggle',dependencies=[Depends(require_auth)])
-def toggle_source(sid:int): db.exec_('UPDATE sources SET active=CASE active WHEN 1 THEN 0 ELSE 1 END WHERE id=?',(sid,)); return {'ok':True}
+def toggle_source(sid:int):
+    if not db.row('SELECT id FROM sources WHERE id=?',(sid,)): raise HTTPException(404)
+    db.exec_('UPDATE sources SET active=CASE active WHEN 1 THEN 0 ELSE 1 END WHERE id=?',(sid,))
+    return {'ok':True}
+@app.post('/api/sources/{sid}/check',dependencies=[Depends(require_auth)])
+def check_source(sid:int):
+    if not db.row('SELECT id FROM sources WHERE id=?',(sid,)): raise HTTPException(404)
+    return sources.probe_source(sid)
 @app.get('/api/templates',dependencies=[Depends(require_auth)])
 def list_templates(): return db.rows('SELECT * FROM templates ORDER BY id')
 @app.post('/api/templates/{tid}/activate',dependencies=[Depends(require_auth)])
@@ -252,7 +347,7 @@ def scheduler_loop():
     while True:
         try:
             r=sources.scan_all()
-            if AUTO_PIPELINE and r['added']: pipeline.auto_process(r['added'])
+            if AUTO_PIPELINE and not r.get('busy'): pipeline.auto_process(r['added'])
         except Exception as e: db.log('scheduler_error',str(e))
         time.sleep(max(15,SCAN_INTERVAL_MINUTES)*60)
 @app.on_event('startup')

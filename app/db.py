@@ -14,12 +14,14 @@ def init_db():
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       name TEXT NOT NULL, url TEXT NOT NULL UNIQUE, kind TEXT NOT NULL DEFAULT 'rss',
       priority INTEGER NOT NULL DEFAULT 50, active INTEGER NOT NULL DEFAULT 1, official INTEGER NOT NULL DEFAULT 0,
+      local_scope INTEGER NOT NULL DEFAULT 0, last_checked_at TEXT, last_success_at TEXT,
+      last_error TEXT, items_seen INTEGER NOT NULL DEFAULT 0, items_added INTEGER NOT NULL DEFAULT 0,
       created_at TEXT DEFAULT CURRENT_TIMESTAMP
     );
     CREATE TABLE IF NOT EXISTS candidates(
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       source_id INTEGER, source_name TEXT, title TEXT NOT NULL, url TEXT, published_at TEXT,
-      excerpt TEXT, raw_text TEXT, score INTEGER DEFAULT 0, relevance TEXT DEFAULT 'pending',
+      excerpt TEXT, raw_text TEXT, research_json TEXT, score INTEGER DEFAULT 0, relevance TEXT DEFAULT 'pending',
       status TEXT DEFAULT 'new', section TEXT, reason TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP,
       UNIQUE(url)
     );
@@ -40,6 +42,8 @@ def init_db():
     CREATE TABLE IF NOT EXISTS activity(
       id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT, message TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP
     );
+    CREATE INDEX IF NOT EXISTS candidates_created_idx ON candidates(created_at);
+    CREATE INDEX IF NOT EXISTS candidates_status_score_idx ON candidates(status,score);
     CREATE TABLE IF NOT EXISTS canva_oauth(
       id INTEGER PRIMARY KEY CHECK(id=1), access_token TEXT NOT NULL,
       refresh_token TEXT NOT NULL, expires_at INTEGER NOT NULL
@@ -52,15 +56,46 @@ def init_db():
       exported INTEGER NOT NULL DEFAULT 0, updated_at TEXT DEFAULT CURRENT_TIMESTAMP
     );
     ''')
+    # Railway keeps the SQLite volume between deployments.
+    existing={r[1] for r in c.execute('PRAGMA table_info(sources)')}
+    for name,ddl in {
+        'local_scope':'INTEGER NOT NULL DEFAULT 0', 'last_checked_at':'TEXT',
+        'last_success_at':'TEXT', 'last_error':'TEXT',
+        'items_seen':'INTEGER NOT NULL DEFAULT 0', 'items_added':'INTEGER NOT NULL DEFAULT 0'
+    }.items():
+        if name not in existing: c.execute(f'ALTER TABLE sources ADD COLUMN {name} {ddl}')
+    if 'research_json' not in {r[1] for r in c.execute('PRAGMA table_info(candidates)')}:
+        c.execute('ALTER TABLE candidates ADD COLUMN research_json TEXT')
+    from urllib.parse import quote
+    def news(query):
+        return 'https://news.google.com/rss/search?q='+quote(query)+'&hl=es&gl=ES&ceid=ES:es'
     defaults=[
-      ('Ayuntamiento de La Línea','https://lalinea.es/feed/','rss',100,1),
-      ('Google News · La Línea exacta','https://news.google.com/rss/search?q=%22La+L%C3%ADnea+de+la+Concepci%C3%B3n%22&hl=es&gl=ES&ceid=ES:es','rss',70,0),
-      ('Tablón de Edictos','https://www.sedeelectronica.lalinea.es/edictos/edicto/buscar-edictos-filtro-pub?primeraBusqueda=true','html',95,1),
-      ('Gobierno de Gibraltar · prensa','https://www.gibraltar.gov.gi/press-releases','html',70,1),
-      ('APBA · noticias','https://www.apba.es/noticias','html',75,1)
+      ('Ayuntamiento de La Línea','https://lalinea.es/feed/','rss',100,1,1),
+      ('Google News · La Línea exacta','https://news.google.com/rss/search?q=%22La+L%C3%ADnea+de+la+Concepci%C3%B3n%22&hl=es&gl=ES&ceid=ES:es','rss',70,0,0),
+      ('Tablón municipal de edictos','https://www.sedeelectronica.lalinea.es/edictos/edicto/buscar-edictos-filtro-pub?primeraBusqueda=true','html',96,1,1),
+      ('Gobierno de Gibraltar · prensa','https://www.gibraltar.gov.gi/press-releases','html',57,1,0),
+      ('APBA · noticias','https://www.apba.es/noticias','html',75,1,0),
+      ('Europa Sur · La Línea','https://www.europasur.es/lalinea/','html',88,0,1),
+      ('Europa Sur · RSS','https://www.europasur.es/rss/','rss',78,0,0),
+      ('BOP Cádiz · anuncios','https://bopcadiz.es/boletin/','bop',94,1,0),
+      ('BOE · contratación','https://www.boe.es/rss/boe.php?s=5A','rss',82,1,0),
+      ('BOE · otros anuncios','https://www.boe.es/rss/boe.php?s=5B','rss',78,1,0),
+      ('Noticias · prensa comarcal',news('"La Línea de la Concepción" (site:diarioarea.com OR site:8directo.com OR site:cadenaser.com) when:3d'),'rss',82,0,0),
+      ('Noticias · televisión y agencias',news('"La Línea de la Concepción" (site:canalsur.es OR site:europapress.es OR site:rtva.es) when:3d'),'rss',69,0,0),
+      ('Contratos · plataforma estatal',news('"Ayuntamiento de la Línea de la Concepción" site:contrataciondelestado.es when:7d'),'rss',92,1,0),
+      ('Licitaciones municipales · Gobierto','https://contratos.gobierto.es/adjudicadores/alcaldia-del-ayuntamiento-de-la-linea-de-la-concepcion','procurement',89,0,1),
+      ('Edictos · sede municipal indexada',news('"La Línea de la Concepción" site:sedeelectronica.lalinea.es/edictos/ when:7d'),'rss',84,1,0),
+      ('Anuncios · BOJA y BOP indexados',news('"La Línea de la Concepción" (site:juntadeandalucia.es/boja/ OR site:bopcadiz.es) when:7d'),'rss',80,1,0),
+      ('Facebook · publicaciones indexadas',news('"La Línea de la Concepción" site:facebook.com when:3d'),'rss',55,0,0),
+      ('Instagram · publicaciones indexadas',news('"La Línea de la Concepción" site:instagram.com when:3d'),'rss',55,0,0),
+      ('Facebook · Ayuntamiento', 'https://www.facebook.com/aytolalinea','social',74,1,0),
+      ('Instagram · Turismo local','https://www.instagram.com/oficinaturismolalinea/','social',67,1,0),
     ]
-    for n,u,k,p,o in defaults:
-        c.execute('INSERT OR IGNORE INTO sources(name,url,kind,priority,official) VALUES(?,?,?,?,?)',(n,u,k,p,o))
+    for n,u,k,p,o,scope in defaults:
+        c.execute('INSERT OR IGNORE INTO sources(name,url,kind,priority,official,local_scope) VALUES(?,?,?,?,?,?)',(n,u,k,p,o,scope))
+    # Existing default rows retain the same URL but need accurate locality rules.
+    c.execute("UPDATE sources SET local_scope=1 WHERE url='https://lalinea.es/feed/'")
+    c.execute("UPDATE sources SET local_scope=1 WHERE url LIKE 'https://www.sedeelectronica.lalinea.es/edictos/%'")
     if not c.execute('SELECT 1 FROM templates LIMIT 1').fetchone():
         slide_map={'URBANISMO':1,'CIUDAD':2,'GIBRALTAR':3,'SUCESOS':4,'CULTURA':5,'DEPORTES':6,'COMERCIO':7,'MEDIO AMBIENTE':8,'POLÍTICA':9,'SOCIEDAD':10,'PATRIMONIO':11,'AGENDA':12}
         c.execute('INSERT INTO templates(name,path,format,slide_map_json) VALUES(?,?,?,?)',('Noticia principal v1','templates/plantilla_1.pptx','4:5',json.dumps(slide_map,ensure_ascii=False)))

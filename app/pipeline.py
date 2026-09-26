@@ -1,18 +1,29 @@
 import json
 from . import db, sources, ai, photos, renderer
-from .config import QUICK_SCORE_MAX, MIN_AUTO_SCORE
+from .config import QUICK_SCORE_MAX, MIN_AUTO_SCORE, AUTO_DRAFTS_PER_SCAN
 
-def process_candidate(cid,force_research=False):
+def investigate_candidate(cid):
     c=db.row('SELECT * FROM candidates WHERE id=?',(cid,))
     if not c: raise RuntimeError('Candidata no existe')
-    quick=c['score']<=QUICK_SCORE_MAX and not force_research
-    src_text=sources.fetch_article_text(c.get('url','')); research_data={}
-    if not quick:
-        try: research_data=ai.research(c,src_text)
-        except Exception as e: research_data={'facts':[],'sources':[],'caveats':[str(e)]}
-    elif not ai.OPENAI_API_KEY:
-        research_data=ai.research(c,src_text)
-    draft=ai.draft(c,src_text,json.dumps(research_data,ensure_ascii=False),quick=quick)
+    if c['status']!='new': raise ValueError('La noticia ya ha avanzado desde el radar')
+    src_text=sources.fetch_article_text(c.get('url',''))
+    try: research_data=ai.research(c,src_text)
+    except Exception as e:
+        research_data={'facts':[],'sources':[{'name':c.get('source_name'),'url':c.get('url')}],
+                       'caveats':['No se pudo completar el contraste: '+str(e)[:250]]}
+    db.exec_("UPDATE candidates SET status='researched',raw_text=?,research_json=? WHERE id=?",
+             (src_text,json.dumps(research_data,ensure_ascii=False),cid))
+    db.log('investigation',f'Candidata {cid} investigada; pendiente de redacción')
+    return research_data
+
+def draft_candidate(cid):
+    c=db.row('SELECT * FROM candidates WHERE id=?',(cid,))
+    if not c: raise RuntimeError('Candidata no existe')
+    if c['status']!='researched': raise ValueError('Primero investiga la noticia')
+    try: research_data=json.loads(c.get('research_json') or '{}')
+    except json.JSONDecodeError: research_data={}
+    quick=c['score']<=QUICK_SCORE_MAX
+    draft=ai.draft(c,c.get('raw_text') or '',json.dumps(research_data,ensure_ascii=False),quick=quick)
     image_candidates=photos.search_real_photos(c,draft.get('section','CIUDAD'))
     chosen=image_candidates[0] if image_candidates else None; local=''
     if chosen:
@@ -24,20 +35,41 @@ def process_candidate(cid,force_research=False):
         cid,draft.get('section','CIUDAD'),draft.get('headline',''),draft.get('subtitle',''),draft.get('body','')[:2200],draft.get('body','')[:2200],draft.get('graphic_summary','')[:240],
         json.dumps(research_data,ensure_ascii=False),json.dumps((research_data or {}).get('sources',[]),ensure_ascii=False),
         chosen.get('url','') if chosen else '',chosen.get('source','') if chosen else '',chosen.get('license','') if chosen else '',local,json.dumps(image_candidates,ensure_ascii=False),
-        draft.get('ai_image_suggestion','') if not chosen else '',active_template['id'] if active_template else 1,'quick' if quick or not ai.OPENAI_API_KEY else 'researched','review_ready'))
-    db.exec_('UPDATE candidates SET status=?,section=? WHERE id=?',('review_ready',draft.get('section','CIUDAD'),cid))
+        draft.get('ai_image_suggestion','') if not chosen else '',active_template['id'] if active_template else 1,'quick' if quick or not ai.OPENAI_API_KEY else 'researched','draft'))
+    db.exec_('UPDATE candidates SET status=?,section=? WHERE id=?',('draft',draft.get('section','CIUDAD'),cid))
     try: renderer.render_article(aid)
     except Exception as e: db.log('render_error',f'{aid}: {e}')
-    db.log('pipeline',f'Candidata {cid} -> revisión ({"rápida" if quick else "investigada"})')
+    db.log('pipeline',f'Candidata {cid} -> borrador')
     return aid
+
+def submit_candidate(cid):
+    c=db.row('SELECT status FROM candidates WHERE id=?',(cid,))
+    a=db.row('SELECT id,status FROM articles WHERE candidate_id=?',(cid,))
+    if not c or not a or c['status']!='draft' or a['status']!='draft':
+        raise ValueError('Primero redacta y guarda un borrador')
+    db.exec_("UPDATE articles SET status='review_ready',updated_at=CURRENT_TIMESTAMP WHERE id=?",(a['id'],))
+    db.exec_("UPDATE candidates SET status='review_ready' WHERE id=?",(cid,))
+    db.log('pipeline',f'Candidata {cid} -> revisión')
+    return a['id']
+
+def process_candidate(cid,force_research=False):
+    """Compatibility path for older clients; the UI uses explicit steps."""
+    c=db.row('SELECT status FROM candidates WHERE id=?',(cid,))
+    if not c: raise RuntimeError('Candidata no existe')
+    if c['status']=='new': investigate_candidate(cid)
+    if db.row('SELECT status FROM candidates WHERE id=?',(cid,))['status']=='researched':
+        draft_candidate(cid)
+    return submit_candidate(cid)
 
 def auto_process(ids):
     done=[]; errors=[]
     for cid in ids:
-        c=db.row('SELECT * FROM candidates WHERE id=?',(cid,))
-        if not c: continue
-        if c['score']<MIN_AUTO_SCORE:
-            db.exec_('UPDATE candidates SET status=? WHERE id=?',('archived',cid)); continue
+        c=db.row('SELECT id,score FROM candidates WHERE id=? AND status=?',(cid,'new'))
+        if c and c['score']<MIN_AUTO_SCORE:
+            db.exec_('UPDATE candidates SET status=? WHERE id=?',('archived',cid))
+    queued=db.rows("SELECT id FROM candidates WHERE status='new' AND score>=? ORDER BY score DESC,id DESC LIMIT ?",(MIN_AUTO_SCORE,max(0,AUTO_DRAFTS_PER_SCAN)))
+    for c in queued:
+        cid=c['id']
         try: done.append(process_candidate(cid))
         except Exception as e:
             errors.append({'id':cid,'error':str(e)}); db.exec_('UPDATE candidates SET status=? WHERE id=?',('needs_config',cid))

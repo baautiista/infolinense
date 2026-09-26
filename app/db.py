@@ -47,6 +47,10 @@ def init_db():
     CREATE TABLE IF NOT EXISTS canva_oauth_state(
       state TEXT PRIMARY KEY, verifier TEXT NOT NULL, expires_at INTEGER NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS canva_designs(
+      article_id INTEGER PRIMARY KEY, design_id TEXT NOT NULL, url TEXT NOT NULL,
+      exported INTEGER NOT NULL DEFAULT 0, updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+    );
     ''')
     defaults=[
       ('Ayuntamiento de La Línea','https://lalinea.es/feed/','rss',100,1),

@@ -28,11 +28,16 @@ def health():
     return {'ok':True,'version':'2.0.2','auth_configured':bool(ADMIN_PASSWORD and JWT_SECRET),'openai_configured':bool(OPENAI_API_KEY),'draft_mode':'ai' if OPENAI_API_KEY else 'source_brief','publish_mode':PUBLISH_MODE}
 @app.get('/api/capabilities',dependencies=[Depends(require_auth)])
 def capabilities():
-    return {'real_photo_only':True,'ai_image_generation':False,'max_social_chars':2200,'auto_pipeline':AUTO_PIPELINE,'public_base_url':PUBLIC_BASE_URL,'canva_configured':canva.ready(),'canva_connected':canva.connected(),'canva_redirect_uri':canva.callback_url()}
+    return {'real_photo_only':True,'ai_image_generation':False,'max_social_chars':2200,'auto_pipeline':AUTO_PIPELINE,'public_base_url':PUBLIC_BASE_URL,'canva_configured':canva.ready(),'canva_connected':canva.connected(),'canva_redirect_uri':canva.callback_url(),'primary_template':'canva' if canva.ready() else 'pptx','canva_template_url':'https://www.canva.com/brand/brand-templates/'+canva.TEMPLATE_ID if canva.TEMPLATE_ID else None}
 
 @app.get('/api/canva/connect',dependencies=[Depends(require_auth)])
 def connect_canva():
     try: return {'url':canva.authorization_url()}
+    except ValueError as e: raise HTTPException(400,str(e))
+
+@app.get('/api/canva/template',dependencies=[Depends(require_auth)])
+def canva_template_status():
+    try: return canva.template_status()
     except ValueError as e: raise HTTPException(400,str(e))
 
 @app.get('/api/canva/callback')
@@ -65,7 +70,7 @@ def prepare(cid:int,research:bool=False):
     except Exception as e: raise HTTPException(500,str(e))
 @app.get('/api/review',dependencies=[Depends(require_auth)])
 def review():
-    return db.rows("""SELECT a.*,c.title source_title,c.url source_url,c.score,c.source_name FROM articles a LEFT JOIN candidates c ON c.id=a.candidate_id WHERE a.status IN ('review_ready','approved') ORDER BY a.id DESC""")
+    return db.rows("""SELECT a.*,c.title source_title,c.url source_url,c.score,c.source_name,d.url canva_url,d.exported canva_exported FROM articles a LEFT JOIN candidates c ON c.id=a.candidate_id LEFT JOIN canva_designs d ON d.article_id=a.id WHERE a.status IN ('review_ready','approved') ORDER BY a.id DESC""")
 @app.get('/api/articles/{aid}',dependencies=[Depends(require_auth)])
 def article(aid:int):
     a=db.row('SELECT a.*,c.url source_url,c.score,c.source_name FROM articles a LEFT JOIN candidates c ON c.id=a.candidate_id WHERE a.id=?',(aid,))
@@ -74,7 +79,8 @@ def article(aid:int):
 @app.get('/api/articles/{aid}/kit',dependencies=[Depends(require_auth)])
 def kit(aid:int):
     a=article(aid)
-    return {'id':aid,'section':a.get('section'),'headline':a.get('headline'),'text':(a.get('body') or '')[:2200],'chars':len((a.get('body') or '')[:2200]),'image_url':f'/media/render/{aid}.png','status':a.get('status'),'source_url':a.get('source_url'),'image_source':a.get('image_source'),'image_license':a.get('image_license'),'ai_image_suggestion':a.get('ai_image_suggestion') or ''}
+    design=db.row('SELECT url,exported FROM canva_designs WHERE article_id=?',(aid,)) or {}
+    return {'id':aid,'section':a.get('section'),'headline':a.get('headline'),'text':(a.get('body') or '')[:2200],'chars':len((a.get('body') or '')[:2200]),'image_url':f'/media/render/{aid}.png','status':a.get('status'),'source_url':a.get('source_url'),'image_source':a.get('image_source'),'image_license':a.get('image_license'),'ai_image_suggestion':a.get('ai_image_suggestion') or '','canva_url':design.get('url'),'canva_exported':bool(design.get('exported'))}
 @app.put('/api/articles/{aid}',dependencies=[Depends(require_auth)])
 def edit_article(aid:int,body:EditArticle):
     if not db.row('SELECT * FROM articles WHERE id=?',(aid,)): raise HTTPException(404)

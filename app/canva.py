@@ -18,7 +18,7 @@ CLIENT_ID = os.getenv('CANVA_CLIENT_ID', '').strip()
 CLIENT_SECRET = os.getenv('CANVA_CLIENT_SECRET', '').strip()
 TEMPLATE_ID = os.getenv('CANVA_BRAND_TEMPLATE_ID', '').strip()
 API = 'https://api.canva.com/rest/v1'
-SCOPES = 'asset:read asset:write brandtemplate:content:read design:content:write design:meta:read'
+SCOPES = 'asset:read asset:write brandtemplate:content:read design:content:read design:content:write design:meta:read'
 _lock = threading.RLock()
 
 
@@ -95,7 +95,8 @@ def _api(method, path, **kwargs):
                                 headers={'Authorization': 'Bearer ' + access_token(), **kwargs.pop('headers', {})},
                                 timeout=45, **kwargs)
         if not resp.ok:
-            detail = resp.json().get('error', {})
+            payload = resp.json()
+            detail = payload.get('error') or payload
             if isinstance(detail, dict):
                 detail = detail.get('message') or detail.get('code')
             raise ValueError('Canva (%s): %s' % (resp.status_code, str(detail or 'revisa permisos y configuración')[:180]))
@@ -113,6 +114,13 @@ def _wait(path):
             raise ValueError('Canva no pudo completar el diseño o la carga de la foto')
         time.sleep(2)
     raise ValueError('Canva aún procesa el diseño; vuelve a intentarlo en unos segundos')
+
+
+def template_status():
+    dataset = _api('GET', '/brand-templates/' + TEMPLATE_ID + '/dataset').get('dataset', {})
+    expected = {'HEADLINE': 'text', 'SUMMARY': 'text', 'SECTION': 'text', 'PHOTO': 'image'}
+    return {'valid': all(dataset.get(k, {}).get('type') == v for k, v in expected.items()),
+            'fields': {k: dataset.get(k, {}).get('type') for k in expected}}
 
 
 def create_design(article):
@@ -153,4 +161,40 @@ def create_design(article):
         url = 'https://www.canva.com/design/' + design['id']
     if not url:
         raise ValueError('Canva terminó el trabajo pero no devolvió el enlace del diseño')
-    return {'url': url, 'design_id': design.get('id')}
+    result = {'url': url, 'design_id': design.get('id'), 'exported': False}
+    db.exec_('INSERT OR REPLACE INTO canva_designs(article_id,design_id,url,exported,updated_at) VALUES(?,?,?,0,CURRENT_TIMESTAMP)',
+             (article['id'], design['id'], url))
+    # The PNG on the server is the final artwork used by previews and downloads.
+    # A Canva app authorized before design:content:read was enabled can still
+    # create the design; report that reconnection is needed for the export.
+    try:
+        from io import BytesIO
+        from PIL import Image
+        from .config import RENDER_DIR
+        export = _api('POST', '/exports', json={'design_id': design['id'],
+                    'format': {'type': 'png', 'pages': [1]}})
+        urls = _wait('/exports/' + export['job']['id']).get('urls') or []
+        if not urls:
+            raise ValueError('Canva no devolvió la imagen exportada')
+        from urllib.parse import urlparse
+        host = urlparse(urls[0]).hostname or ''
+        if urlparse(urls[0]).scheme != 'https' or not (host == 'canva.com' or host.endswith('.canva.com')):
+            raise ValueError('Canva devolvió una URL de descarga inesperada')
+        response = requests.get(urls[0], timeout=45)
+        response.raise_for_status()
+        if len(response.content) > 20_000_000:
+            raise ValueError('La imagen exportada supera 20 MB')
+        image = Image.open(BytesIO(response.content))
+        image.verify()
+        output = RENDER_DIR / ('article_%s.png' % article['id'])
+        temp = output.with_suffix('.tmp')
+        temp.write_bytes(response.content)
+        temp.replace(output)
+        result['exported'] = True
+        db.exec_('UPDATE articles SET render_path=?,updated_at=CURRENT_TIMESTAMP WHERE id=?',
+                 (str(output), article['id']))
+        db.exec_('UPDATE canva_designs SET exported=1,updated_at=CURRENT_TIMESTAMP WHERE article_id=?',
+                 (article['id'],))
+    except (ValueError, requests.RequestException, KeyError, OSError) as exc:
+        result['export_error'] = str(exc)
+    return result

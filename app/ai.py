@@ -73,7 +73,7 @@ def free_draft(candidate, source_text=''):
     low = title.casefold()
     groups = [('URBANISMO', ('obra', 'vivienda', 'urbanismo', 'licit', 'calle', 'plaza')), ('GIBRALTAR', ('gibraltar', 'frontera', 'verja')), ('DEPORTES', ('deporte', 'club', 'campeonato')), ('CULTURA', ('cultura', 'museo', 'teatro', 'festival')), ('AGENDA', ('agenda', 'concierto', 'fecha')), ('COMERCIO', ('comercio', 'mercado', 'hostelería'))]
     section = next((name for name, terms in groups if any(word in low for word in terms)), 'CIUDAD')
-    return {'section': section, 'headline': title, 'subtitle': detail[:180], 'body': body[:2200], 'social_text': body[:2200], 'graphic_summary': title[:180], 'ai_image_suggestion': ''}
+    return {'section': section, 'headline': title, 'subtitle': detail[:180], 'body': body[:2200], 'social_text': body[:2200], 'graphic_summary': detail[:180], 'ai_image_suggestion': ''}
 
 def discover_candidates():
     prompt='''Busca noticias, documentos y anuncios públicos MUY RECIENTES que afecten directamente a La Línea de la Concepción. Prioriza urbanismo/obras, servicios públicos, Gibraltar o frontera cuando afecte a La Línea, agenda/cultura, comercio/aperturas, empleo/economía, contratos/licitaciones/presupuestos, patrimonio e incidencias ciudadanas. Prioriza fuentes oficiales, documentos y páginas originales. Evita cualquier resultado donde “línea” no sea la ciudad. Devuelve JSON con una clave items que sea lista de objetos: title,url,source_name,excerpt,official (boolean). Máximo 15 resultados, sin duplicados.'''

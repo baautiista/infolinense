@@ -88,7 +88,8 @@ def kit(aid:int):
     return {'id':aid,'section':a.get('section'),'headline':a.get('headline'),'text':(a.get('body') or '')[:2200],'chars':len((a.get('body') or '')[:2200]),'image_url':f'/media/render/{aid}.png','status':a.get('status'),'source_url':a.get('source_url'),'image_source':a.get('image_source'),'image_license':a.get('image_license'),'ai_image_suggestion':a.get('ai_image_suggestion') or '','canva_url':design.get('url'),'canva_exported':bool(design.get('exported'))}
 @app.put('/api/articles/{aid}',dependencies=[Depends(require_auth)])
 def edit_article(aid:int,body:EditArticle):
-    if not db.row('SELECT * FROM articles WHERE id=?',(aid,)): raise HTTPException(404)
+    original=db.row('SELECT * FROM articles WHERE id=?',(aid,))
+    if not original: raise HTTPException(404)
     fields=[]; vals=[]
     for k,v in body.model_dump(exclude_none=True).items():
         if k=='body':
@@ -98,6 +99,8 @@ def edit_article(aid:int,body:EditArticle):
     if fields:
         db.exec_(f"UPDATE articles SET {','.join(fields)},updated_at=CURRENT_TIMESTAMP WHERE id=?",tuple(vals+[aid]))
         db.exec_('UPDATE canva_designs SET exported=0 WHERE article_id=?',(aid,))
+        if original['status']=='approved':
+            db.exec_("UPDATE articles SET status='review_ready' WHERE id=?",(aid,))
     try: renderer.render_article(aid)
     except Exception as e: db.log('render_error',str(e))
     return db.row('SELECT * FROM articles WHERE id=?',(aid,))
@@ -116,7 +119,7 @@ def article_photos(aid:int,refresh:bool=False):
 def choose_photo(aid:int,p:PhotoChoice):
     try: local=photos.download_image(p.url)
     except Exception as e: raise HTTPException(400,'No se pudo descargar la foto: '+str(e))
-    db.exec_("UPDATE articles SET image_url=?,image_source=?,image_license=?,image_local=?,ai_image_suggestion='' WHERE id=?",(p.url,p.source,p.license,local,aid))
+    db.exec_("UPDATE articles SET image_url=?,image_source=?,image_license=?,image_local=?,ai_image_suggestion='',status=CASE WHEN status='approved' THEN 'review_ready' ELSE status END WHERE id=?",(p.url,p.source,p.license,local,aid))
     db.exec_('UPDATE canva_designs SET exported=0 WHERE article_id=?',(aid,))
     try: renderer.render_article(aid)
     except Exception as e: db.log('render_error',str(e))
@@ -140,7 +143,7 @@ async def upload_article_photo(aid:int,file:UploadFile=File(...),license:str=For
     except Exception as e: raise HTTPException(400,'No se pudo leer la fotografía: '+str(e))
     selected={'url':'upload:'+dest.stem,'source':source.strip()[:180],'license':license.strip()[:180],
               'author':author.strip()[:120],'kind':'user_upload','publish_safe':True}
-    db.exec_('UPDATE articles SET image_url=?,image_source=?,image_license=?,image_local=?,image_candidates_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=?',
+    db.exec_("UPDATE articles SET image_url=?,image_source=?,image_license=?,image_local=?,image_candidates_json=?,status=CASE WHEN status='approved' THEN 'review_ready' ELSE status END,updated_at=CURRENT_TIMESTAMP WHERE id=?",
              (selected['url'],selected['source'],selected['license'],str(dest),json.dumps([selected]),aid))
     db.exec_('UPDATE canva_designs SET exported=0 WHERE article_id=?',(aid,))
     try: renderer.render_article(aid)
@@ -186,6 +189,10 @@ def publish(aid:int):
     a=db.row('SELECT * FROM articles WHERE id=?',(aid,))
     if not a: raise HTTPException(404)
     if a['status']!='approved': raise HTTPException(400,'Primero debes aprobar la noticia')
+    if canva.ready() and canva.connected():
+        artwork=db.row('SELECT exported FROM canva_designs WHERE article_id=?',(aid,))
+        if not artwork or not artwork['exported']:
+            raise HTTPException(400,'Regenera la imagen final en Canva antes de publicar')
     try:
         url=publishers.publish(a); db.exec_("UPDATE articles SET status='published',publish_url=?,updated_at=CURRENT_TIMESTAMP WHERE id=?",(url,aid)); return {'ok':True,'url':url}
     except Exception as e: raise HTTPException(400,str(e))

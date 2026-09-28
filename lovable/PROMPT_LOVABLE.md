@@ -37,7 +37,7 @@ REGLAS
 REVISIÓN
 GET `/api/review`.
 Cada tarjeta debe mostrar:
-- preview `/media/render/{id}.png` usando el host de API. Esta ruta requiere Bearer; descargar como blob mediante fetch autenticado y mostrar con URL.createObjectURL. Nunca pasar el token por query string.
+- mostrar la imagen `/media/render/{id}.png` solo si `canva_exported` es verdadero. Esta ruta requiere Bearer; descargar como blob mediante fetch autenticado y mostrar con URL.createObjectURL. Antes de exportar desde Canva, mostrar el estado pendiente. Nunca pasar el token por query string.
 - sección
 - headline
 - graphic_summary
@@ -48,8 +48,9 @@ Cada tarjeta debe mostrar:
 - ai_image_suggestion separada
 
 Acciones:
-- Guardar y regenerar → PUT `/api/articles/{id}` con las claves `headline`, `graphic_summary` y `body`. No enviar `social_text` como campo editable: el backend lo sincroniza con body.
+- Guardar borrador → PUT `/api/articles/{id}` con las claves `headline`, `graphic_summary` y `body`. Esto invalida el PNG anterior. No enviar `social_text` como campo editable: el backend lo sincroniza con body.
 - Cambiar foto → GET `/api/articles/{id}/photos`, galería y POST `/api/articles/{id}/photo`
+- Crear en Canva → POST `/api/articles/{id}/canva` una vez elegida una fotografía propia o autorizada. `POST /api/articles/{id}/canva/export` actualiza el PNG si se editó el diseño directamente en Canva.
 - Investigar más → POST `/api/articles/{id}/research-more`
 - Aprobar → POST `/api/articles/{id}/approve`
 - Descartar → POST `/api/articles/{id}/reject`
@@ -57,7 +58,7 @@ Acciones:
 KIT REDES
 GET `/api/articles/{id}/kit`
 Mostrar únicamente:
-- PNG 1080×1350 final obtenido mediante fetch con Authorization: Bearer y descarga del blob
+- PNG final obtenido de Canva mediante fetch con Authorization: Bearer y descarga del blob, solo tras la exportación
 - texto completo (`text`) y contador
 - Copiar texto
 - Descargar imagen
@@ -68,12 +69,11 @@ RADAR
 - Botón “Buscar ahora” → POST `/api/scan`
 - Mostrar candidatas y puntuación.
 - Etiquetas de relevancia.
-- Las menos relevantes que superen el umbral aparecen automáticamente ya terminadas en Revisión; no obligar al usuario a redactarlas manualmente.
+- Cada noticia avanza manualmente por Investigación, Redacción y Revisión. Sin API de IA, el borrador se forma a partir de la fuente original y necesita comprobación editorial.
 
 PLANTILLAS
-GET `/api/templates`, upload PPTX a `/api/templates/upload` multipart con file + name y POST `/api/templates/{id}/activate`.
-Las nuevas plantillas deben tener una o 12 diapositivas, con `{{HEADLINE}}` en cada una; admiten `{{SUMMARY}}` y `{{SECTION}}` y un elemento gráfico `PHOTO` para la imagen principal.
-Explica que el backend usa el PPTX original y no recrea el diseño con IA.
+GET `/api/capabilities` y GET `/api/canva/template` para comprobar la plantilla de marca Canva `EAHWTjWEEnA`.
+La única plantilla gráfica se administra en Canva y requiere los campos `HEADLINE`, `SUMMARY`, `SECTION` y `PHOTO`. El PNG de Canva es el único diseño que se muestra o descarga. No ofrecer carga, activación ni imágenes de PPTX.
 
 FUENTES
 GET `/api/sources`, POST `/api/sources`, POST `/api/sources/{id}/toggle`.

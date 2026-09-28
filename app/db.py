@@ -53,7 +53,8 @@ def init_db():
     );
     CREATE TABLE IF NOT EXISTS canva_designs(
       article_id INTEGER PRIMARY KEY, design_id TEXT NOT NULL, url TEXT NOT NULL,
-      exported INTEGER NOT NULL DEFAULT 0, updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+      exported INTEGER NOT NULL DEFAULT 0, content_hash TEXT,
+      updated_at TEXT DEFAULT CURRENT_TIMESTAMP
     );
     ''')
     # Railway keeps the SQLite volume between deployments.
@@ -66,6 +67,14 @@ def init_db():
         if name not in existing: c.execute(f'ALTER TABLE sources ADD COLUMN {name} {ddl}')
     if 'research_json' not in {r[1] for r in c.execute('PRAGMA table_info(candidates)')}:
         c.execute('ALTER TABLE candidates ADD COLUMN research_json TEXT')
+    if 'content_hash' not in {r[1] for r in c.execute('PRAGMA table_info(canva_designs)')}:
+        c.execute('ALTER TABLE canva_designs ADD COLUMN content_hash TEXT')
+    # Earlier releases could replace a Canva PNG on disk with a PPTX render.
+    # Require a fresh Canva design for legacy records before exposing an image.
+    c.execute('''UPDATE articles SET render_path=NULL,
+                 status=CASE WHEN status='approved' THEN 'review_ready' ELSE status END
+                 WHERE id IN (SELECT article_id FROM canva_designs WHERE content_hash IS NULL AND exported=1)''')
+    c.execute('UPDATE canva_designs SET exported=0 WHERE content_hash IS NULL AND exported=1')
     from urllib.parse import quote
     def news(query):
         return 'https://news.google.com/rss/search?q='+quote(query)+'&hl=es&gl=ES&ceid=ES:es'
@@ -96,9 +105,6 @@ def init_db():
     # Existing default rows retain the same URL but need accurate locality rules.
     c.execute("UPDATE sources SET local_scope=1 WHERE url='https://lalinea.es/feed/'")
     c.execute("UPDATE sources SET local_scope=1 WHERE url LIKE 'https://www.sedeelectronica.lalinea.es/edictos/%'")
-    if not c.execute('SELECT 1 FROM templates LIMIT 1').fetchone():
-        slide_map={'URBANISMO':1,'CIUDAD':2,'GIBRALTAR':3,'SUCESOS':4,'CULTURA':5,'DEPORTES':6,'COMERCIO':7,'MEDIO AMBIENTE':8,'POLÍTICA':9,'SOCIEDAD':10,'PATRIMONIO':11,'AGENDA':12}
-        c.execute('INSERT INTO templates(name,path,format,slide_map_json) VALUES(?,?,?,?)',('Noticia principal v1','templates/plantilla_1.pptx','4:5',json.dumps(slide_map,ensure_ascii=False)))
     c.commit(); c.close()
 
 def rows(sql,args=()):

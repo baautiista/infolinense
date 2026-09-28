@@ -139,8 +139,63 @@ def permission_status():
         raise ValueError('No se pudieron comprobar los permisos de Canva') from exc
 
 
+def _content_hash(article):
+    fields = [article.get(k) or '' for k in ('headline', 'graphic_summary', 'subtitle', 'section', 'image_url')]
+    return hashlib.sha256(json.dumps(fields, ensure_ascii=False).encode()).hexdigest()
+
+
+def _export_png(article, design_id):
+    from io import BytesIO
+    from PIL import Image
+    from urllib.parse import urlparse
+    from .config import RENDER_DIR
+
+    export = _api('POST', '/exports', json={'design_id': design_id,
+                  'format': {'type': 'png', 'pages': [1]}})
+    urls = _wait('/exports/' + export['job']['id']).get('urls') or []
+    if not urls:
+        raise ValueError('Canva no devolvió la imagen exportada')
+    host = urlparse(urls[0]).hostname or ''
+    if urlparse(urls[0]).scheme != 'https' or not (host == 'canva.com' or host.endswith('.canva.com')):
+        raise ValueError('Canva devolvió una URL de descarga inesperada')
+    try:
+        response = requests.get(urls[0], timeout=45)
+        response.raise_for_status()
+        if len(response.content) > 20_000_000:
+            raise ValueError('La imagen exportada supera 20 MB')
+        image = Image.open(BytesIO(response.content))
+        if image.format != 'PNG':
+            raise ValueError('Canva no devolvió un archivo PNG')
+        image.verify()
+        output = RENDER_DIR / ('article_%s.png' % article['id'])
+        temp = output.with_suffix('.tmp')
+        temp.write_bytes(response.content)
+        temp.replace(output)
+    except (requests.RequestException, OSError) as exc:
+        raise ValueError('No se pudo descargar o validar el PNG de Canva') from exc
+    db.exec_('UPDATE articles SET render_path=?,updated_at=CURRENT_TIMESTAMP WHERE id=?',
+             (str(output), article['id']))
+    db.exec_('UPDATE canva_designs SET exported=1,updated_at=CURRENT_TIMESTAMP WHERE article_id=?',
+             (article['id'],))
+    return str(output)
+
+
+def export_design(article):
+    if not ready() or not connected():
+        raise ValueError('Conecta Canva antes de exportar el diseño')
+    design = db.row('SELECT * FROM canva_designs WHERE article_id=?', (article['id'],))
+    if not design:
+        raise ValueError('Primero crea el diseño con la plantilla de Canva')
+    if design.get('content_hash') != _content_hash(article):
+        raise ValueError('La noticia o la foto cambió; vuelve a crear el diseño de Canva')
+    db.exec_('UPDATE canva_designs SET exported=0 WHERE article_id=?', (article['id'],))
+    db.exec_('UPDATE articles SET render_path=NULL,status=CASE WHEN status="approved" THEN "review_ready" ELSE status END WHERE id=?', (article['id'],))
+    _export_png(article, design['design_id'])
+    return {'url': design['url'], 'design_id': design['design_id'], 'exported': True}
+
+
 def create_design(article):
-    if not connected():
+    if not ready() or not connected():
         raise ValueError('Conecta tu cuenta de Canva desde Ajustes')
     photo = Path(article.get('image_local') or '')
     if not photo.is_file() or not article.get('image_license'):
@@ -178,39 +233,13 @@ def create_design(article):
     if not url:
         raise ValueError('Canva terminó el trabajo pero no devolvió el enlace del diseño')
     result = {'url': url, 'design_id': design.get('id'), 'exported': False}
-    db.exec_('INSERT OR REPLACE INTO canva_designs(article_id,design_id,url,exported,updated_at) VALUES(?,?,?,0,CURRENT_TIMESTAMP)',
-             (article['id'], design['id'], url))
-    # The PNG on the server is the final artwork used by previews and downloads.
-    # A Canva app authorized before design:content:read was enabled can still
-    # create the design; report that reconnection is needed for the export.
+    db.exec_('INSERT OR REPLACE INTO canva_designs(article_id,design_id,url,exported,content_hash,updated_at) VALUES(?,?,?,0,?,CURRENT_TIMESTAMP)',
+             (article['id'], design['id'], url, _content_hash(article)))
+    db.exec_('UPDATE articles SET render_path=NULL,status=CASE WHEN status="approved" THEN "review_ready" ELSE status END WHERE id=?', (article['id'],))
+    # The PNG from Canva is the only artwork served to the editorial panel.
     try:
-        from io import BytesIO
-        from PIL import Image
-        from .config import RENDER_DIR
-        export = _api('POST', '/exports', json={'design_id': design['id'],
-                    'format': {'type': 'png', 'pages': [1]}})
-        urls = _wait('/exports/' + export['job']['id']).get('urls') or []
-        if not urls:
-            raise ValueError('Canva no devolvió la imagen exportada')
-        from urllib.parse import urlparse
-        host = urlparse(urls[0]).hostname or ''
-        if urlparse(urls[0]).scheme != 'https' or not (host == 'canva.com' or host.endswith('.canva.com')):
-            raise ValueError('Canva devolvió una URL de descarga inesperada')
-        response = requests.get(urls[0], timeout=45)
-        response.raise_for_status()
-        if len(response.content) > 20_000_000:
-            raise ValueError('La imagen exportada supera 20 MB')
-        image = Image.open(BytesIO(response.content))
-        image.verify()
-        output = RENDER_DIR / ('article_%s.png' % article['id'])
-        temp = output.with_suffix('.tmp')
-        temp.write_bytes(response.content)
-        temp.replace(output)
+        _export_png(article, design['id'])
         result['exported'] = True
-        db.exec_('UPDATE articles SET render_path=?,updated_at=CURRENT_TIMESTAMP WHERE id=?',
-                 (str(output), article['id']))
-        db.exec_('UPDATE canva_designs SET exported=1,updated_at=CURRENT_TIMESTAMP WHERE article_id=?',
-                 (article['id'],))
     except (ValueError, requests.RequestException, KeyError, OSError) as exc:
         result['export_error'] = str(exc)
     return result

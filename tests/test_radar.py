@@ -1,11 +1,14 @@
 """Regression checks for locality, freshness and bulletin extraction."""
 import os
+import json
+import io
 import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
 from email.utils import format_datetime
 from pathlib import Path
 from unittest.mock import patch
+from PIL import Image
 
 _temp = tempfile.TemporaryDirectory()
 os.environ['DATA_DIR'] = _temp.name
@@ -14,7 +17,8 @@ os.environ['RENDER_DIR'] = str(Path(_temp.name) / 'renders')
 os.environ['UPLOAD_DIR'] = str(Path(_temp.name) / 'uploads')
 os.environ['TEMPLATE_DIR'] = str(Path(_temp.name) / 'templates')
 
-from app import db, sources, pipeline  # noqa: E402
+from app import db, sources, pipeline, canva, main  # noqa: E402
+from fastapi import HTTPException  # noqa: E402
 
 
 class Response:
@@ -78,16 +82,90 @@ class RadarChecks(unittest.TestCase):
                                     'https://example.org/parque', 'La fuente anuncia nuevas obras',
                                     'Fuente municipal', source_meta={'priority': 80, 'official': 1})
         with patch.object(sources, 'fetch_article_text', return_value='El Ayuntamiento anuncia mejoras en el parque.'), \
-             patch.object(pipeline.photos, 'search_real_photos', return_value=[]), \
-             patch.object(pipeline.renderer, 'render_article'):
+             patch.object(pipeline.photos, 'search_real_photos', return_value=[]):
             with self.assertRaises(ValueError): pipeline.draft_candidate(cid)
             research = pipeline.investigate_candidate(cid)
             self.assertEqual(db.row('SELECT status FROM candidates WHERE id=?', (cid,))['status'], 'researched')
             self.assertTrue(research['caveats'])  # Free mode identifies lack of independent verification.
             aid = pipeline.draft_candidate(cid)
-            self.assertEqual(db.row('SELECT status FROM articles WHERE id=?', (aid,))['status'], 'draft')
+            article = db.row('SELECT * FROM articles WHERE id=?', (aid,))
+            self.assertEqual(article['status'], 'draft')
+            self.assertEqual(article['workflow'], 'source_draft')
+            self.assertIsNone(article['render_path'])  # Canva has not exported a design yet.
+            self.assertIsNone(article['template_id'])  # No PPTX fallback.
+            self.assertIn('según publica Fuente municipal', article['body'])
+            self.assertLessEqual(len(article['body']), 2200)
             self.assertEqual(pipeline.submit_candidate(cid), aid)
             self.assertEqual(db.row('SELECT status FROM articles WHERE id=?', (aid,))['status'], 'review_ready')
+
+    def test_only_canva_export_produces_a_visible_image(self):
+        cid = sources.add_candidate('Un nuevo espacio cultural abre en La Atunara',
+                                    'https://example.org/cultura', 'La programación incluye conciertos',
+                                    'Fuente local', source_meta={'priority': 75, 'official': 1})
+        with patch.object(sources, 'fetch_article_text', return_value=''), \
+             patch.object(pipeline.photos, 'search_real_photos', return_value=[]):
+            pipeline.investigate_candidate(cid)
+            aid = pipeline.draft_candidate(cid)
+        self.assertIsNone(main.kit(aid)['image_url'])
+        with self.assertRaises(HTTPException) as missing:
+            main.render_file(aid)
+        self.assertEqual(missing.exception.status_code, 404)
+
+        photo = Path(_temp.name) / 'own.jpg'
+        Image.new('RGB', (80, 100), '#1f5eff').save(photo)
+        selected = {'url': 'upload:own', 'license': 'Foto propia', 'source': 'Redacción', 'publish_safe': True}
+        db.exec_('UPDATE articles SET image_local=?,image_url=?,image_source=?,image_license=?,image_candidates_json=? WHERE id=?',
+                 (str(photo), selected['url'], selected['source'], selected['license'], json.dumps([selected]), aid))
+        article = db.row('SELECT * FROM articles WHERE id=?', (aid,))
+        png = io.BytesIO()
+        Image.new('RGB', (1080, 1350), '#1f5eff').save(png, format='PNG')
+        responses = []
+        def mock_api(method, path, **kwargs):
+            responses.append((method, path, kwargs))
+            if path.endswith('/dataset'):
+                return {'dataset': {k: {'type': v} for k, v in {'HEADLINE': 'text', 'SUMMARY': 'text', 'SECTION': 'text', 'PHOTO': 'image'}.items()}}
+            return {'job': {'id': 'test-job'}}
+        def mock_wait(path):
+            if 'asset-uploads' in path: return {'asset': {'id': 'own-asset'}}
+            if 'autofills' in path: return {'design': {'id': 'canva-design', 'urls': {'edit_url': 'https://www.canva.com/design/test'}}}
+            return {'urls': ['https://export.canva.com/test.png']}
+        class Download:
+            content = png.getvalue()
+            def raise_for_status(self): pass
+        with patch.object(canva, 'CLIENT_ID', 'test'), patch.object(canva, 'CLIENT_SECRET', 'test'), \
+             patch.object(canva, 'TEMPLATE_ID', 'EAHWTjWEEnA'), patch.object(canva, 'PUBLIC_BASE_URL', 'https://example.org'), \
+             patch.object(canva, 'connected', return_value=True), patch.object(canva, '_api', side_effect=mock_api), \
+             patch.object(canva, '_wait', side_effect=mock_wait), patch.object(canva.requests, 'get', return_value=Download()):
+            result = canva.create_design(article)
+            self.assertTrue(result['exported'])
+            self.assertEqual(db.row('SELECT exported FROM canva_designs WHERE article_id=?', (aid,))['exported'], 1)
+            fields = next(kwargs['json']['data'] for method, path, kwargs in responses if path == '/autofills')
+            self.assertEqual(fields['HEADLINE']['text'], article['headline'])
+            self.assertEqual(fields['PHOTO']['asset_id'], 'own-asset')
+            self.assertTrue(main.kit(aid)['image_url'])
+            self.assertEqual(main.render_file(aid).media_type, 'image/png')
+
+            # Editing invalidates the export even while the old PNG remains on disk.
+            main.edit_article(aid, main.EditArticle(headline='Otro titular'))
+            self.assertIsNone(main.kit(aid)['image_url'])
+            with self.assertRaises(HTTPException): main.render_file(aid)
+            with self.assertRaisesRegex(ValueError, 'vuelve a crear'):
+                canva.export_design(db.row('SELECT * FROM articles WHERE id=?', (aid,)))
+
+    def test_legacy_pptx_preview_is_invalidated_during_upgrade(self):
+        aid = db.exec_("INSERT INTO articles(headline,status,render_path) VALUES('Archivo anterior','approved','legacy.png')")
+        db.exec_('INSERT INTO canva_designs(article_id,design_id,url,exported) VALUES(?,?,?,1)',
+                 (aid, 'old-design', 'https://www.canva.com/design/old'))
+        png = Path(os.environ['RENDER_DIR']) / f'article_{aid}.png'
+        Image.new('RGB', (80, 100), '#1f5eff').save(png)
+        db.init_db()
+        self.assertEqual(db.row('SELECT exported FROM canva_designs WHERE article_id=?', (aid,))['exported'], 0)
+        upgraded = db.row('SELECT status,render_path FROM articles WHERE id=?', (aid,))
+        self.assertEqual(upgraded['status'], 'review_ready')
+        self.assertIsNone(upgraded['render_path'])
+        self.assertIsNone(main.kit(aid)['image_url'])
+        with self.assertRaises(HTTPException):
+            main.render_file(aid)
 
     def test_procurement_rejects_old_tenders(self):
         today = int(datetime.now(timezone.utc).timestamp())

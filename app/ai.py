@@ -29,7 +29,7 @@ def json_from_text(t):
         if not m: raise
         return json.loads(m.group(0))
 
-SYSTEM='''Eres el motor editorial de InfoLinense, medio 100% centrado en La Línea de la Concepción. Redactas en español natural, periodístico y local. No copies notas de prensa. Prioriza utilidad, qué cambia, cómo afecta al ciudadano, fechas, importes, plazos y administración competente. Evita sensacionalismo, propaganda y titulares burocráticos. Si una afirmación no está sustentada, no la inventes. Devuelve JSON válido sin markdown.'''
+SYSTEM='''Eres el motor editorial de InfoLinense, medio centrado en La Línea de la Concepción. Redacta en español natural, cercano y periodístico, sin tono de gabinete ni copiar notas de prensa. Estructura: sección, titular útil, subtítulo y cuerpo breve de hasta 2.200 caracteres (el cuerpo es también el texto de redes). Prioriza lo que cambia para los vecinos: fechas, importes, plazos y administración competente, solo si constan en las fuentes. Da contexto local sin inventar hechos. No empieces el cuerpo con «La Línea de la Concepción». No uses emojis, exclamaciones, sensacionalismo ni fórmulas genéricas de IA. Cuando solo existe la fuente original, atribuye los hechos y deja claro en las notas qué falta por contrastar. Devuelve JSON válido sin markdown.'''
 
 def draft(candidate,source_text='',research='',quick=False):
     if not OPENAI_API_KEY:
@@ -50,35 +50,68 @@ def research(candidate,source_text=''):
     return json_from_text(ask(SYSTEM,prompt,web=True))
 
 def free_draft(candidate, source_text=''):
-    """Create a source-attributed, review-only brief without an external model."""
-    title = BeautifulSoup(candidate.get('title') or '', 'html.parser').get_text(' ', strip=True).strip(' .')[:180]
+    """Prepare an editable, source-attributed news draft without claiming verification."""
+    def tidy(value):
+        value = BeautifulSoup(value or '', 'html.parser').get_text(' ', strip=True)
+        value = re.sub(r'[\U0001F300-\U0001FAFF\u2600-\u27BF‼¡!]', '', value)
+        return re.sub(r'\s+', ' ', value).strip(' .:;—-')
+
+    def clip(value, limit):
+        value = value.strip()
+        if len(value) <= limit: return value
+        return value[:limit].rsplit(' ', 1)[0].rstrip(' ,;:.')
+
+    title = tidy(candidate.get('title'))
+    # Google News appends the outlet to the headline; the source is shown separately.
+    title = re.sub(r'\s+[-–|]\s+(?:Europa Sur|Diario Área(?: Campo de Gibraltar)?|8Directo|Cadena SER|Canal Sur|Europa Press)\s*$', '', title, flags=re.I)
+    title = clip(title, 180)
     if not title:
         raise ValueError('La noticia no tiene titular')
-    excerpt = BeautifulSoup(candidate.get('excerpt') or '', 'html.parser').get_text(' ', strip=True)
-    text = BeautifulSoup(source_text or '', 'html.parser').get_text(' ', strip=True)
-    source = (candidate.get('source_name') or urlparse(candidate.get('url') or '').netloc or 'la fuente original').strip()
-    # The original page may include navigation and unrelated stories. Prefer the
-    # source summary; include one short sentence from the page only if relevant.
-    excerpt = re.sub(r'\s+', ' ', excerpt).strip()
+    excerpt = tidy(candidate.get('excerpt'))
+    text = tidy(source_text)
+    source = tidy(candidate.get('source_name') or urlparse(candidate.get('url') or '').netloc or 'la fuente original')
     excerpt = re.sub(r'^(?:' + re.escape(title) + r')[\s:;.,-]*', '', excerpt, flags=re.I).strip()
+    # Prefer the short source summary. Page text often contains navigation and
+    # other stories; only take a sentence with several headline terms.
     sentences = re.split(r'(?<=[.!?])\s+', text)
     title_terms = {w.lower() for w in re.findall(r'[\wáéíóúñü]{5,}', title)} - {'línea', 'concepción'}
-    relevant = next((s for s in sentences if 35 <= len(s) <= 260 and len(title_terms.intersection(w.lower() for w in re.findall(r'[\wáéíóúñü]{5,}', s))) >= 2 and s.casefold() not in excerpt.casefold()), '')
-    detail = excerpt[:320].rsplit(' ', 1)[0] if len(excerpt) > 320 else excerpt
-    if not detail and relevant:
-        detail = relevant[:320]
-    if not detail:
-        detail = 'La fuente original recoge esta información sobre La Línea de la Concepción.'
-    detail = detail.strip(' .') + '.'
-    # The brief attributes every factual sentence; no invented dates, figures or context.
-    body = f'{title}.\n\nSegún {source}, {detail[0].lower() + detail[1:] if detail else "se ha publicado esta información."}'
-    if relevant and relevant.casefold() not in detail.casefold():
-        body += '\n\nLa fuente también señala: «' + relevant[:240].strip(' .') + '». '
-    body += '\n\nConsulta la fuente original y verifica los datos antes de publicar.'
-    low = title.casefold()
-    groups = [('URBANISMO', ('obra', 'vivienda', 'urbanismo', 'licit', 'calle', 'plaza')), ('GIBRALTAR', ('gibraltar', 'frontera', 'verja')), ('DEPORTES', ('deporte', 'club', 'campeonato')), ('CULTURA', ('cultura', 'museo', 'teatro', 'festival')), ('AGENDA', ('agenda', 'concierto', 'fecha')), ('COMERCIO', ('comercio', 'mercado', 'hostelería'))]
+    relevant = next((clip(s, 190) for s in sentences
+                     if 45 <= len(s) <= 280 and len(title_terms.intersection(
+                         w.lower() for w in re.findall(r'[\wáéíóúñü]{5,}', s))) >= 2
+                     and s.casefold() not in excerpt.casefold() and title.casefold() not in s.casefold()), '')
+    details = [clip(s, 230).rstrip(' .') for s in re.split(r'(?<=[.!?])\s+', excerpt)
+               if s.strip() and s.strip(' .').casefold() != title.casefold()]
+    if not details and relevant: details = [relevant.rstrip(' .')]
+    if source.casefold().startswith('ayuntamiento'):
+        credit = 'según informa el Ayuntamiento de La Línea'
+    elif source.casefold().startswith(('facebook', 'instagram')):
+        credit = 'según la publicación original en redes sociales'
+    elif source.casefold().startswith(('google news', 'noticias ·')):
+        credit = 'según la fuente enlazada'
+    else:
+        credit = f'según publica {source}'
+    title_numbers = set(re.findall(r'\d[\d.,]*', title))
+    lead_from_title = not details or bool(title_numbers - set(re.findall(r'\d[\d.,]*', excerpt)))
+    lead = title if lead_from_title else details[0]
+    if lead.casefold().startswith('la línea de la concepción'):
+        lead = credit[0].upper() + credit[1:] + ', ' + lead[0].lower() + lead[1:]
+    elif 'ayuntamiento' not in lead.casefold() and not lead.casefold().startswith(('según ', 'fuente:')):
+        lead += ', ' + credit
+    body = lead.rstrip(' .') + '.'
+    for detail in details if lead_from_title else details[1:]:
+        if detail.casefold() not in body.casefold():
+            body += ' ' + detail.rstrip(' .') + '.'
+    if relevant and relevant.casefold() not in body.casefold() and not any(relevant.casefold() in d.casefold() for d in details):
+        body += '\n\n' + relevant.rstrip(' .') + '.'
+    low = (title + ' ' + excerpt).casefold()
+    groups = [('GIBRALTAR', ('gibraltar', 'frontera', 'verja')), ('MEDIO AMBIENTE', ('alga', 'playa', 'litoral', 'residuos', 'medio ambiente')),
+              ('URBANISMO', ('obra', 'vivienda', 'urbanismo', 'licit', 'calle', 'plaza')),
+              ('DEPORTES', ('deporte', 'balona', 'club', 'campeonato')), ('CULTURA', ('cultura', 'museo', 'teatro', 'festival')),
+              ('AGENDA', ('agenda', 'concierto', 'fecha')), ('COMERCIO', ('comercio', 'mercado', 'hostelería'))]
     section = next((name for name, terms in groups if any(word in low for word in terms)), 'CIUDAD')
-    return {'section': section, 'headline': title, 'subtitle': detail[:180], 'body': body[:2200], 'social_text': body[:2200], 'graphic_summary': detail[:180], 'ai_image_suggestion': ''}
+    subtitle = clip(details[0], 180).rstrip(' .') + '.' if details else ''
+    return {'section': section, 'headline': title, 'subtitle': subtitle, 'body': body[:2200],
+            'social_text': body[:2200], 'graphic_summary': subtitle, 'ai_image_suggestion': ''}
 
 def discover_candidates():
     prompt='''Busca noticias, documentos y anuncios públicos MUY RECIENTES que afecten directamente a La Línea de la Concepción. Prioriza urbanismo/obras, servicios públicos, Gibraltar o frontera cuando afecte a La Línea, agenda/cultura, comercio/aperturas, empleo/economía, contratos/licitaciones/presupuestos, patrimonio e incidencias ciudadanas. Prioriza fuentes oficiales, documentos y páginas originales. Evita cualquier resultado donde “línea” no sea la ciudad. Devuelve JSON con una clave items que sea lista de objetos: title,url,source_name,excerpt,official (boolean). Máximo 15 resultados, sin duplicados.'''

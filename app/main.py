@@ -9,12 +9,11 @@ from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from pptx import Presentation
-from . import db, sources, pipeline, renderer, publishers, photos, canva
+from . import db, sources, pipeline, publishers, photos, canva
 from .auth import login, require_auth
-from .config import BASE_DIR, RENDER_DIR, TEMPLATE_DIR, UPLOAD_DIR, SCAN_INTERVAL_MINUTES, AUTO_PIPELINE, OPENAI_API_KEY, ADMIN_PASSWORD, JWT_SECRET, PUBLISH_MODE, CORS_ORIGINS, PUBLIC_BASE_URL
+from .config import BASE_DIR, RENDER_DIR, UPLOAD_DIR, SCAN_INTERVAL_MINUTES, AUTO_PIPELINE, OPENAI_API_KEY, ADMIN_PASSWORD, JWT_SECRET, PUBLISH_MODE, CORS_ORIGINS, PUBLIC_BASE_URL
 
-app=FastAPI(title='InfoLinense Desk',version='2.1.0')
+app=FastAPI(title='InfoLinense Desk',version='2.2.0')
 app.add_middleware(CORSMiddleware,allow_origins=CORS_ORIGINS,allow_credentials=False,allow_methods=['*'],allow_headers=['Authorization','Content-Type'])
 db.init_db()
 
@@ -34,10 +33,10 @@ class PhotoChoice(BaseModel): url:str; source:str=''; license:str=''; author:str
 def auth_login(body:LoginIn): return {'token':login(body.password)}
 @app.get('/api/health')
 def health():
-    return {'ok':True,'version':'2.1.0','auth_configured':bool(ADMIN_PASSWORD and JWT_SECRET),'openai_configured':bool(OPENAI_API_KEY),'draft_mode':'ai' if OPENAI_API_KEY else 'source_brief','publish_mode':PUBLISH_MODE}
+    return {'ok':True,'version':'2.2.0','auth_configured':bool(ADMIN_PASSWORD and JWT_SECRET),'openai_configured':bool(OPENAI_API_KEY),'draft_mode':'ai' if OPENAI_API_KEY else 'source_draft','publish_mode':PUBLISH_MODE}
 @app.get('/api/capabilities',dependencies=[Depends(require_auth)])
 def capabilities():
-    return {'real_photo_only':True,'ai_image_generation':False,'max_social_chars':2200,'auto_pipeline':AUTO_PIPELINE,'public_base_url':PUBLIC_BASE_URL,'canva_configured':canva.ready(),'canva_connected':canva.connected(),'canva_redirect_uri':canva.callback_url(),'primary_template':'canva' if canva.ready() else 'pptx','canva_template_url':'https://www.canva.com/brand/brand-templates/'+canva.TEMPLATE_ID if canva.TEMPLATE_ID else None}
+    return {'real_photo_only':True,'ai_image_generation':False,'max_social_chars':2200,'auto_pipeline':AUTO_PIPELINE,'public_base_url':PUBLIC_BASE_URL,'canva_configured':canva.ready(),'canva_connected':canva.connected(),'canva_redirect_uri':canva.callback_url(),'primary_template':'canva' if canva.ready() and canva.connected() else 'unavailable','canva_template_url':'https://www.canva.com/brand/brand-templates/'+canva.TEMPLATE_ID if canva.TEMPLATE_ID else None}
 
 @app.get('/api/canva/connect',dependencies=[Depends(require_auth)])
 def connect_canva():
@@ -66,6 +65,12 @@ def create_canva_design(aid:int):
     a=db.row('SELECT * FROM articles WHERE id=?',(aid,))
     if not a: raise HTTPException(404)
     try: return canva.create_design(a)
+    except ValueError as e: raise HTTPException(400,str(e))
+@app.post('/api/articles/{aid}/canva/export',dependencies=[Depends(require_auth)])
+def export_canva_design(aid:int):
+    a=db.row('SELECT * FROM articles WHERE id=?',(aid,))
+    if not a: raise HTTPException(404)
+    try: return canva.export_design(a)
     except ValueError as e: raise HTTPException(400,str(e))
 @app.get('/api/dashboard',dependencies=[Depends(require_auth)])
 def dashboard():
@@ -148,7 +153,8 @@ def article(aid:int):
 def kit(aid:int):
     a=article(aid)
     design=db.row('SELECT url,exported FROM canva_designs WHERE article_id=?',(aid,)) or {}
-    return {'id':aid,'section':a.get('section'),'headline':a.get('headline'),'text':(a.get('body') or '')[:2200],'chars':len((a.get('body') or '')[:2200]),'image_url':f'/media/render/{aid}.png','status':a.get('status'),'source_url':a.get('source_url'),'image_source':a.get('image_source'),'image_license':a.get('image_license'),'ai_image_suggestion':a.get('ai_image_suggestion') or '','canva_url':design.get('url'),'canva_exported':bool(design.get('exported'))}
+    exported=bool(design.get('exported')) and (RENDER_DIR/f'article_{aid}.png').is_file()
+    return {'id':aid,'section':a.get('section'),'headline':a.get('headline'),'text':(a.get('body') or '')[:2200],'chars':len((a.get('body') or '')[:2200]),'image_url':f'/media/render/{aid}.png' if exported else None,'status':a.get('status'),'source_url':a.get('source_url'),'image_source':a.get('image_source'),'image_license':a.get('image_license'),'ai_image_suggestion':a.get('ai_image_suggestion') or '','canva_url':design.get('url'),'canva_exported':exported}
 @app.put('/api/articles/{aid}',dependencies=[Depends(require_auth)])
 def edit_article(aid:int,body:EditArticle):
     original=db.row('SELECT * FROM articles WHERE id=?',(aid,))
@@ -160,12 +166,10 @@ def edit_article(aid:int,body:EditArticle):
             fields.append('social_text=?'); vals.append(v)
         fields.append(f'{k}=?'); vals.append(v)
     if fields:
-        db.exec_(f"UPDATE articles SET {','.join(fields)},updated_at=CURRENT_TIMESTAMP WHERE id=?",tuple(vals+[aid]))
+        db.exec_(f"UPDATE articles SET {','.join(fields)},render_path=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=?",tuple(vals+[aid]))
         db.exec_('UPDATE canva_designs SET exported=0 WHERE article_id=?',(aid,))
         if original['status']=='approved':
             db.exec_("UPDATE articles SET status='review_ready' WHERE id=?",(aid,))
-    try: renderer.render_article(aid)
-    except Exception as e: db.log('render_error',str(e))
     return db.row('SELECT * FROM articles WHERE id=?',(aid,))
 @app.get('/api/articles/{aid}/photos',dependencies=[Depends(require_auth)])
 def article_photos(aid:int,refresh:bool=False):
@@ -182,10 +186,8 @@ def article_photos(aid:int,refresh:bool=False):
 def choose_photo(aid:int,p:PhotoChoice):
     try: local=photos.download_image(p.url)
     except Exception as e: raise HTTPException(400,'No se pudo descargar la foto: '+str(e))
-    db.exec_("UPDATE articles SET image_url=?,image_source=?,image_license=?,image_local=?,ai_image_suggestion='',status=CASE WHEN status='approved' THEN 'review_ready' ELSE status END WHERE id=?",(p.url,p.source,p.license,local,aid))
+    db.exec_("UPDATE articles SET image_url=?,image_source=?,image_license=?,image_local=?,render_path=NULL,ai_image_suggestion='',status=CASE WHEN status='approved' THEN 'review_ready' ELSE status END WHERE id=?",(p.url,p.source,p.license,local,aid))
     db.exec_('UPDATE canva_designs SET exported=0 WHERE article_id=?',(aid,))
-    try: renderer.render_article(aid)
-    except Exception as e: db.log('render_error',str(e))
     return {'ok':True}
 
 @app.post('/api/articles/{aid}/photo/upload',dependencies=[Depends(require_auth)])
@@ -206,11 +208,9 @@ async def upload_article_photo(aid:int,file:UploadFile=File(...),license:str=For
     except Exception as e: raise HTTPException(400,'No se pudo leer la fotografía: '+str(e))
     selected={'url':'upload:'+dest.stem,'source':source.strip()[:180],'license':license.strip()[:180],
               'author':author.strip()[:120],'kind':'user_upload','publish_safe':True}
-    db.exec_("UPDATE articles SET image_url=?,image_source=?,image_license=?,image_local=?,image_candidates_json=?,status=CASE WHEN status='approved' THEN 'review_ready' ELSE status END,updated_at=CURRENT_TIMESTAMP WHERE id=?",
+    db.exec_("UPDATE articles SET image_url=?,image_source=?,image_license=?,image_local=?,image_candidates_json=?,render_path=NULL,status=CASE WHEN status='approved' THEN 'review_ready' ELSE status END,updated_at=CURRENT_TIMESTAMP WHERE id=?",
              (selected['url'],selected['source'],selected['license'],str(dest),json.dumps([selected]),aid))
     db.exec_('UPDATE canva_designs SET exported=0 WHERE article_id=?',(aid,))
-    try: renderer.render_article(aid)
-    except Exception as e: db.log('render_error',str(e))
     return {'ok':True,'photo':selected}
 @app.post('/api/articles/{aid}/render',dependencies=[Depends(require_auth)])
 def rerender(aid:int):
@@ -218,8 +218,7 @@ def rerender(aid:int):
     if artwork and artwork['exported']:
         p=RENDER_DIR/f'article_{aid}.png'
         if p.is_file(): return {'path':str(p),'url':f'/media/render/{aid}.png'}
-    try: return {'path':renderer.render_article(aid),'url':f'/media/render/{aid}.png'}
-    except Exception as e: raise HTTPException(500,str(e))
+    raise HTTPException(409,'Crea o vuelve a exportar el diseño en Canva antes de obtener el PNG')
 @app.post('/api/articles/{aid}/approve',dependencies=[Depends(require_auth)])
 def approve(aid:int):
     a=db.row('SELECT * FROM articles WHERE id=?',(aid,))
@@ -232,10 +231,9 @@ def approve(aid:int):
     selected=next((p for p in candidates if p.get('url')==a.get('image_url')),None)
     if not selected or not selected.get('publish_safe'):
         raise HTTPException(400,'No se ha verificado el permiso de reutilización de esta fotografía')
-    if canva.ready() and canva.connected():
-        artwork=db.row('SELECT exported FROM canva_designs WHERE article_id=?',(aid,))
-        if not artwork or not artwork['exported']:
-            raise HTTPException(400,'Crea y exporta primero el diseño final con la plantilla de Canva')
+    artwork=db.row('SELECT exported FROM canva_designs WHERE article_id=?',(aid,))
+    if not canva.ready() or not canva.connected() or not artwork or not artwork['exported'] or not (RENDER_DIR/f'article_{aid}.png').is_file():
+        raise HTTPException(400,'Crea y exporta primero el diseño final con la plantilla de Canva')
     db.exec_("UPDATE articles SET status='approved',updated_at=CURRENT_TIMESTAMP WHERE id=?",(aid,))
     return {'ok':True}
 @app.post('/api/articles/{aid}/reject',dependencies=[Depends(require_auth)])
@@ -252,10 +250,9 @@ def publish(aid:int):
     a=db.row('SELECT * FROM articles WHERE id=?',(aid,))
     if not a: raise HTTPException(404)
     if a['status']!='approved': raise HTTPException(400,'Primero debes aprobar la noticia')
-    if canva.ready() and canva.connected():
-        artwork=db.row('SELECT exported FROM canva_designs WHERE article_id=?',(aid,))
-        if not artwork or not artwork['exported']:
-            raise HTTPException(400,'Regenera la imagen final en Canva antes de publicar')
+    artwork=db.row('SELECT exported FROM canva_designs WHERE article_id=?',(aid,))
+    if not canva.ready() or not canva.connected() or not artwork or not artwork['exported'] or not (RENDER_DIR/f'article_{aid}.png').is_file():
+        raise HTTPException(400,'Regenera la imagen final en Canva antes de publicar')
     try:
         url=publishers.publish(a); db.exec_("UPDATE articles SET status='published',publish_url=?,updated_at=CURRENT_TIMESTAMP WHERE id=?",(url,aid)); return {'ok':True,'url':url}
     except Exception as e: raise HTTPException(400,str(e))
@@ -304,43 +301,20 @@ def check_source(sid:int):
     if not db.row('SELECT id FROM sources WHERE id=?',(sid,)): raise HTTPException(404)
     return sources.probe_source(sid)
 @app.get('/api/templates',dependencies=[Depends(require_auth)])
-def list_templates(): return db.rows('SELECT * FROM templates ORDER BY id')
+def list_templates():
+    return [{'id':canva.TEMPLATE_ID,'name':'Plantilla de noticias Canva','format':'4:5','active':bool(canva.ready() and canva.connected()),'type':'canva','url':'https://www.canva.com/brand/brand-templates/'+canva.TEMPLATE_ID}] if canva.TEMPLATE_ID else []
 @app.post('/api/templates/{tid}/activate',dependencies=[Depends(require_auth)])
-def activate_template(tid:int):
-    if not db.row('SELECT id FROM templates WHERE id=?',(tid,)): raise HTTPException(404)
-    c=db.conn()
-    try:
-        c.execute('UPDATE templates SET active=0')
-        c.execute('UPDATE templates SET active=1 WHERE id=?',(tid,))
-        c.commit()
-    finally: c.close()
-    return {'ok':True}
+def activate_template(tid:str):
+    raise HTTPException(410,'La única plantilla es la de Canva; se administra en Canva')
 @app.post('/api/templates/upload',dependencies=[Depends(require_auth)])
-async def upload_template(file:UploadFile=File(...),name:str=Form('Plantilla personalizada')):
-    if not file.filename.lower().endswith('.pptx'): raise HTTPException(400,'Solo PPTX')
-    data=await file.read(20_000_001)
-    if len(data)>20_000_000: raise HTTPException(400,'El PPTX debe pesar menos de 20 MB')
-    try:
-        prs=Presentation(BytesIO(data))
-        if len(prs.slides) not in (1,12): raise ValueError('La plantilla debe tener una diapositiva o 12 variantes')
-        if not all('{{HEADLINE}}' in ' '.join(sh.text for sh in slide.shapes if sh.has_text_frame) for slide in prs.slides):
-            raise ValueError('Cada diapositiva debe incluir el texto {{HEADLINE}}')
-    except Exception as e: raise HTTPException(400,f'Plantilla no válida: {e}')
-    from uuid import uuid4
-    dest=TEMPLATE_DIR/(uuid4().hex+'.pptx'); dest.write_bytes(data)
-    sm={k:(i if len(prs.slides)==12 else 1) for i,k in enumerate(('URBANISMO','CIUDAD','GIBRALTAR','SUCESOS','CULTURA','DEPORTES','COMERCIO','MEDIO AMBIENTE','POLÍTICA','SOCIEDAD','PATRIMONIO','AGENDA'),1)}
-    c=db.conn()
-    try:
-        c.execute('UPDATE templates SET active=0')
-        cur=c.execute('INSERT INTO templates(name,path,format,slide_map_json,active) VALUES(?,?,?,?,1)',(name,str(dest),'4:5',json.dumps(sm,ensure_ascii=False)))
-        c.commit()
-        return {'id':cur.lastrowid,'active':True}
-    finally: c.close()
+async def upload_template():
+    raise HTTPException(410,'Las plantillas se editan en Canva; no se admiten archivos PPTX')
 
 @app.get('/media/render/{aid}.png',dependencies=[Depends(require_auth)])
 def render_file(aid:int):
     p=RENDER_DIR/f'article_{aid}.png'
-    if not p.exists(): raise HTTPException(404)
+    exported=db.row('SELECT exported FROM canva_designs WHERE article_id=?',(aid,))
+    if not p.is_file() or not exported or not exported['exported']: raise HTTPException(404,'Exporta primero el diseño en Canva')
     return FileResponse(p,media_type='image/png',headers={'Cache-Control':'no-store'})
 app.mount('/static',StaticFiles(directory=BASE_DIR/'static'),name='static')
 @app.get('/')

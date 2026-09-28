@@ -17,7 +17,7 @@ os.environ['RENDER_DIR'] = str(Path(_temp.name) / 'renders')
 os.environ['UPLOAD_DIR'] = str(Path(_temp.name) / 'uploads')
 os.environ['TEMPLATE_DIR'] = str(Path(_temp.name) / 'templates')
 
-from app import db, sources, pipeline, canva, main  # noqa: E402
+from app import ai, db, sources, pipeline, canva, main  # noqa: E402
 from fastapi import HTTPException  # noqa: E402
 
 
@@ -97,6 +97,15 @@ class RadarChecks(unittest.TestCase):
             self.assertLessEqual(len(article['body']), 2200)
             self.assertEqual(pipeline.submit_candidate(cid), aid)
             self.assertEqual(db.row('SELECT status FROM articles WHERE id=?', (aid,))['status'], 'review_ready')
+
+    def test_free_draft_preserves_main_fact_when_excerpt_only_gives_context(self):
+        draft = ai.free_draft({'title': 'La Línea inaugura una nueva plaza',
+                               'excerpt': 'Los vecinos asistieron al acto de apertura.',
+                               'source_name': 'Prensa local'})
+        self.assertTrue(draft['body'].startswith('La Línea inaugura una nueva plaza'))
+        self.assertIn('Los vecinos asistieron', draft['body'])
+        self.assertEqual(draft['social_text'], draft['body'])
+        self.assertLessEqual(len(draft['body']), 2200)
 
     def test_only_canva_export_produces_a_visible_image(self):
         cid = sources.add_candidate('Un nuevo espacio cultural abre en La Atunara',

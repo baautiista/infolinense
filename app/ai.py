@@ -74,7 +74,7 @@ def free_draft(candidate, source_text=''):
     # Prefer the short source summary. Page text often contains navigation and
     # other stories; only take a sentence with several headline terms.
     sentences = re.split(r'(?<=[.!?])\s+', text)
-    title_terms = {w.lower() for w in re.findall(r'[\wáéíóúñü]{5,}', title)} - {'línea', 'concepción'}
+    title_terms = {w.lower() for w in re.findall(r'[\wáéíóúñü]{5,}', title)} - {'línea', 'concepción', 'ayuntamiento', 'linense', 'municipal'}
     relevant = next((clip(s, 190) for s in sentences
                      if 45 <= len(s) <= 280 and len(title_terms.intersection(
                          w.lower() for w in re.findall(r'[\wáéíóúñü]{5,}', s))) >= 2
@@ -91,7 +91,10 @@ def free_draft(candidate, source_text=''):
     else:
         credit = f'según publica {source}'
     title_numbers = set(re.findall(r'\d[\d.,]*', title))
-    lead_from_title = not details or bool(title_numbers - set(re.findall(r'\d[\d.,]*', excerpt)))
+    first_terms = {w.lower() for w in re.findall(r'[\wáéíóúñü]{5,}', details[0])} if details else set()
+    shared_terms = len(title_terms.intersection(first_terms))
+    lead_from_title = (not details or bool(title_numbers - set(re.findall(r'\d[\d.,]*', excerpt)))
+                       or shared_terms < min(2, len(title_terms)))
     lead = title if lead_from_title else details[0]
     if lead.casefold().startswith('la línea de la concepción'):
         lead = credit[0].upper() + credit[1:] + ', ' + lead[0].lower() + lead[1:]

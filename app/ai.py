@@ -1,11 +1,30 @@
 import json, re, requests
 from urllib.parse import urlparse
 from bs4 import BeautifulSoup
-from .config import OPENAI_API_KEY, OPENAI_MODEL, OPENAI_WEB_SEARCH
+from .config import (OPENAI_API_KEY, OPENAI_MODEL, OPENAI_WEB_SEARCH,
+                    ANTHROPIC_API_KEY, ANTHROPIC_MODEL, ANTHROPIC_WORKSPACE_ID,
+                    ANTHROPIC_WEB_SEARCH, AI_PROVIDER)
+
+def _configured_provider():
+    if AI_PROVIDER in ('anthropic','claude'):
+        return 'anthropic' if ANTHROPIC_API_KEY else ''
+    if AI_PROVIDER in ('openai','gpt'):
+        return 'openai' if OPENAI_API_KEY else ''
+    # In automatic mode, Claude takes priority when its key is present.
+    if ANTHROPIC_API_KEY: return 'anthropic'
+    if OPENAI_API_KEY: return 'openai'
+    return ''
+
+ACTIVE_PROVIDER = _configured_provider()
+AI_ENABLED = bool(ACTIVE_PROVIDER)
 
 def _extract_text(data):
     if isinstance(data,dict):
         if data.get('output_text'): return data['output_text']
+        # Anthropic Messages API returns text blocks in content.
+        blocks=data.get('content',[])
+        out=[c['text'] for c in blocks if isinstance(c,dict) and c.get('type')=='text' and c.get('text')] if isinstance(blocks,list) else []
+        if out: return '\n'.join(out)
         out=[]
         for item in data.get('output',[]):
             if not isinstance(item,dict): continue
@@ -13,14 +32,55 @@ def _extract_text(data):
                 if isinstance(c,dict) and c.get('text'): out.append(c['text'])
         return '\n'.join(out)
     return ''
-
 def ask(instructions,user_text,web=False):
-    if not OPENAI_API_KEY: raise RuntimeError('OPENAI_API_KEY no configurada')
+    if not AI_ENABLED:
+        raise RuntimeError('No hay una clave de IA configurada en Railway')
+    if ACTIVE_PROVIDER == 'anthropic':
+        payload={
+            'model':ANTHROPIC_MODEL,
+            'max_tokens':3500,
+            'system':instructions,
+            'messages':[{'role':'user','content':user_text}]
+        }
+        if web:
+            if not ANTHROPIC_WEB_SEARCH:
+                raise RuntimeError('La búsqueda web de Claude está desactivada')
+            payload['tools']=[{
+                'type':'web_search_20250305',
+                'name':'web_search',
+                'max_uses':3,
+                'user_location':{
+                    'type':'approximate',
+                    'city':'La Línea de la Concepción',
+                    'region':'Andalucía',
+                    'country':'ES',
+                    'timezone':'Europe/Madrid'
+                }
+            }]
+        headers={
+            'Authorization':f'Bearer {ANTHROPIC_API_KEY}',
+            'anthropic-version':'2023-06-01',
+            'Content-Type':'application/json'
+        }
+        if ANTHROPIC_WORKSPACE_ID:
+            headers['anthropic-workspace-id']=ANTHROPIC_WORKSPACE_ID
+        for turn in range(3):
+            r=requests.post('https://api.anthropic.com/v1/messages',
+                            headers=headers,json=payload,timeout=120)
+            r.raise_for_status()
+            data=r.json()
+            answer=_extract_text(data)
+            if data.get('stop_reason')!='pause_turn':
+                if not answer: raise RuntimeError('Claude no devolvió texto')
+                return answer
+            payload['messages'].append({'role':'assistant','content':data.get('content',[])})
+        raise RuntimeError('Claude dejó la respuesta incompleta; inténtalo de nuevo')
+    if ACTIVE_PROVIDER != 'openai':
+        raise RuntimeError('Proveedor de IA no reconocido')
     payload={'model':OPENAI_MODEL,'instructions':instructions,'input':user_text}
     if web and OPENAI_WEB_SEARCH: payload['tools']=[{'type':'web_search'}]
     r=requests.post('https://api.openai.com/v1/responses',headers={'Authorization':f'Bearer {OPENAI_API_KEY}','Content-Type':'application/json'},json=payload,timeout=120)
     r.raise_for_status(); return _extract_text(r.json())
-
 def json_from_text(t):
     t=t.strip(); t=re.sub(r'^```(?:json)?|```$','',t,flags=re.M).strip()
     try: return json.loads(t)
@@ -32,23 +92,31 @@ def json_from_text(t):
 SYSTEM='''Eres el motor editorial de InfoLinense, medio centrado en La Línea de la Concepción. Redacta en español natural, cercano y periodístico, sin tono de gabinete ni copiar notas de prensa. Estructura: sección, titular útil, subtítulo y cuerpo breve de hasta 2.200 caracteres (el cuerpo es también el texto de redes). Prioriza lo que cambia para los vecinos: fechas, importes, plazos y administración competente, solo si constan en las fuentes. Da contexto local sin inventar hechos. No empieces el cuerpo con «La Línea de la Concepción». No uses emojis, exclamaciones, sensacionalismo ni fórmulas genéricas de IA. Cuando solo existe la fuente original, atribuye los hechos y deja claro en las notas qué falta por contrastar. Devuelve JSON válido sin markdown.'''
 
 def draft(candidate,source_text='',research='',quick=False):
-    if not OPENAI_API_KEY:
+    if not AI_ENABLED:
         return free_draft(candidate, source_text)
     mode='PIEZA RÁPIDA: noticia menos relevante; no hagas investigación extensa, pero no inventes.' if quick else 'PIEZA INVESTIGADA: integra contexto y contraste disponible.'
     prompt=f'''{mode}\nCANDIDATA: {candidate['title']}\nURL: {candidate.get('url','')}\nEXTRACTO: {candidate.get('excerpt','')}\nTEXTO FUENTE: {source_text[:12000]}\nINVESTIGACIÓN: {research[:8000]}\n\nDevuelve exactamente estas claves JSON:\nsection (una de URBANISMO, CIUDAD, GIBRALTAR, SUCESOS, CULTURA, DEPORTES, COMERCIO, MEDIO AMBIENTE, POLÍTICA, SOCIEDAD, PATRIMONIO, AGENDA),\nheadline (titular útil y directo),\nsubtitle (1 frase),\nbody (noticia completa, máximo 2200 caracteres),\nsocial_text (texto completo para redes, NO copy corto, máximo 2200 caracteres),\ngraphic_summary (máximo 180 caracteres, 2-3 líneas para la plantilla),\nai_image_suggestion (vacío si hay una fotografía real razonable; si no, explica qué recreación podría ser útil, sin generarla).'''
     return json_from_text(ask(SYSTEM,prompt,web=False))
 
-def research(candidate,source_text=''):
-    if not OPENAI_API_KEY:
-        excerpt = BeautifulSoup(candidate.get('excerpt') or '', 'html.parser').get_text(' ', strip=True)
-        excerpt = re.sub(r'\s+', ' ', excerpt)[:350]
-        facts = [excerpt] if excerpt and excerpt.casefold() != (candidate.get('title') or '').casefold() else []
-        return {'facts': facts, 'context': [],
-                'sources': [{'name': candidate.get('source_name') or urlparse(candidate.get('url') or '').netloc or 'Fuente original', 'url': candidate.get('url') or ''}],
-                'caveats': ['Extracto de la fuente original, sin contraste independiente. Comprobar fechas, cifras y contexto antes de publicar.']}
-    prompt=f'''Investiga y contrasta esta posible noticia exclusivamente en relación con La Línea de la Concepción. Busca fuentes públicas actuales, dando prioridad a fuentes oficiales y documentos. No redactes aún la noticia. Devuelve JSON con: facts (lista), context (lista), sources (lista de objetos name,url), caveats (lista).\nTEMA: {candidate['title']}\nURL INICIAL: {candidate.get('url','')}\nTEXTO INICIAL: {source_text[:9000]}'''
-    return json_from_text(ask(SYSTEM,prompt,web=True))
+def _source_research(candidate,source_text=''):
+    excerpt = BeautifulSoup(candidate.get('excerpt') or '', 'html.parser').get_text(' ', strip=True)
+    excerpt = re.sub(r'\s+', ' ', excerpt)[:350]
+    facts = [excerpt] if excerpt and excerpt.casefold() != (candidate.get('title') or '').casefold() else []
+    return {'facts': facts, 'context': [],
+            'sources': [{'name': candidate.get('source_name') or urlparse(candidate.get('url') or '').netloc or 'Fuente original', 'url': candidate.get('url') or ''}],
+            'caveats': ['Extracto de la fuente original, sin contraste independiente. Comprobar fechas, cifras y contexto antes de publicar.']}
 
+def research(candidate,source_text=''):
+    if not AI_ENABLED:
+        return _source_research(candidate,source_text)
+    # Keep investigation on the original source unless Claude web search is explicitly enabled.
+    if ACTIVE_PROVIDER == 'anthropic' and not ANTHROPIC_WEB_SEARCH:
+        return _source_research(candidate,source_text)
+    prompt=f'''Investiga y contrasta esta posible noticia exclusivamente en relación con La Línea de la Concepción. Busca fuentes públicas actuales, dando prioridad a fuentes oficiales y documentos. No redactes aún la noticia. Devuelve JSON con: facts (lista), context (lista), sources (lista de objetos name,url), caveats (lista).
+TEMA: {candidate['title']}
+URL INICIAL: {candidate.get('url','')}
+TEXTO INICIAL: {source_text[:9000]}'''
+    return json_from_text(ask(SYSTEM,prompt,web=True))
 def free_draft(candidate, source_text=''):
     """Prepare an editable, source-attributed news draft without claiming verification."""
     def tidy(value):

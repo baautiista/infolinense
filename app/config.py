@@ -11,6 +11,12 @@ DB_PATH = Path(os.getenv('DB_PATH', str(DATA_DIR / 'infolinense.db')))
 OPENAI_API_KEY = os.getenv('OPENAI_API_KEY','').strip()
 OPENAI_MODEL = os.getenv('OPENAI_MODEL','gpt-5.6-luna').strip()
 OPENAI_WEB_SEARCH = os.getenv('OPENAI_WEB_SEARCH','true').lower() in {'1','true','yes','on'}
+# Claude API credentials remain server-side in Railway; never expose them to the browser.
+ANTHROPIC_API_KEY = os.getenv('ANTHROPIC_API_KEY','').strip()
+ANTHROPIC_MODEL = os.getenv('ANTHROPIC_MODEL','claude-sonnet-5-5').strip()
+ANTHROPIC_WORKSPACE_ID = os.getenv('ANTHROPIC_WORKSPACE_ID','').strip()
+ANTHROPIC_WEB_SEARCH = os.getenv('ANTHROPIC_WEB_SEARCH','false').lower() in {'1','true','yes','on'}
+AI_PROVIDER = os.getenv('AI_PROVIDER','auto').strip().lower()
 SCAN_INTERVAL_MINUTES = int(os.getenv('SCAN_INTERVAL_MINUTES','60'))
 MAX_CANDIDATE_AGE_DAYS = int(os.getenv('MAX_CANDIDATE_AGE_DAYS','3'))
 AUTO_DRAFTS_PER_SCAN = int(os.getenv('AUTO_DRAFTS_PER_SCAN','4'))

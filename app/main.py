@@ -9,11 +9,11 @@ from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from . import db, sources, pipeline, publishers, photos, canva
+from . import db, sources, pipeline, publishers, photos, canva, ai
 from .auth import login, require_auth
 from .config import BASE_DIR, RENDER_DIR, UPLOAD_DIR, SCAN_INTERVAL_MINUTES, AUTO_PIPELINE, OPENAI_API_KEY, ADMIN_PASSWORD, JWT_SECRET, PUBLISH_MODE, CORS_ORIGINS, PUBLIC_BASE_URL
 
-app=FastAPI(title='InfoLinense Desk',version='2.2.0')
+app=FastAPI(title='InfoLinense Desk',version='2.3.0')
 app.add_middleware(CORSMiddleware,allow_origins=CORS_ORIGINS,allow_credentials=False,allow_methods=['*'],allow_headers=['Authorization','Content-Type'])
 db.init_db()
 
@@ -33,10 +33,10 @@ class PhotoChoice(BaseModel): url:str; source:str=''; license:str=''; author:str
 def auth_login(body:LoginIn): return {'token':login(body.password)}
 @app.get('/api/health')
 def health():
-    return {'ok':True,'version':'2.2.0','auth_configured':bool(ADMIN_PASSWORD and JWT_SECRET),'openai_configured':bool(OPENAI_API_KEY),'draft_mode':'ai' if OPENAI_API_KEY else 'source_draft','publish_mode':PUBLISH_MODE}
+    return {'ok':True,'version':'2.3.0','auth_configured':bool(ADMIN_PASSWORD and JWT_SECRET),'openai_configured':bool(OPENAI_API_KEY),'claude_configured':bool(ai.ANTHROPIC_API_KEY),'ai_configured':ai.AI_ENABLED,'ai_provider':ai.ACTIVE_PROVIDER or None,'draft_mode':'ai' if ai.AI_ENABLED else 'source_draft','publish_mode':PUBLISH_MODE}
 @app.get('/api/capabilities',dependencies=[Depends(require_auth)])
 def capabilities():
-    return {'real_photo_only':True,'ai_image_generation':False,'max_social_chars':2200,'auto_pipeline':AUTO_PIPELINE,'public_base_url':PUBLIC_BASE_URL,'canva_configured':canva.ready(),'canva_connected':canva.connected(),'canva_redirect_uri':canva.callback_url(),'primary_template':'canva' if canva.ready() and canva.connected() else 'unavailable','canva_template_url':'https://www.canva.com/brand/brand-templates/'+canva.TEMPLATE_ID if canva.TEMPLATE_ID else None}
+    return {'real_photo_only':True,'ai_image_generation':False,'max_social_chars':2200,'ai_configured':ai.AI_ENABLED,'ai_provider':ai.ACTIVE_PROVIDER or None,'auto_pipeline':AUTO_PIPELINE,'public_base_url':PUBLIC_BASE_URL,'canva_configured':canva.ready(),'canva_connected':canva.connected(),'canva_redirect_uri':canva.callback_url(),'primary_template':'canva' if canva.ready() and canva.connected() else 'unavailable','canva_template_url':'https://www.canva.com/brand/brand-templates/'+canva.TEMPLATE_ID if canva.TEMPLATE_ID else None}
 
 @app.get('/api/canva/connect',dependencies=[Depends(require_auth)])
 def connect_canva():

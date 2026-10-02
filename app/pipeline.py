@@ -34,7 +34,7 @@ def draft_candidate(cid):
         cid,draft.get('section','CIUDAD'),draft.get('headline',''),draft.get('subtitle',''),draft.get('body','')[:2200],draft.get('body','')[:2200],draft.get('graphic_summary','')[:240],
         json.dumps(research_data,ensure_ascii=False),json.dumps((research_data or {}).get('sources',[]),ensure_ascii=False),
         chosen.get('url','') if chosen else '',chosen.get('source','') if chosen else '',chosen.get('license','') if chosen else '',local,json.dumps(image_candidates,ensure_ascii=False),
-        draft.get('ai_image_suggestion','') if not chosen else '',None,'source_draft' if not ai.OPENAI_API_KEY else ('quick' if quick else 'researched'),'draft'))
+        draft.get('ai_image_suggestion','') if not chosen else '',None,'source_draft' if not ai.AI_ENABLED else ('quick' if quick else 'researched'),'draft'))
     db.exec_('UPDATE candidates SET status=?,section=? WHERE id=?',('draft',draft.get('section','CIUDAD'),cid))
     db.log('pipeline',f'Candidata {cid} -> borrador')
     return aid

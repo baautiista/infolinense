@@ -1,4 +1,4 @@
-# InfoLinense Desk 2.2 — despliegue
+# InfoLinense Desk 2.3 — despliegue
 
 El backend FastAPI corre en Railway y el panel editorial de Lovable consume la misma API. El flujo gráfico usa exclusivamente la plantilla de marca de Canva `EAHWTjWEEnA`; la imagen final procede de su exportación PNG.
 
@@ -6,13 +6,15 @@ El backend FastAPI corre en Railway y el panel editorial de Lovable consume la m
 
 - Railway: cuenta y proyecto con un servicio Docker para este directorio.
 - Una contraseña nueva y larga para `ADMIN_PASSWORD` y una cadena aleatoria distinta para `JWT_SECRET` (por ejemplo, `python3 -c 'import secrets; print(secrets.token_urlsafe(48))'`). No uses los valores de ejemplo.
-- Sin `OPENAI_API_KEY` la aplicación prepara un borrador breve, estructurado como sección, titular, subtítulo y cuerpo, a partir de la fuente original. El cuerpo también sirve de texto para redes y tiene un máximo de 2.200 caracteres. El modo gratuito usa reglas de extracción, sin modelo de IA ni contraste independiente; verifica los datos y corrige la redacción antes de publicar. La clave es opcional para investigación y redacción con API de pago.
+- Sin claves de IA, la aplicación prepara un borrador breve desde la fuente original, sin contraste independiente. Con `ANTHROPIC_API_KEY`, usa Claude Sonnet 5.5 para redactar al pulsar «Redactar»; si también existe una clave OpenAI, Claude tiene prioridad con `AI_PROVIDER=auto`. La clave se guarda en Railway y el uso de la API se factura aparte de Claude Pro. Claude no realiza búsquedas web por defecto; estas solo se activan poniendo `ANTHROPIC_WEB_SEARCH=true` y pueden sumar coste. Revisa fechas, cifras y fuentes antes de publicar.
 - El proyecto de Lovable se crea **desde el prompt**, porque Lovable no importa repositorios existentes. `lovable/PROMPT_LOVABLE.md` describe el frontend y `lovable/API_INTEGRATION.md` los contratos de API.
 
 ## Despliegue Railway
 
+- Añade en Variables de Railway `ANTHROPIC_API_KEY` con la clave creada en Claude Console. Al reiniciar, `/api/health` mostrará `ai_provider=anthropic` y `draft_mode=ai`. No guardes la clave en GitHub ni en el código.
+
 1. Crea un proyecto y un servicio vacío desde la interfaz de Railway o enlázalo con la CLI (`railway init` y `railway add --service infolinense-desk`). Despliega la carpeta raíz con `railway up`. `railway.toml` usa el Dockerfile y comprueba `/api/health`.
-2. Añade un volumen persistente montado en `/data`. Configura las variables del servicio siguiendo `.env.example`: `DATA_DIR=/data`, `DB_PATH=/data/infolinense.db`, `UPLOAD_DIR=/data/uploads`, `RENDER_DIR=/data/renders`, `ADMIN_PASSWORD`, `JWT_SECRET`, y opcionalmente `OPENAI_API_KEY`. Configura también `CANVA_CLIENT_ID`, `CANVA_CLIENT_SECRET`, `CANVA_BRAND_TEMPLATE_ID=EAHWTjWEEnA` y `PUBLIC_BASE_URL`. Mantén `PUBLISH_MODE=none` hasta conectar el destino real de publicación.
+2. Añade un volumen persistente montado en `/data`. Configura las variables del servicio siguiendo `.env.example`: `DATA_DIR=/data`, `DB_PATH=/data/infolinense.db`, `UPLOAD_DIR=/data/uploads`, `RENDER_DIR=/data/renders`, `ADMIN_PASSWORD`, `JWT_SECRET`, y opcionalmente `OPENAI_API_KEY` o `ANTHROPIC_API_KEY`. Configura también `CANVA_CLIENT_ID`, `CANVA_CLIENT_SECRET`, `CANVA_BRAND_TEMPLATE_ID=EAHWTjWEEnA` y `PUBLIC_BASE_URL`. Mantén `PUBLISH_MODE=none` hasta conectar el destino real de publicación.
 3. Genera un dominio público HTTPS para el servicio. Comprueba `https://<dominio>/api/health`: `ok` y `auth_configured` deben ser `true`; `draft_mode=source_draft` indica borrador gratuito a partir de la fuente y `draft_mode=ai` indica redacción con API de pago. La raíz `/` abre el panel privado de reserva.
 4. Mantén una sola réplica si usas SQLite y el programador integrado. No adjuntes un segundo servicio con el mismo escáner a la misma base de datos.
 

@@ -9,7 +9,7 @@ UPLOAD_DIR = Path(os.getenv('UPLOAD_DIR', str(BASE_DIR / 'uploads')))
 TEMPLATE_DIR = Path(os.getenv('TEMPLATE_DIR', str(BASE_DIR / 'templates')))
 DB_PATH = Path(os.getenv('DB_PATH', str(DATA_DIR / 'infolinense.db')))
 OPENAI_API_KEY = os.getenv('OPENAI_API_KEY','').strip()
-OPENAI_MODEL = os.getenv('OPENAI_MODEL','gpt-5.6-luna').strip()
+OPENAI_MODEL = os.getenv('OPENAI_MODEL','gpt-5.1').strip()
 OPENAI_WEB_SEARCH = os.getenv('OPENAI_WEB_SEARCH','true').lower() in {'1','true','yes','on'}
 # Claude API credentials remain server-side in Railway; never expose them to the browser.
 ANTHROPIC_API_KEY = os.getenv('ANTHROPIC_API_KEY','').strip()

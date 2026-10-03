@@ -168,17 +168,18 @@ def is_duplicate(title, url):
         if difflib.SequenceMatcher(None, normalized, prior).ratio() > 0.90: return True
     return False
 
-def add_candidate(title, url, excerpt, source_name, source_id=None, published_at='', source_meta=None):
+def add_candidate(title, url, excerpt, source_name, source_id=None, published_at='', source_meta=None, local_angle=''):
     source_meta = source_meta or {'priority': 60, 'official': 0, 'local_scope': 0}
     title, excerpt = clean(title)[:260], clean(excerpt)[:1000]
+    local_angle = clean(local_angle)[:800]
     if not title or not url or not recent_enough(published_at): return None
-    if not exact_locality(title + ' ' + excerpt) and not source_meta.get('local_scope'): return None
+    if not exact_locality(title + ' ' + excerpt + ' ' + local_angle) and not source_meta.get('local_scope'): return None
     if is_duplicate(title, url): return None
-    score = heuristic_score(title, excerpt, source_meta)
+    score = heuristic_score(title, excerpt + ' ' + local_angle, source_meta)
     relevance = 'low' if score < 50 else ('medium' if score < 70 else 'high')
-    return db.exec_('''INSERT OR IGNORE INTO candidates(source_id,source_name,title,url,published_at,excerpt,score,relevance,status)
-                       VALUES(?,?,?,?,?,?,?,?,?)''',
-                    (source_id, source_name, title, url, published_at, excerpt, score, relevance, 'new'))
+    return db.exec_('''INSERT OR IGNORE INTO candidates(source_id,source_name,title,url,published_at,excerpt,score,relevance,status,local_angle)
+                       VALUES(?,?,?,?,?,?,?,?,?,?)''',
+                    (source_id, source_name, title, url, published_at, excerpt, score, relevance, 'new', local_angle))
 
 def read_source(source):
     if source['kind'] == 'rss': return parse_rss(source)
@@ -242,7 +243,7 @@ def scan_all():
                             'official': bool(item.get('official')), 'local_scope': False}
                     cid = add_candidate(item.get('title', ''), item.get('url', ''),
                                         item.get('excerpt', ''), item.get('source_name', 'Web'),
-                                        None, '', meta)
+                                        None, '', meta, item.get('local_angle', ''))
                     if cid: added.append(cid)
             except Exception as exc: errors.append('Descubrimiento web IA: ' + str(exc)[:250])
         db.log('scan', f'Escaneo: {len(added)} nuevas; {len(errors)} errores')

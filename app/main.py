@@ -110,6 +110,7 @@ def candidates(status:str='new'):
 @app.post('/api/candidates/{cid}/investigate',dependencies=[Depends(require_auth)])
 def investigate(cid:int):
     try: return {'ok':True,'research':pipeline.investigate_candidate(cid)}
+    except ai.AIProviderError as e: raise HTTPException(502,str(e)) from e
     except ValueError as e: raise HTTPException(400,str(e))
     except RuntimeError as e: raise HTTPException(404,str(e))
 @app.post('/api/candidates/{cid}/draft',dependencies=[Depends(require_auth)])

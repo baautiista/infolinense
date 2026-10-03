@@ -18,6 +18,38 @@ def _configured_provider():
 ACTIVE_PROVIDER = _configured_provider()
 AI_ENABLED = bool(ACTIVE_PROVIDER)
 
+class AIProviderError(RuntimeError):
+    """An AI provider rejected a request; safe to surface to the authenticated editor."""
+
+def _check_anthropic_response(response):
+    if response.ok:
+        return
+    try:
+        payload = response.json()
+    except Exception:
+        payload = {}
+    error = payload.get('error', {}) if isinstance(payload, dict) else {}
+    message = error.get('message', '') if isinstance(error, dict) else ''
+    message = re.sub(r'sk-ant-[A-Za-z0-9_-]+', '[clave oculta]', str(message))[:300]
+    lower = message.lower()
+    status = response.status_code
+
+    if status == 400 and any(term in lower for term in ('spend limit', 'spending limit', 'usage limit', 'budget limit', 'monthly limit')):
+        detail = 'Anthropic ha bloqueado la petición por un límite de gasto. Revisa los límites y la facturación de tu cuenta API.'
+    elif 'workspace' in lower and ('required' in lower or 'id' in lower):
+        detail = 'Anthropic pide el ID del espacio de trabajo. Añade ANTHROPIC_WORKSPACE_ID en las variables de Railway.'
+    elif status in (401, 403):
+        detail = 'Anthropic no acepta la clave API. Comprueba en Railway que ANTHROPIC_API_KEY sea una clave activa de Anthropic Console.'
+    elif status == 402:
+        detail = 'La cuenta API de Anthropic tiene un problema de facturación. Revisa Billing en Anthropic Console.'
+    elif status == 429:
+        detail = 'Anthropic ha limitado temporalmente las peticiones. Espera unos minutos y vuelve a intentarlo.'
+    else:
+        detail = f'Claude rechazó la solicitud (HTTP {status})'
+        if message:
+            detail += f': {message}'
+    raise AIProviderError(detail)
+
 def _extract_text(data):
     if isinstance(data,dict):
         if data.get('output_text'): return data['output_text']
@@ -67,7 +99,7 @@ def ask(instructions,user_text,web=False):
         for turn in range(3):
             r=requests.post('https://api.anthropic.com/v1/messages',
                             headers=headers,json=payload,timeout=120)
-            r.raise_for_status()
+            _check_anthropic_response(r)
             data=r.json()
             answer=_extract_text(data)
             if data.get('stop_reason')!='pause_turn':

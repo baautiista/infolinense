@@ -22,7 +22,10 @@ def init_db():
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       source_id INTEGER, source_name TEXT, title TEXT NOT NULL, url TEXT, published_at TEXT,
       excerpt TEXT, raw_text TEXT, research_json TEXT, score INTEGER DEFAULT 0, relevance TEXT DEFAULT 'pending',
-      status TEXT DEFAULT 'new', section TEXT, reason TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+      status TEXT DEFAULT 'new', section TEXT, reason TEXT,
+      editorial_priority TEXT NOT NULL DEFAULT 'undecided', planned_at TEXT,
+      plan_locked INTEGER NOT NULL DEFAULT 0, plan_reason TEXT, local_angle TEXT,
+      created_at TEXT DEFAULT CURRENT_TIMESTAMP,
       UNIQUE(url)
     );
     CREATE TABLE IF NOT EXISTS articles(
@@ -30,7 +33,8 @@ def init_db():
       candidate_id INTEGER UNIQUE, section TEXT, headline TEXT, subtitle TEXT, body TEXT,
       social_text TEXT, graphic_summary TEXT, research_notes TEXT, sources_json TEXT,
       image_url TEXT, image_source TEXT, image_license TEXT, image_local TEXT, image_candidates_json TEXT,
-      ai_image_suggestion TEXT, template_id INTEGER, render_path TEXT, workflow TEXT DEFAULT 'normal',
+      ai_image_suggestion TEXT, carousel_suitable INTEGER NOT NULL DEFAULT 0, carousel_reason TEXT,
+      carousel_json TEXT, template_id INTEGER, render_path TEXT, workflow TEXT DEFAULT 'normal',
       status TEXT DEFAULT 'draft', publish_url TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP,
       updated_at TEXT DEFAULT CURRENT_TIMESTAMP
     );
@@ -56,6 +60,12 @@ def init_db():
       exported INTEGER NOT NULL DEFAULT 0, content_hash TEXT,
       updated_at TEXT DEFAULT CURRENT_TIMESTAMP
     );
+    CREATE TABLE IF NOT EXISTS carousel_designs(
+      article_id INTEGER NOT NULL, slide_index INTEGER NOT NULL,
+      design_id TEXT NOT NULL, url TEXT NOT NULL, exported INTEGER NOT NULL DEFAULT 0,
+      content_hash TEXT, image_url TEXT, image_source TEXT, image_license TEXT,
+      updated_at TEXT DEFAULT CURRENT_TIMESTAMP, PRIMARY KEY(article_id,slide_index)
+    );
     ''')
     # Railway keeps the SQLite volume between deployments.
     existing={r[1] for r in c.execute('PRAGMA table_info(sources)')}
@@ -67,6 +77,22 @@ def init_db():
         if name not in existing: c.execute(f'ALTER TABLE sources ADD COLUMN {name} {ddl}')
     if 'research_json' not in {r[1] for r in c.execute('PRAGMA table_info(candidates)')}:
         c.execute('ALTER TABLE candidates ADD COLUMN research_json TEXT')
+    existing_candidates={r[1] for r in c.execute('PRAGMA table_info(candidates)')}
+    for name,ddl in {
+        'editorial_priority':"TEXT NOT NULL DEFAULT 'undecided'",
+        'planned_at':'TEXT',
+        'plan_locked':'INTEGER NOT NULL DEFAULT 0',
+        'plan_reason':'TEXT',
+        'local_angle':'TEXT'
+    }.items():
+        if name not in existing_candidates: c.execute(f'ALTER TABLE candidates ADD COLUMN {name} {ddl}')
+    existing_articles={r[1] for r in c.execute('PRAGMA table_info(articles)')}
+    for name,ddl in {
+        'carousel_suitable':'INTEGER NOT NULL DEFAULT 0',
+        'carousel_reason':'TEXT',
+        'carousel_json':'TEXT'
+    }.items():
+        if name not in existing_articles: c.execute(f'ALTER TABLE articles ADD COLUMN {name} {ddl}')
     if 'content_hash' not in {r[1] for r in c.execute('PRAGMA table_info(canva_designs)')}:
         c.execute('ALTER TABLE canva_designs ADD COLUMN content_hash TEXT')
     # Earlier releases could replace a Canva PNG on disk with a PPTX render.

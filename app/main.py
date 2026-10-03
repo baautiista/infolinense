@@ -1,4 +1,4 @@
-import os, json, threading, time, ipaddress
+import os, json, threading, time, ipaddress, zipfile
 from datetime import datetime, timezone
 from urllib.parse import urlparse
 from zoneinfo import ZoneInfo
@@ -9,7 +9,7 @@ from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from . import db, sources, pipeline, publishers, photos, canva, ai
+from . import db, sources, pipeline, publishers, photos, canva, ai, planner
 from .auth import login, require_auth
 from .config import BASE_DIR, RENDER_DIR, UPLOAD_DIR, SCAN_INTERVAL_MINUTES, AUTO_PIPELINE, OPENAI_API_KEY, ADMIN_PASSWORD, JWT_SECRET, PUBLISH_MODE, CORS_ORIGINS, PUBLIC_BASE_URL
 
@@ -28,15 +28,18 @@ class SourceIn(BaseModel):
 class EditArticle(BaseModel):
     section:str|None=None; headline:str|None=None; subtitle:str|None=None; body:str|None=None; graphic_summary:str|None=None
 class PhotoChoice(BaseModel): url:str; source:str=''; license:str=''; author:str=''
+class TriageIn(BaseModel): priority:str; planned_at:str|None=None
+class CarouselPhoto(BaseModel): url:str; source:str=''; license:str=''; author:str=''; publish_safe:bool=False
+class CarouselDesignIn(BaseModel): photo_urls:list[str]
 
 @app.post('/api/auth/login')
 def auth_login(body:LoginIn): return {'token':login(body.password)}
 @app.get('/api/health')
 def health():
-    return {'ok':True,'version':'2.3.0','auth_configured':bool(ADMIN_PASSWORD and JWT_SECRET),'openai_configured':bool(OPENAI_API_KEY),'claude_configured':bool(ai.ANTHROPIC_API_KEY),'ai_configured':ai.AI_ENABLED,'ai_provider':ai.ACTIVE_PROVIDER or None,'draft_mode':'ai' if ai.AI_ENABLED else 'source_draft','publish_mode':PUBLISH_MODE}
+    return {'ok':True,'version':'2.3.0','auth_configured':bool(ADMIN_PASSWORD and JWT_SECRET),'openai_configured':bool(OPENAI_API_KEY),'claude_configured':bool(ai.ANTHROPIC_API_KEY),'ai_configured':ai.AI_ENABLED,'ai_provider':ai.ACTIVE_PROVIDER or None,'draft_provider':'openai' if OPENAI_API_KEY else 'source_draft','draft_mode':'ai' if OPENAI_API_KEY else 'source_draft','publish_mode':PUBLISH_MODE}
 @app.get('/api/capabilities',dependencies=[Depends(require_auth)])
 def capabilities():
-    return {'real_photo_only':True,'ai_image_generation':False,'max_social_chars':2200,'ai_configured':ai.AI_ENABLED,'ai_provider':ai.ACTIVE_PROVIDER or None,'auto_pipeline':AUTO_PIPELINE,'public_base_url':PUBLIC_BASE_URL,'canva_configured':canva.ready(),'canva_connected':canva.connected(),'canva_redirect_uri':canva.callback_url(),'primary_template':'canva' if canva.ready() and canva.connected() else 'unavailable','canva_template_url':'https://www.canva.com/brand/brand-templates/'+canva.TEMPLATE_ID if canva.TEMPLATE_ID else None}
+    return {'real_photo_only':True,'ai_image_generation':False,'max_social_chars':2200,'ai_configured':ai.AI_ENABLED,'ai_provider':ai.ACTIVE_PROVIDER or None,'draft_provider':'openai' if OPENAI_API_KEY else 'source_draft','auto_pipeline':AUTO_PIPELINE,'public_base_url':PUBLIC_BASE_URL,'canva_configured':canva.ready(),'canva_connected':canva.connected(),'canva_redirect_uri':canva.callback_url(),'primary_template':'canva' if canva.ready() and canva.connected() else 'unavailable','canva_template_url':'https://www.canva.com/brand/brand-templates/'+canva.TEMPLATE_ID if canva.TEMPLATE_ID else None}
 
 @app.get('/api/canva/connect',dependencies=[Depends(require_auth)])
 def connect_canva():
@@ -100,13 +103,49 @@ def radar_stats():
 @app.post('/api/scan',dependencies=[Depends(require_auth)])
 def scan():
     r=sources.scan_all()
-    if AUTO_PIPELINE and not r.get('busy'): r['pipeline']=pipeline.auto_process(r['added'])
+    if not r.get('busy'):
+        if AUTO_PIPELINE: r['pipeline']=pipeline.auto_process(r['added'])
+        try: planner.rebuild_schedule()
+        except Exception as e: db.log('schedule_error',str(e)[:250])
     return r
+@app.get('/api/schedule',dependencies=[Depends(require_auth)])
+def schedule():
+    return planner.get_schedule()
+
+@app.post('/api/schedule/rebuild',dependencies=[Depends(require_auth)])
+def schedule_rebuild():
+    return planner.rebuild_schedule()
+
+@app.post('/api/candidates/{cid}/triage',dependencies=[Depends(require_auth)])
+def triage_candidate(cid:int,body:TriageIn):
+    priority=body.priority.strip().lower()
+    allowed={'urgent','today','this_week','future','no_interest'}
+    if priority not in allowed: raise HTTPException(400,'Elige Urgente, Hoy, Esta semana, Futuro o No me interesa')
+    if not db.row('SELECT id FROM candidates WHERE id=?',(cid,)): raise HTTPException(404,'Noticia no encontrada')
+    planned=None; locked=0
+    if body.planned_at:
+        try:
+            planned_dt=datetime.fromisoformat(body.planned_at.replace('Z','+00:00'))
+            if planned_dt.tzinfo is None: planned_dt=planned_dt.replace(tzinfo=ZoneInfo('Europe/Madrid'))
+            planned=planned_dt.astimezone(ZoneInfo('Europe/Madrid')).isoformat(timespec='minutes')
+            locked=1
+        except ValueError: raise HTTPException(400,'La hora debe tener formato ISO 8601')
+    if priority=='no_interest':
+        db.exec_("UPDATE candidates SET editorial_priority=?,planned_at=NULL,plan_locked=0,plan_reason=NULL,status='archived' WHERE id=?",(priority,cid))
+        db.exec_("UPDATE articles SET status='rejected' WHERE candidate_id=? AND status='draft'",(cid,))
+    else:
+        db.exec_("UPDATE candidates SET editorial_priority=?,planned_at=?,plan_locked=?,plan_reason=NULL,status=CASE WHEN status='archived' THEN 'new' ELSE status END WHERE id=?",(priority,planned,locked,cid))
+    planner.rebuild_schedule()
+    return db.row('SELECT * FROM candidates WHERE id=?',(cid,))
+
 @app.get('/api/candidates',dependencies=[Depends(require_auth)])
 def candidates(status:str='new'):
+    base="""SELECT c.*,s.kind AS source_kind,s.official AS source_official,
+                    s.local_scope AS source_local_scope
+             FROM candidates c LEFT JOIN sources s ON s.id=c.source_id"""
     if status=='pending':
-        return db.rows("SELECT * FROM candidates WHERE status IN ('new','researched','draft') ORDER BY score DESC,id DESC")
-    return db.rows('SELECT * FROM candidates WHERE status=? ORDER BY score DESC,id DESC',(status,))
+        return db.rows(base+" WHERE c.status IN ('new','researched','draft') ORDER BY c.score DESC,c.id DESC")
+    return db.rows(base+' WHERE c.status=? ORDER BY c.score DESC,c.id DESC')
 @app.post('/api/candidates/{cid}/investigate',dependencies=[Depends(require_auth)])
 def investigate(cid:int):
     try: return {'ok':True,'research':pipeline.investigate_candidate(cid)}
@@ -118,8 +157,10 @@ def draft_candidate(cid:int):
     try:
         aid=pipeline.draft_candidate(cid)
         return db.row('SELECT * FROM articles WHERE id=?',(aid,))
+    except ai.AIProviderError as e: raise HTTPException(503,str(e)) from e
     except ValueError as e: raise HTTPException(400,str(e))
     except RuntimeError as e: raise HTTPException(404,str(e))
+
 @app.get('/api/candidates/{cid}/draft',dependencies=[Depends(require_auth)])
 def get_candidate_draft(cid:int):
     a=db.row("SELECT * FROM articles WHERE candidate_id=? AND status='draft'",(cid,))
@@ -150,6 +191,79 @@ def article(aid:int):
     a=db.row('SELECT a.*,c.url source_url,c.score,c.source_name FROM articles a LEFT JOIN candidates c ON c.id=a.candidate_id WHERE a.id=?',(aid,))
     if not a: raise HTTPException(404)
     return a
+@app.get('/api/articles/{aid}/carousel',dependencies=[Depends(require_auth)])
+def get_carousel(aid:int):
+    a=db.row('SELECT * FROM articles WHERE id=?',(aid,))
+    if not a: raise HTTPException(404,'Noticia no encontrada')
+    try: data=json.loads(a.get('carousel_json') or '{}')
+    except Exception: data={}
+    designs=db.rows('SELECT slide_index,design_id,url,exported,image_url,image_source,image_license FROM carousel_designs WHERE article_id=? ORDER BY slide_index',(aid,))
+    data.update({'article_id':aid,'carousel_suitable':bool(a.get('carousel_suitable')),'carousel_reason':a.get('carousel_reason') or '',
+                 'designs':designs,'download_url':'/api/articles/%s/carousel/download' % aid if designs else None})
+    return data
+
+@app.post('/api/articles/{aid}/headlines',dependencies=[Depends(require_auth)])
+def alternate_headlines(aid:int):
+    a=db.row('SELECT * FROM articles WHERE id=?',(aid,))
+    if not a: raise HTTPException(404,'Noticia no encontrada')
+    try: return {'headlines':ai.alternate_headlines(a)}
+    except ai.AIProviderError as e: raise HTTPException(503,str(e)) from e
+
+@app.post('/api/articles/{aid}/carousel',dependencies=[Depends(require_auth)])
+def generate_carousel(aid:int):
+    a=db.row('SELECT * FROM articles WHERE id=?',(aid,))
+    if not a: raise HTTPException(404,'Noticia no encontrada')
+    try:
+        result=ai.generate_carousel(a)
+        db.exec_('UPDATE articles SET carousel_suitable=?,carousel_reason=?,carousel_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=?',
+                 (int(result['suitable']),result['reason'],json.dumps(result,ensure_ascii=False),aid))
+        return result
+    except ai.AIProviderError as e: raise HTTPException(503,str(e)) from e
+
+@app.post('/api/articles/{aid}/carousel/design',dependencies=[Depends(require_auth)])
+def design_carousel(aid:int,body:CarouselDesignIn):
+    a=db.row('SELECT * FROM articles WHERE id=?',(aid,))
+    if not a: raise HTTPException(404,'Noticia no encontrada')
+    try: data=json.loads(a.get('carousel_json') or '{}')
+    except Exception: data={}
+    slides=data.get('slides') or []
+    if not data.get('suitable') or not slides: raise HTTPException(400,'Primero analiza y crea el texto del carrusel')
+    try: candidates=json.loads(a.get('image_candidates_json') or '[]')
+    except Exception: candidates=[]
+    by_url={item.get('url'):item for item in candidates if isinstance(item,dict)}
+    if not 1<=len(body.photo_urls)<=6: raise HTTPException(400,'Selecciona entre una y seis fotos autorizadas')
+    selected=[]
+    for url in body.photo_urls:
+        photo=by_url.get(url)
+        if not photo or not photo.get('publish_safe'): raise HTTPException(400,'Cada foto debe tener permiso de reutilización verificado')
+        selected.append(photo)
+    try: return canva.create_carousel_designs(a,slides,selected)
+    except ValueError as e: raise HTTPException(400,str(e))
+    except Exception as e: raise HTTPException(502,'Canva no pudo terminar el carrusel: '+str(e)[:180]) from e
+
+@app.get('/api/articles/{aid}/carousel/slide/{slide_index}',dependencies=[Depends(require_auth)])
+def carousel_slide(aid:int,slide_index:int):
+    if not db.row('SELECT article_id FROM carousel_designs WHERE article_id=? AND slide_index=? AND exported=1',(aid,slide_index)):
+        raise HTTPException(404,'Diapositiva no disponible')
+    path=RENDER_DIR/('article_%s_carousel_%s.png' % (aid,slide_index))
+    if not path.is_file(): raise HTTPException(404,'Diapositiva no disponible')
+    return FileResponse(path,media_type='image/png',filename='infolinense-%s-carrusel-%s.png' % (aid,slide_index))
+
+@app.get('/api/articles/{aid}/carousel/download',dependencies=[Depends(require_auth)])
+def download_carousel(aid:int):
+    a=db.row('SELECT carousel_json FROM articles WHERE id=?',(aid,))
+    if not a: raise HTTPException(404,'Noticia no encontrada')
+    designs=db.rows('SELECT slide_index,exported FROM carousel_designs WHERE article_id=? ORDER BY slide_index',(aid,))
+    if len(designs)<3 or any(not row.get('exported') for row in designs):
+        raise HTTPException(400,'Primero exporta todas las diapositivas en Canva')
+    archive=RENDER_DIR/('infolinense-carrusel-%s.zip' % aid)
+    with zipfile.ZipFile(archive,'w',compression=zipfile.ZIP_DEFLATED) as zf:
+        for row in designs:
+            path=RENDER_DIR/('article_%s_carousel_%s.png' % (aid,row['slide_index']))
+            if not path.is_file(): raise HTTPException(404,'Falta una diapositiva exportada')
+            zf.write(path,'infolinense-carrusel-%02d.png' % row['slide_index'])
+    return FileResponse(archive,media_type='application/zip',filename='infolinense-carrusel-%s.zip' % aid)
+
 @app.get('/api/articles/{aid}/kit',dependencies=[Depends(require_auth)])
 def kit(aid:int):
     a=article(aid)
@@ -326,8 +440,10 @@ def scheduler_loop():
     while True:
         try:
             r=sources.scan_all()
-            if AUTO_PIPELINE and not r.get('busy'): pipeline.auto_process(r['added'])
-        except Exception as e: db.log('scheduler_error',str(e))
+            if not r.get('busy'):
+                if AUTO_PIPELINE: pipeline.auto_process(r['added'])
+                planner.rebuild_schedule()
+        except Exception as e: db.log('scheduler_error',str(e)[:250])
         time.sleep(max(15,SCAN_INTERVAL_MINUTES)*60)
 @app.on_event('startup')
 def startup():

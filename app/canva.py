@@ -12,7 +12,7 @@ from urllib.parse import urlencode
 import requests
 
 from . import db
-from .config import PUBLIC_BASE_URL
+from .config import PUBLIC_BASE_URL, RENDER_DIR
 
 CLIENT_ID = os.getenv('CANVA_CLIENT_ID', '').strip()
 CLIENT_SECRET = os.getenv('CANVA_CLIENT_SECRET', '').strip()
@@ -144,11 +144,10 @@ def _content_hash(article):
     return hashlib.sha256(json.dumps(fields, ensure_ascii=False).encode()).hexdigest()
 
 
-def _export_png(article, design_id):
+def _export_png(article, design_id, output_suffix=None, mark_main=True):
     from io import BytesIO
     from PIL import Image
     from urllib.parse import urlparse
-    from .config import RENDER_DIR
 
     export = _api('POST', '/exports', json={'design_id': design_id,
                   'format': {'type': 'png', 'pages': [1]}})
@@ -167,18 +166,20 @@ def _export_png(article, design_id):
         if image.format != 'PNG':
             raise ValueError('Canva no devolvió un archivo PNG')
         image.verify()
-        output = RENDER_DIR / ('article_%s.png' % article['id'])
+        safe_suffix = ''.join(ch for ch in str(output_suffix or '') if ch.isalnum() or ch in '_-')
+        filename = 'article_%s%s.png' % (article['id'], ('_' + safe_suffix) if safe_suffix else '')
+        output = RENDER_DIR / filename
         temp = output.with_suffix('.tmp')
         temp.write_bytes(response.content)
         temp.replace(output)
     except (requests.RequestException, OSError) as exc:
         raise ValueError('No se pudo descargar o validar el PNG de Canva') from exc
-    db.exec_('UPDATE articles SET render_path=?,updated_at=CURRENT_TIMESTAMP WHERE id=?',
-             (str(output), article['id']))
-    db.exec_('UPDATE canva_designs SET exported=1,updated_at=CURRENT_TIMESTAMP WHERE article_id=?',
-             (article['id'],))
+    if mark_main:
+        db.exec_('UPDATE articles SET render_path=?,updated_at=CURRENT_TIMESTAMP WHERE id=?',
+                 (str(output), article['id']))
+        db.exec_('UPDATE canva_designs SET exported=1,updated_at=CURRENT_TIMESTAMP WHERE article_id=?',
+                 (article['id'],))
     return str(output)
-
 
 def export_design(article):
     if not ready() or not connected():
@@ -194,7 +195,7 @@ def export_design(article):
     return {'url': design['url'], 'design_id': design['design_id'], 'exported': True}
 
 
-def create_design(article):
+def create_design(article, store=True, title_suffix='', output_suffix=None):
     if not ready() or not connected():
         raise ValueError('Conecta tu cuenta de Canva desde Ajustes')
     photo = Path(article.get('image_local') or '')
@@ -210,7 +211,8 @@ def create_design(article):
     data = photo.read_bytes()
     if len(data) > 20_000_000:
         raise ValueError('La fotografía supera 20 MB')
-    filename = 'InfoLinense-' + str(article['id']) + photo.suffix
+    suffix = ''.join(ch for ch in str(output_suffix or '') if ch.isalnum() or ch in '_-')
+    filename = 'InfoLinense-' + str(article['id']) + (('-' + suffix) if suffix else '') + photo.suffix
     metadata = json.dumps({'name_base64': base64.b64encode(filename.encode()).decode()})
     upload = _api('POST', '/asset-uploads', data=data,
                   headers={'Content-Type': 'application/octet-stream', 'Asset-Upload-Metadata': metadata})
@@ -223,23 +225,100 @@ def create_design(article):
         'SECTION': {'type': 'text', 'text': article.get('section') or ''},
         'PHOTO': {'type': 'image', 'asset_id': asset['id']},
     }
-    result = _api('POST', '/autofills', json={'type': 'create_from_brand_template',
+    name = 'InfoLinense · ' + (article.get('headline') or '')[:100]
+    if title_suffix:
+        name += ' · ' + str(title_suffix)[:40]
+    job = _api('POST', '/autofills', json={'type': 'create_from_brand_template',
                     'brand_template_id': TEMPLATE_ID,
-                    'title': 'InfoLinense · ' + (article.get('headline') or '')[:100], 'data': fields})
-    design = _wait('/autofills/' + result['job']['id']).get('design', {})
+                    'title': name, 'data': fields})
+    design = _wait('/autofills/' + job['job']['id']).get('design', {})
     url = design.get('urls', {}).get('edit_url') or design.get('urls', {}).get('view_url')
     if not url and design.get('id'):
         url = 'https://www.canva.com/design/' + design['id']
     if not url:
         raise ValueError('Canva terminó el trabajo pero no devolvió el enlace del diseño')
-    result = {'url': url, 'design_id': design.get('id'), 'exported': False}
-    db.exec_('INSERT OR REPLACE INTO canva_designs(article_id,design_id,url,exported,content_hash,updated_at) VALUES(?,?,?,0,?,CURRENT_TIMESTAMP)',
-             (article['id'], design['id'], url, _content_hash(article)))
-    db.exec_('UPDATE articles SET render_path=NULL,status=CASE WHEN status="approved" THEN "review_ready" ELSE status END WHERE id=?', (article['id'],))
-    # The PNG from Canva is the only artwork served to the editorial panel.
+    output = {'url': url, 'design_id': design.get('id'), 'exported': False}
+    if store:
+        db.exec_('INSERT OR REPLACE INTO canva_designs(article_id,design_id,url,exported,content_hash,updated_at) VALUES(?,?,?,0,?,CURRENT_TIMESTAMP)',
+                 (article['id'], design['id'], url, _content_hash(article)))
+        db.exec_('UPDATE articles SET render_path=NULL,status=CASE WHEN status="approved" THEN "review_ready" ELSE status END WHERE id=?', (article['id'],))
     try:
-        _export_png(article, design['id'])
-        result['exported'] = True
+        _export_png(article, design['id'], output_suffix=output_suffix, mark_main=store)
+        output['exported'] = True
     except (ValueError, requests.RequestException, KeyError, OSError) as exc:
-        result['export_error'] = str(exc)
-    return result
+        output['export_error'] = str(exc)
+    return output
+
+
+def create_carousel_designs(article, slides, selected_photos):
+    from . import photos as photo_service
+
+    if not 3 <= len(slides) <= 6:
+        raise ValueError('El carrusel debe tener entre tres y seis diapositivas')
+    if not 1 <= len(selected_photos) <= 6:
+        raise ValueError('Selecciona entre una y seis fotografías autorizadas')
+    if len(selected_photos) < len(slides):
+        selected_photos = [selected_photos[index % len(selected_photos)] for index in range(len(slides))]
+    elif len(selected_photos) > len(slides):
+        selected_photos = selected_photos[:len(slides)]
+    try:
+        allowed = json.loads(article.get('image_candidates_json') or '[]')
+    except Exception:
+        allowed = []
+    for photo in selected_photos:
+        match = next((item for item in allowed if item.get('url') == photo.get('url')), None)
+        if not photo.get('publish_safe') or not match or not match.get('publish_safe'):
+            raise ValueError('Cada foto del carrusel debe tener permiso de reutilización verificado')
+
+    for old in RENDER_DIR.glob('article_%s_carousel_*.png' % article['id']):
+        try:
+            old.unlink()
+        except OSError:
+            pass
+    db.exec_('DELETE FROM carousel_designs WHERE article_id=?', (article['id'],))
+
+    results = []
+    for index, (slide, photo) in enumerate(zip(slides, selected_photos), start=1):
+        try:
+            local_path = photo_service.download_image(photo['url'])
+        except Exception as exc:
+            raise ValueError('No se pudo descargar la foto de la diapositiva %s' % index) from exc
+        page = dict(article)
+        page.update({
+            'headline': slide.get('title') or '',
+            'graphic_summary': slide.get('text') or '',
+            'subtitle': slide.get('text') or '',
+            'image_url': photo.get('url') or '',
+            'image_source': photo.get('source') or '',
+            'image_license': photo.get('license') or '',
+            'image_local': local_path,
+            'image_candidates_json': json.dumps([photo], ensure_ascii=False),
+        })
+        suffix = 'carousel_%s' % index
+        result = create_design(
+            page, store=False, title_suffix='Carrusel %s/%s' % (index, len(slides)),
+            output_suffix=suffix
+        )
+        if not result.get('exported'):
+            raise ValueError(result.get('export_error') or 'Canva no exportó la diapositiva %s' % index)
+        db.exec_(
+            '''INSERT OR REPLACE INTO carousel_designs
+               (article_id,slide_index,design_id,url,exported,content_hash,image_url,image_source,image_license,updated_at)
+               VALUES(?,?,?,?,1,?,?,?,?,CURRENT_TIMESTAMP)''',
+            (article['id'], index, result['design_id'], result['url'], _content_hash(page),
+             photo.get('url') or '', photo.get('source') or '', photo.get('license') or '')
+        )
+        results.append({
+            'index': index, 'title': slide.get('title') or '',
+            'text': slide.get('text') or '', 'url': result['url'],
+            'exported': True, 'image_source': photo.get('source') or '',
+            'image_license': photo.get('license') or '',
+            'download_path': '/api/articles/%s/carousel/slide/%s' % (article['id'], index),
+        })
+    first_url = results[0]['url'] if results else None
+    return {
+        'slides': results,
+        'url': first_url,
+        'design_url': first_url,
+        'download_url': '/api/articles/%s/carousel/download' % article['id'],
+    }

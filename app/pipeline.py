@@ -29,12 +29,13 @@ def draft_candidate(cid):
     if chosen:
         try: local=photos.download_image(chosen['url'])
         except Exception: local=''
-    aid=db.exec_('''INSERT OR REPLACE INTO articles(candidate_id,section,headline,subtitle,body,social_text,graphic_summary,research_notes,sources_json,image_url,image_source,image_license,image_local,image_candidates_json,ai_image_suggestion,template_id,workflow,status)
-      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',(
+    aid=db.exec_('''INSERT OR REPLACE INTO articles(candidate_id,section,headline,subtitle,body,social_text,graphic_summary,research_notes,sources_json,image_url,image_source,image_license,image_local,image_candidates_json,ai_image_suggestion,carousel_suitable,carousel_reason,template_id,workflow,status)
+      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',(
         cid,draft.get('section','CIUDAD'),draft.get('headline',''),draft.get('subtitle',''),draft.get('body','')[:2200],draft.get('body','')[:2200],draft.get('graphic_summary','')[:240],
         json.dumps(research_data,ensure_ascii=False),json.dumps((research_data or {}).get('sources',[]),ensure_ascii=False),
         chosen.get('url','') if chosen else '',chosen.get('source','') if chosen else '',chosen.get('license','') if chosen else '',local,json.dumps(image_candidates,ensure_ascii=False),
-        draft.get('ai_image_suggestion','') if not chosen else '',None,'source_draft' if not ai.AI_ENABLED else ('quick' if quick else 'researched'),'draft'))
+        draft.get('ai_image_suggestion','') if not chosen else '',int(bool(draft.get('carousel_suitable'))),str(draft.get('carousel_reason') or '')[:500],
+        None,'source_draft' if not ai.OPENAI_API_KEY else ('quick' if quick else 'researched'),'draft'))
     db.exec_('UPDATE candidates SET status=?,section=? WHERE id=?',('draft',draft.get('section','CIUDAD'),cid))
     db.log('pipeline',f'Candidata {cid} -> borrador')
     return aid

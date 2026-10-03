@@ -21,6 +21,51 @@ AI_ENABLED = bool(ACTIVE_PROVIDER)
 class AIProviderError(RuntimeError):
     """An AI provider rejected a request; safe to surface to the authenticated editor."""
 
+
+def ask_openai(instructions, user_text, web=False):
+    if not OPENAI_API_KEY:
+        raise AIProviderError('ChatGPT no está conectado. Falta OPENAI_API_KEY en las variables privadas de Railway.')
+    payload = {
+        'model': OPENAI_MODEL,
+        'instructions': instructions,
+        'input': user_text,
+        'max_output_tokens': 3500,
+        'store': False,
+    }
+    if web:
+        if not OPENAI_WEB_SEARCH:
+            raise AIProviderError('La búsqueda web de ChatGPT está desactivada en Railway.')
+        payload['tools'] = [{'type': 'web_search'}]
+    try:
+        response = requests.post(
+            'https://api.openai.com/v1/responses',
+            headers={'Authorization': f'Bearer {OPENAI_API_KEY}', 'Content-Type': 'application/json'},
+            json=payload, timeout=120
+        )
+    except requests.RequestException as exc:
+        raise AIProviderError('No se pudo contactar con la API de ChatGPT.') from exc
+    if not response.ok:
+        try:
+            data = response.json()
+            message = str((data.get('error') or {}).get('message') or '')
+        except Exception:
+            message = ''
+        message = re.sub(r'sk-[A-Za-z0-9_-]+', '[clave oculta]', message)[:220]
+        if response.status_code in (401, 403):
+            detail = 'OpenAI no acepta la clave API. Revisa que OPENAI_API_KEY sea válida y tenga facturación habilitada.'
+        elif response.status_code == 429:
+            detail = 'OpenAI ha limitado temporalmente las peticiones o no queda saldo de API.'
+        else:
+            detail = f'ChatGPT rechazó la solicitud (HTTP {response.status_code})'
+            if message:
+                detail += ': ' + message
+        raise AIProviderError(detail)
+    answer = _extract_text(response.json())
+    if not answer:
+        raise AIProviderError('ChatGPT no devolvió texto. Inténtalo de nuevo.')
+    return answer
+
+
 def _check_anthropic_response(response):
     if response.ok:
         return
@@ -124,11 +169,11 @@ def json_from_text(t):
 SYSTEM='''Eres el motor editorial de InfoLinense, medio centrado en La Línea de la Concepción. Redacta en español natural, cercano y periodístico, sin tono de gabinete ni copiar notas de prensa. Estructura: sección, titular útil, subtítulo y cuerpo breve de hasta 2.200 caracteres (el cuerpo es también el texto de redes). Prioriza lo que cambia para los vecinos: fechas, importes, plazos y administración competente, solo si constan en las fuentes. Da contexto local sin inventar hechos. No empieces el cuerpo con «La Línea de la Concepción». No uses emojis, exclamaciones, sensacionalismo ni fórmulas genéricas de IA. Cuando solo existe la fuente original, atribuye los hechos y deja claro en las notas qué falta por contrastar. Devuelve JSON válido sin markdown.'''
 
 def draft(candidate,source_text='',research='',quick=False):
-    if not AI_ENABLED:
+    if not OPENAI_API_KEY:
         return free_draft(candidate, source_text)
     mode='PIEZA RÁPIDA: noticia menos relevante; no hagas investigación extensa, pero no inventes.' if quick else 'PIEZA INVESTIGADA: integra contexto y contraste disponible.'
-    prompt=f'''{mode}\nCANDIDATA: {candidate['title']}\nURL: {candidate.get('url','')}\nEXTRACTO: {candidate.get('excerpt','')}\nTEXTO FUENTE: {source_text[:12000]}\nINVESTIGACIÓN: {research[:8000]}\n\nDevuelve exactamente estas claves JSON:\nsection (una de URBANISMO, CIUDAD, GIBRALTAR, SUCESOS, CULTURA, DEPORTES, COMERCIO, MEDIO AMBIENTE, POLÍTICA, SOCIEDAD, PATRIMONIO, AGENDA),\nheadline (titular útil y directo),\nsubtitle (1 frase),\nbody (noticia completa, máximo 2200 caracteres),\nsocial_text (texto completo para redes, NO copy corto, máximo 2200 caracteres),\ngraphic_summary (máximo 180 caracteres, 2-3 líneas para la plantilla),\nai_image_suggestion (vacío si hay una fotografía real razonable; si no, explica qué recreación podría ser útil, sin generarla).'''
-    return json_from_text(ask(SYSTEM,prompt,web=False))
+    prompt=f'''{mode}\nCANDIDATA: {candidate['title']}\nURL: {candidate.get('url','')}\nEXTRACTO: {candidate.get('excerpt','')}\nTEXTO FUENTE: {source_text[:12000]}\nINVESTIGACIÓN: {research[:8000]}\n\nDevuelve exactamente estas claves JSON:\nsection (una de URBANISMO, CIUDAD, GIBRALTAR, SUCESOS, CULTURA, DEPORTES, COMERCIO, MEDIO AMBIENTE, POLÍTICA, SOCIEDAD, PATRIMONIO, AGENDA),\nheadline (titular útil y directo),\nsubtitle (entradilla en una frase),\nbody (noticia completa, máximo 2200 caracteres),\nsocial_text (el mismo texto completo para redes, máximo 2200 caracteres),\ngraphic_summary (máximo 180 caracteres, 2-3 líneas para la plantilla),\nai_image_suggestion (vacío si hay una fotografía real razonable; si no, describe una idea sin generarla),\ncarousel_suitable (true solo si el tema requiere explicar varios pasos, cifras o consecuencias),\ncarousel_reason (motivo breve).'''
+    return json_from_text(ask_openai(SYSTEM,prompt,web=False))
 
 def _source_research(candidate,source_text=''):
     excerpt = BeautifulSoup(candidate.get('excerpt') or '', 'html.parser').get_text(' ', strip=True)
@@ -139,16 +184,14 @@ def _source_research(candidate,source_text=''):
             'caveats': ['Extracto de la fuente original, sin contraste independiente. Comprobar fechas, cifras y contexto antes de publicar.']}
 
 def research(candidate,source_text=''):
-    if not AI_ENABLED:
-        return _source_research(candidate,source_text)
-    # Keep investigation on the original source unless Claude web search is explicitly enabled.
-    if ACTIVE_PROVIDER == 'anthropic' and not ANTHROPIC_WEB_SEARCH:
+    if not OPENAI_API_KEY:
         return _source_research(candidate,source_text)
     prompt=f'''Investiga y contrasta esta posible noticia exclusivamente en relación con La Línea de la Concepción. Busca fuentes públicas actuales, dando prioridad a fuentes oficiales y documentos. No redactes aún la noticia. Devuelve JSON con: facts (lista), context (lista), sources (lista de objetos name,url), caveats (lista).
 TEMA: {candidate['title']}
 URL INICIAL: {candidate.get('url','')}
 TEXTO INICIAL: {source_text[:9000]}'''
-    return json_from_text(ask(SYSTEM,prompt,web=True))
+    return json_from_text(ask_openai(SYSTEM,prompt,web=True))
+
 def free_draft(candidate, source_text=''):
     """Prepare an editable, source-attributed news draft without claiming verification."""
     def tidy(value):
@@ -216,6 +259,59 @@ def free_draft(candidate, source_text=''):
     return {'section': section, 'headline': title, 'subtitle': subtitle, 'body': body[:2200],
             'social_text': body[:2200], 'graphic_summary': subtitle, 'ai_image_suggestion': ''}
 
+def alternate_headlines(article):
+    if not OPENAI_API_KEY:
+        raise AIProviderError('Para generar titulares con ChatGPT falta OPENAI_API_KEY en Railway.')
+    prompt=f'''Propón exactamente siete titulares periodísticos distintos para InfoLinense. Deben ser directos, claros, verificables, sin sensacionalismo ni exclamaciones y con utilidad para La Línea. No repitas el titular actual.
+NOTICIA: {article.get('headline','')}
+ENTRADILLA: {article.get('subtitle','')}
+TEXTO: {(article.get('body') or '')[:2200]}
+FUENTES: {article.get('sources_json') or ''}
+Devuelve solo JSON válido con la clave headlines y una lista de exactamente siete textos.'''
+    data=json_from_text(ask_openai(SYSTEM,prompt,web=False))
+    values=data.get('headlines') if isinstance(data,dict) else None
+    clean=[]
+    for value in values or []:
+        title=re.sub(r'\s+',' ',str(value)).strip().strip('"')
+        if title and title.casefold()!=str(article.get('headline') or '').strip().casefold() and title.casefold() not in {x.casefold() for x in clean}:
+            clean.append(title[:140])
+    if len(clean)!=7:
+        raise AIProviderError('ChatGPT no devolvió siete titulares diferentes. Vuelve a intentarlo.')
+    return clean
+
+
+def generate_carousel(article):
+    if not OPENAI_API_KEY:
+        raise AIProviderError('Para crear un carrusel con ChatGPT falta OPENAI_API_KEY en Railway.')
+    prompt=f'''Analiza esta noticia para redes de InfoLinense. Crea un carrusel solo si permite explicar un proceso, varias claves, cifras o consecuencias mejor que una imagen única. Si no encaja, devuelve suitable=false, reason y slides=[].
+Cuando encaje, devuelve suitable=true y entre 3 y 6 diapositivas. La primera presenta el tema; las siguientes explican hechos distintos; la última resume qué cambia o qué debe saber el vecino. Cada diapositiva debe incluir title (máximo 70 caracteres), text (máximo 220 caracteres) y photo_query (qué fotografía real buscar, sin inventar una foto ni sugerir que se genere con IA). Basa todo únicamente en los datos facilitados y las fuentes; indica en reason cualquier limitación. Devuelve JSON válido con suitable, reason y slides.
+TITULAR: {article.get('headline','')}
+ENTRADILLA: {article.get('subtitle','')}
+CUERPO: {(article.get('body') or '')[:2200]}
+SECCIÓN: {article.get('section','')}
+FUENTES: {article.get('sources_json') or ''}
+NOTAS DE CONTRASTE: {article.get('research_notes') or ''}'''
+    data=json_from_text(ask_openai(SYSTEM,prompt,web=False))
+    suitable=bool(data.get('suitable'))
+    slides=data.get('slides') if isinstance(data.get('slides'),list) else []
+    if suitable and not 3<=len(slides)<=6:
+        raise AIProviderError('ChatGPT no devolvió entre tres y seis diapositivas válidas.')
+    normalized=[]
+    for slide in slides:
+        normalized.append({
+            'title':re.sub(r'\s+',' ',str(slide.get('title') or '')).strip()[:70],
+            'text':re.sub(r'\s+',' ',str(slide.get('text') or '')).strip()[:220],
+            'photo_query':re.sub(r'\s+',' ',str(slide.get('photo_query') or slide.get('photo_suggestion') or '')).strip()[:160],
+            'photo_suggestion':re.sub(r'\s+',' ',str(slide.get('photo_query') or slide.get('photo_suggestion') or '')).strip()[:160],
+        })
+    if suitable and any(not s['title'] or not s['text'] for s in normalized):
+        raise AIProviderError('ChatGPT devolvió una diapositiva sin titular o texto.')
+    return {'suitable':suitable,'reason':str(data.get('reason') or '')[:500],'slides':normalized}
+
+
 def discover_candidates():
-    prompt='''Busca noticias, documentos y anuncios públicos MUY RECIENTES que afecten directamente a La Línea de la Concepción. Prioriza urbanismo/obras, servicios públicos, Gibraltar o frontera cuando afecte a La Línea, agenda/cultura, comercio/aperturas, empleo/economía, contratos/licitaciones/presupuestos, patrimonio e incidencias ciudadanas. Prioriza fuentes oficiales, documentos y páginas originales. Evita cualquier resultado donde “línea” no sea la ciudad. Devuelve JSON con una clave items que sea lista de objetos: title,url,source_name,excerpt,official (boolean). Máximo 15 resultados, sin duplicados.'''
-    return json_from_text(ask(SYSTEM,prompt,web=True)).get('items',[])
+    prompt='''Busca noticias, documentos, anuncios públicos y publicaciones públicas recientes que puedan afectar de forma concreta a La Línea de la Concepción.
+Incluye fuentes locales y comarcales (prensa, Ayuntamiento, tablón de edictos, BOP/BOJA, licitaciones, redes públicas), y noticias nacionales o internacionales solo cuando puedas explicar una consecuencia verificable para vecinos de La Línea. Ejemplos de temas aplicables: vivienda y alquiler, empleo, coste de vida, ayudas, sanidad, educación, energía, transporte, clima o frontera.
+No fuerces una relación local. Para cada resultado explica en local_angle qué cambia o por qué importa aquí; debe nombrar La Línea o un efecto local comprobable. Prioriza exclusivas, edictos, licitaciones, documentos oficiales y hechos nuevos. Evita duplicados y resultados donde “línea” no sea la ciudad.
+Devuelve JSON válido con clave items y máximo 15 objetos con: title,url,source_name,excerpt,local_angle,official (boolean).'''
+    return json_from_text(ask_openai(SYSTEM,prompt,web=True)).get('items',[])

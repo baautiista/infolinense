@@ -125,7 +125,7 @@ def init_db():
     defaults=[
       ('Ayuntamiento de La Línea','https://lalinea.es/feed/','rss',100,1,1),
       ('Google News · La Línea exacta','https://news.google.com/rss/search?q=%22La+L%C3%ADnea+de+la+Concepci%C3%B3n%22&hl=es&gl=ES&ceid=ES:es','rss',70,0,0),
-      ('Tablón municipal de edictos','https://www.sedeelectronica.lalinea.es/edictos/edicto/buscar-edictos-filtro-pub?primeraBusqueda=true','html',96,1,1),
+      ('Tablón municipal de edictos','https://www.sedeelectronica.lalinea.es/edictos/edicto/buscar-edictos-filtro-pub?primeraBusqueda=true','edictos',99,1,1),
       ('Gobierno de Gibraltar · prensa','https://www.gibraltar.gov.gi/press-releases','html',57,1,0),
       ('APBA · noticias','https://www.apba.es/noticias','html',75,1,0),
       ('Europa Sur · La Línea','https://www.europasur.es/lalinea/','html',88,0,1),
@@ -139,6 +139,10 @@ def init_db():
       ('Licitaciones municipales · Gobierto','https://contratos.gobierto.es/adjudicadores/alcaldia-del-ayuntamiento-de-la-linea-de-la-concepcion','procurement',89,0,1),
       ('Edictos · sede municipal indexada',news('"La Línea de la Concepción" site:sedeelectronica.lalinea.es/edictos/ when:7d'),'rss',84,1,0),
       ('Anuncios · BOJA y BOP indexados',news('"La Línea de la Concepción" (site:juntadeandalucia.es/boja/ OR site:bopcadiz.es) when:7d'),'rss',80,1,0),
+      ('Medios nacionales',news('"La Línea de la Concepción" (site:elpais.com OR site:elmundo.es OR site:abc.es OR site:rtve.es OR site:lavanguardia.com OR site:elconfidencial.com OR site:20minutos.es OR site:eldiario.es OR site:elespanol.com OR site:larazon.es OR site:antena3.com OR site:telecinco.es OR site:cope.es OR site:ondacero.es OR site:efe.com OR site:lasexta.com) when:2d'),'rss',80,0,0),
+      ('Nacionales adaptables · Gibraltar y frontera',news('Gibraltar (frontera OR tratado OR acuerdo OR "trabajadores transfronterizos" OR verja OR Schengen) when:2d'),'rss',78,0,1),
+      ('Nacionales adaptables · Campo de Gibraltar',news('"Campo de Gibraltar" when:2d'),'rss',72,0,1),
+      ('Licitaciones · BOP y plataforma estatal',news('("La Línea de la Concepción" OR "Ayuntamiento de La Línea") (licitación OR adjudicación OR contrato OR obras) when:7d'),'rss',95,1,0),
       ('Facebook · publicaciones indexadas',news('"La Línea de la Concepción" site:facebook.com when:3d'),'rss',55,0,0),
       ('Instagram · publicaciones indexadas',news('"La Línea de la Concepción" site:instagram.com when:3d'),'rss',55,0,0),
       ('Facebook · Ayuntamiento', 'https://www.facebook.com/aytolalinea','social',74,1,0),
@@ -148,7 +152,10 @@ def init_db():
         c.execute('INSERT OR IGNORE INTO sources(name,url,kind,priority,official,local_scope) VALUES(?,?,?,?,?,?)',(n,u,k,p,o,scope))
     # Existing default rows retain the same URL but need accurate locality rules.
     c.execute("UPDATE sources SET local_scope=1 WHERE url='https://lalinea.es/feed/'")
-    c.execute("UPDATE sources SET local_scope=1 WHERE url LIKE 'https://www.sedeelectronica.lalinea.es/edictos/%'")
+    c.execute("UPDATE sources SET local_scope=1,kind='edictos',priority=99 WHERE url LIKE 'https://www.sedeelectronica.lalinea.es/edictos/%'")
+    c.execute("UPDATE sources SET priority=97 WHERE kind='procurement'")
+    # Las búsquedas indexadas de Facebook/Instagram pasan al panel Redes (allí se filtran ventas y publicidad).
+    c.execute("UPDATE sources SET active=0 WHERE name IN ('Facebook · publicaciones indexadas','Instagram · publicaciones indexadas','Instagram · Turismo local')")
     c.commit(); c.close()
 
 def rows(sql,args=()):

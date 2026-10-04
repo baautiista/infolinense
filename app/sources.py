@@ -17,8 +17,17 @@ from .config import MAX_CANDIDATE_AGE_DAYS
 
 UA = 'InfoLinenseBot/1.0 (+editorial monitoring)'
 _scan_lock = threading.Lock()
-_LOCAL = re.compile(r'\b(?:la\s+l[ií]nea(?:\s+de\s+la\s+concepci[oó]n)?|linens(?:e|es)|atunara|balona|saccone)\b', re.I)
-_UNRELATED = re.compile(r'\bl[ií]nea\s+(?:de\s+metro|ferroviaria|el[eé]ctrica|a[eé]rea|editorial|de\s+autob[uú]s|de\s+salida|de\s+meta)\b', re.I)
+# La Línea de la Concepción (la ciudad), no «la línea 1 del metro», «línea de alta velocidad», etc.
+_CITY = re.compile(r'(La\s+L[ií]nea\s+de\s+la\s+Concepci[oó]n|\blinens[ea]s?\b|\bLa\s+L[ií]nea\b)', re.I)
+_CITY_STRONG = re.compile(r'(l[ií]nea\s+de\s+la\s+concepci[oó]n|\blinens[ea]s?\b|\batunara\b|real\s+balompédica|\bbalona\b|'
+                          r'san\s+bernardo|santa\s+margarita|\bel\s+zabal\b|la\s+colonia|junquillos|campo\s+de\s+gibraltar)', re.I)
+_CONTEXT = re.compile(r'(gibraltar|c[aá]diz|algeciras|san\s+roque|frontera|verja|ayuntamiento|juan\s+franco|poniente|levante|'
+                      r'alcaidesa|cruz\s+herrera|parque\s+princesa\s+sof[ií]a|feria|velada|campo\s+de\s+gibraltar)', re.I)
+_UNRELATED = re.compile(r'\bl[ií]neas?\s+(?:\d+|[a-z]\d*\b|de\s+metro|del\s+metro|ferroviaria|de\s+tren|de\s+alta|el[eé]ctrica|a[eé]rea|editorial|'
+                        r'de\s+autob[uú]s|de\s+salida|de\s+meta|de\s+cr[eé]dito|roja|telef[oó]nica|de\s+fuego|de\s+defensa|de\s+ayuda|'
+                        r'de\s+flotaci[oó]n|del\s+horizonte|de\s+producci[oó]n|de\s+negocio|de\s+investigaci[oó]n|de\s+trabajo|'
+                        r'argumental|sucesoria|de\s+banda|de\s+cercan[ií]as|de\s+costa|blanca|caliente|directa|de\s+fondo)', re.I)
+_LOCAL = _CITY
 
 def clean(value):
     value = html.unescape(value or '')
@@ -143,7 +152,7 @@ def parse_procurement(source):
             published = datetime.fromtimestamp(int(date.get('data-sort-value')), timezone.utc).isoformat()
         except (AttributeError, TypeError, ValueError):
             continue  # Cannot assert that an undated tender is newly published.
-        if not recent_enough(published): continue
+        if not recent_enough(published, WINDOW_DAYS['Licitaciones y edictos']): continue
         def field(name):
             cell = row.select_one(f'td[data-toggle-column-id="{name}"]')
             return clean(cell.get_text(' ', strip=True)) if cell else ''
@@ -154,13 +163,45 @@ def parse_procurement(source):
                         'excerpt': details, 'published_at': published})
     return results
 
+def _dmy(value):
+    m = re.search(r'(\d{1,2})/(\d{1,2})/(\d{4})', value or '')
+    if not m: return ''
+    return datetime(int(m.group(3)), int(m.group(2)), int(m.group(1)), 9, 0, tzinfo=timezone.utc).isoformat()
+
+
+def parse_edictos(source):
+    """Tablón de edictos de la sede electrónica: tabla con fecha de publicación, fin, título y enlace."""
+    r = fetch(source['url'], timeout=30); r.raise_for_status()
+    soup = BeautifulSoup(r.text, 'html.parser')
+    out = []
+    for row in soup.select('tr'):
+        cells = row.find_all('td')
+        if len(cells) < 3: continue
+        link = row.find('a', href=re.compile(r'codigo='))
+        title = ''
+        for c in cells:
+            text = clean(c.get_text(' ', strip=True))
+            if len(text) > len(title) and not re.fullmatch(r'[\d/ :]+', text): title = text
+        published = _dmy(cells[0].get_text(' ', strip=True))
+        if not title or not link or not published: continue
+        href = re.sub(r';jsessionid=[^?]+', '', link['href'])
+        if not recent_enough(published, WINDOW_DAYS['Licitaciones y edictos']): continue
+        out.append({'title': 'Edicto: ' + title[:240], 'url': urljoin(source['url'], href),
+                    'excerpt': title, 'published_at': published})
+    return out
+
+
 def exact_locality(text):
+    """Solo la ciudad de La Línea de la Concepción."""
     text = text or ''
-    if not _LOCAL.search(text): return False
-    if _UNRELATED.search(text) and not re.search(
-            r'la\s+l[ií]nea\s+de\s+la\s+concepci[oó]n|linens|atunara|balona', text, re.I):
+    if _CITY_STRONG.search(text):
+        return True
+    # «La Línea» a secas: con mayúscula y con contexto local, y sin ser una línea de metro, tren, etc.
+    if not re.search(r'\bLa\s+L[ií]nea\b', text):
         return False
-    return True
+    if _UNRELATED.search(text):
+        return False
+    return bool(_CONTEXT.search(text))
 
 def publication_datetime(value):
     if not value: return None
@@ -171,10 +212,14 @@ def publication_datetime(value):
     if not date.tzinfo: date = date.replace(tzinfo=timezone.utc)
     return date.astimezone(timezone.utc)
 
-def recent_enough(value):
+# Días que una pieza sigue siendo actual según su bloque
+WINDOW_DAYS = {'Licitaciones y edictos': 20, 'Ayuntamiento': 3}
+
+
+def recent_enough(value, days=None):
     date = publication_datetime(value)
     if date is None: return True  # HTML listings often omit dates; URL dedup handles repeats.
-    return date >= datetime.now(timezone.utc) - timedelta(days=MAX_CANDIDATE_AGE_DAYS)
+    return date >= datetime.now(timezone.utc) - timedelta(days=days or MAX_CANDIDATE_AGE_DAYS)
 
 def heuristic_score(title, excerpt, source):
     text = (title + ' ' + (excerpt or '')).lower()
@@ -221,28 +266,50 @@ def page_date(url):
     return ''
 
 
+BLOCKS = ['Ayuntamiento', 'Licitaciones y edictos', 'Otros medios', 'Nacionales adaptables']
+
+
 def source_group(row):
-    """Grupo de fuente para dividir el radar: Ayuntamiento, Medios, Boletines y edictos, Licitaciones, Redes, Región, Web."""
+    """Bloque del radar: Ayuntamiento, Licitaciones y edictos, Otros medios, Nacionales adaptables (o Redes sociales)."""
     kind = (row.get('source_kind') or row.get('kind') or '').lower()
-    blob = ' '.join(str(row.get(k) or '') for k in ('source_name', 'outlet', 'url')).lower()
-    if kind == 'procurement' or 'licitac' in blob or 'contratac' in blob or 'contratos' in blob: return 'Licitaciones'
-    if kind == 'bop' or any(w in blob for w in ('bop', 'boe', 'boja', 'edicto')): return 'Boletines y edictos'
-    if kind == 'social' or 'facebook' in blob or 'instagram' in blob: return 'Redes sociales'
-    if 'lalinea.es' in blob or 'ayuntamiento' in blob: return 'Ayuntamiento'
-    if any(w in blob for w in ('gibraltar.gov', 'apba', 'junta', 'diputaci')): return 'Gibraltar y región'
-    if (row.get('scope') or '') in ('nacional', 'internacional'): return 'Nacional e internacional'
-    if (row.get('scope') or '') == 'regional': return 'Gibraltar y región'
-    return 'Medios'
+    name = (row.get('source_name') or '').lower()
+    blob = ' '.join(str(row.get(k) or '') for k in ('source_name', 'outlet', 'url', 'title')).lower()
+    if kind == 'social' or row.get('social_type') or 'facebook.com' in blob or 'instagram.com' in blob:
+        return 'Redes sociales'
+    if kind in ('procurement', 'bop', 'edictos') or any(w in blob for w in ('licitac', 'contratac', 'contratos.gobierto', 'edicto', 'bopcadiz',
+                                                                         'boe.es', 'boja', 'adjudica', 'sedeelectronica')):
+        return 'Licitaciones y edictos'
+    if 'lalinea.es' in blob or name.startswith('ayuntamiento'):
+        return 'Ayuntamiento'
+    if (row.get('scope') or '') in ('nacional', 'internacional', 'regional') or 'nacional' in name:
+        return 'Nacionales adaptables'
+    return 'Otros medios'
+
+
+def similar_to_published(title):
+    """¿Ya hemos publicado (o aprobado) algo casi igual?"""
+    norm = lambda t: re.sub(r'\W+', ' ', (t or '').lower()).strip()
+    words = set(w for w in norm(title).split() if len(w) > 3)
+    if len(words) < 3: return False
+    for a in db.rows("SELECT headline FROM articles WHERE status IN ('approved','published') ORDER BY id DESC LIMIT 300"):
+        other = set(w for w in norm(a['headline']).split() if len(w) > 3)
+        if other and len(words & other) / max(1, min(len(words), len(other))) >= 0.7:
+            return True
+    return False
 
 
 def add_candidate(title, url, excerpt, source_name, source_id=None, published_at='', source_meta=None, local_angle='', outlet='', image=''):
     source_meta = source_meta or {'priority': 60, 'official': 0, 'local_scope': 0}
     title, excerpt = clean(title)[:260], clean(excerpt)[:1000]
     local_angle = clean(local_angle)[:800]
-    if not title or not url or not recent_enough(published_at): return None
+    tender = source_meta.get('kind') in ('procurement', 'bop', 'edictos') or bool(re.search(r'licitaci|adjudica|edicto|contrataci', title, re.I))
+    window = WINDOW_DAYS['Licitaciones y edictos'] if tender else None
+    if not title or not url or not recent_enough(published_at, window): return None
     if not exact_locality(title + ' ' + excerpt + ' ' + local_angle) and not source_meta.get('local_scope'): return None
-    if is_duplicate(title, url): return None
+    if is_duplicate(title, url) or similar_to_published(title): return None
     score = heuristic_score(title, excerpt + ' ' + local_angle, source_meta)
+    if tender:
+        score = min(100, score + 30)  # licitaciones y edictos, prioridad alta
     relevance = 'low' if score < 50 else ('medium' if score < 70 else 'high')
     return db.exec_('''INSERT OR IGNORE INTO candidates(source_id,source_name,title,url,published_at,excerpt,score,relevance,status,local_angle,outlet,image_hint)
                        VALUES(?,?,?,?,?,?,?,?,?,?,?,?)''',
@@ -252,6 +319,7 @@ def read_source(source):
     if source['kind'] == 'rss': return parse_rss(source)
     if source['kind'] == 'bop': return parse_bop(source)
     if source['kind'] == 'procurement': return parse_procurement(source)
+    if source['kind'] == 'edictos': return parse_edictos(source)
     if source['kind'] == 'html': return parse_html(source)
     if source['kind'] == 'social':
         target = urlparse(source['url'])
@@ -339,10 +407,12 @@ def scan_all():
 
 def archive_stale():
     """Retira del radar lo que ya no es actual y nadie ha marcado como útil."""
-    limit = datetime.now(timezone.utc) - timedelta(days=MAX_CANDIDATE_AGE_DAYS)
+    now = datetime.now(timezone.utc)
     n = 0
-    for row in db.rows("""SELECT id,published_at,created_at FROM candidates
-                          WHERE status IN ('new','researched','needs_config') AND editorial_priority IN ('undecided','')"""):
+    for row in db.rows("""SELECT c.id,c.published_at,c.created_at,c.source_name,c.outlet,c.url,c.title,c.scope,c.social_type,s.kind
+                          FROM candidates c LEFT JOIN sources s ON s.id=c.source_id
+                          WHERE c.status IN ('new','researched','needs_config') AND c.editorial_priority IN ('undecided','')"""):
+        limit = now - timedelta(days=WINDOW_DAYS.get(source_group(row), MAX_CANDIDATE_AGE_DAYS))
         date = publication_datetime(row.get('published_at')) or publication_datetime((row.get('created_at') or '').replace(' ', 'T') + '+00:00')
         if date and date < limit:
             db.exec_("UPDATE candidates SET status='archived' WHERE id=?", (row['id'],)); n += 1
@@ -350,9 +420,15 @@ def archive_stale():
 
 
 def fetch_article_text(url):
-    if '.pdf' in urlparse(url).path.lower(): return ''
+    """Texto de la noticia o del documento (los edictos y licitaciones suelen ser PDF)."""
     try:
-        r = fetch(url); r.raise_for_status(); soup = BeautifulSoup(r.text, 'html.parser')
+        r = fetch(url, timeout=30); r.raise_for_status()
+        if 'pdf' in (r.headers.get('content-type') or '').lower() or r.content[:4] == b'%PDF':
+            from io import BytesIO
+            from pypdf import PdfReader
+            reader = PdfReader(BytesIO(r.content))
+            return clean(' '.join((page.extract_text() or '') for page in reader.pages[:8]))[:18000]
+        soup = BeautifulSoup(r.text, 'html.parser')
         for node in soup(['script', 'style', 'nav', 'footer', 'header', 'aside']): node.decompose()
         article = soup.find('article') or soup.find('main') or soup.body
         return clean(article.get_text(' ', strip=True) if article else soup.get_text(' ', strip=True))[:18000]

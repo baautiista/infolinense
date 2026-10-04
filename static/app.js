@@ -8,7 +8,7 @@ const cache = { photos: {}, article: {} };
 
 const PRIO = [['urgent', 'Urgente'], ['today', 'Hoy'], ['this_week', 'Semana'], ['future', 'Futura']];
 const PRIO_LABEL = Object.fromEntries(PRIO);
-const GROUPS = ['Ayuntamiento', 'Boletines y edictos', 'Licitaciones', 'Medios', 'Redes sociales', 'Gibraltar y región', 'Nacional e internacional'];
+const GROUPS = ['Ayuntamiento', 'Licitaciones y edictos', 'Otros medios', 'Nacionales adaptables'];
 const SECTIONS = [['OBRAS', '#0150FE', '#fff'], ['CIUDAD', '#4F9AFC', '#fff'], ['GIBRALTAR', '#7249E0', '#fff'], ['SUCESOS', '#D02132', '#fff'],
   ['CULTURA', '#E72E79', '#fff'], ['DEPORTES', '#00AB4F', '#fff'], ['COMERCIO', '#FF8E1A', '#fff'], ['MEDIO AMBIENTE', '#62DBD1', '#061E5C'],
   ['POLÍTICA', '#08176E', '#fff'], ['SOCIEDAD', '#2756CD', '#fff'], ['PATRIMONIO', '#B9831E', '#fff'], ['AGENDA', '#FDE206', '#061E5C']];
@@ -107,7 +107,7 @@ function card(n) {
   const prio = PRIO_LABEL[n.editorial_priority] ? n.editorial_priority : '';
   const sp = special(n);
   return `<article class="item" id="c-${n.id}">
-    <div class="meta">${n.social_type ? `<span class="kind ${n.social_type}">${n.social_type === 'queja' ? 'Queja' : 'Noticia'}</span>` : ''}<span class="src">${esc(n.outlet || n.source_name || host(n.url))}</span><span>${ago(n.date_iso)}</span>${sp ? `<span class="flag">${sp}</span>` : ''}</div>
+    <div class="meta">${n.social_type ? `<span class="kind ${n.social_type}">${{ queja: 'Queja', propuesta: 'Propuesta', asociacion: 'Asociación' }[n.social_type] || ''}</span>` : ''}<span class="src">${esc(n.outlet || n.source_name || host(n.url))}</span><span>${ago(n.date_iso)}</span>${sp ? `<span class="flag">${sp}</span>` : ''}</div>
     <h3><a href="${safeUrl(n.url)}" target="_blank" rel="noopener noreferrer">${esc(n.title)}</a></h3>
     ${n.local_angle ? `<p class="angle">${esc(n.local_angle)}</p>` : ''}
     <div class="chips">${PRIO.map(([k, t]) => `<button class="chip ${prio === k ? 'on' : ''}" onclick="setPriority(${n.id},'${k}')">${t}</button>`).join('')}<button class="chip no" onclick="setPriority(${n.id},'no_interest')" aria-label="No interesa" title="No interesa">✕</button></div>
@@ -160,7 +160,7 @@ async function socialView(v) {
     if (!pages.includes(socialPage)) socialPage = 'Todas';
     const items = byKind.filter(n => socialPage === 'Todas' || (n.outlet || n.source_name) === socialPage);
     const n = k => newsCache.filter(x => k === 'todo' || x.social_type === k).length;
-    v.innerHTML = `<div class="filters"><div class="chips">${[['todo', 'Todo'], ['queja', 'Quejas'], ['noticia', 'Noticias']].map(([k, t]) => `<button class="chip ${k === socialKind ? 'on' : ''}" data-k="${k}">${t} <b>${n(k)}</b></button>`).join('')}</div>
+    v.innerHTML = `<div class="filters"><div class="chips">${[['todo', 'Todo'], ['queja', 'Quejas'], ['propuesta', 'Propuestas'], ['asociacion', 'Asociaciones']].map(([k, t]) => `<button class="chip ${k === socialKind ? 'on' : ''}" data-k="${k}">${t} <b>${n(k)}</b></button>`).join('')}</div>
       <div class="chips scroll">${pages.map(p => `<button class="chip ${p === socialPage ? 'on' : ''}" data-p="${esc(p)}">${esc(p)}</button>`).join('')}</div></div>
       ${items.length ? `<div class="list">${items.map(card).join('')}</div>` : '<p class="empty">No hay publicaciones recientes. Pulsa «Investigar redes».</p>'}
       <section class="panel" style="margin-top:16px"><h2>Páginas y grupos vigilados</h2>

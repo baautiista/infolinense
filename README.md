@@ -24,6 +24,15 @@ El backend FastAPI corre en Railway y el panel editorial de Lovable consume la m
 2. Publica el panel como aplicación privada con pantalla de contraseña. Añade **solo su origen exacto** (`https://<tu-proyecto>.lovable.app`) a `CORS_ORIGINS` en Railway. Si usas dominio propio, añádelo separado por coma. Redepliega si Railway no aplica las variables automáticamente.
 3. Accede al panel, prueba Dashboard y Revisión y comprueba **Plantillas → Canva**. Los PNG privados solo existen tras exportar desde Canva y se descargan mediante `fetch` con token; un enlace `<img src="https://backend/media/render/...">` directo devolverá 401.
 
+## Novedades 3.4
+
+- **Cuatro bloques** en Noticias: Ayuntamiento, Licitaciones y edictos, Otros medios y Nacionales adaptables. Las redes van aparte, en Redes.
+- **Licitaciones y edictos**: lector propio del tablón de edictos de la sede electrónica (con lectura de PDF), Gobierto, BOP y plataforma estatal; más puntuación y 20 días de vigencia.
+- **Solo la ciudad**: «La Línea» debe ser La Línea de la Concepción (se descartan líneas de metro, tren, alta velocidad, «línea roja»…).
+- **Nada antiguo ni repetido**: el radar oculta lo que ha pasado su plazo y lo parecido a noticias ya aprobadas o publicadas.
+- **Medios nacionales** y noticias nacionales adaptables (Gibraltar y frontera, Campo de Gibraltar, y búsqueda con ChatGPT).
+- **Redes**: solo quejas de calle, propuestas y asociaciones/colectivos; se descartan ventas, publicidad y noticias de medios compartidas.
+
 ## Novedades 3.1
 
 - **Estilo de redacción**: la IA redacta siguiendo `app/estilo_redaccion.md` (guía de InfoLinense). Se puede editar ese archivo para afinar el estilo. Cada borrador guarda su «enfoque principal».

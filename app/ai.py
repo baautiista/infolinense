@@ -501,7 +501,8 @@ SECCIÓN: {article.get('section', '')}'''
 def discover_candidates():
     """Web discovery (regional, national, international with a local angle). Needs web search enabled."""
     prompt = '''Busca noticias, documentos y anuncios públicos de las últimas 48 horas que afecten de forma concreta a La Línea de la Concepción.
-Incluye fuentes locales y comarcales (prensa, Ayuntamiento, tablón de edictos, BOP/BOJA, licitaciones, redes públicas) y noticias regionales, nacionales o internacionales SOLO si tienen una consecuencia verificable para vecinos de La Línea (vivienda, empleo, frontera con Gibraltar, ayudas, sanidad, educación, transporte, energía, clima…).
+Busca sobre todo: licitaciones y adjudicaciones (Plataforma de Contratación, BOP Cádiz, BOJA, BOE), edictos, noticias de medios nacionales que mencionen La Línea, y NOTICIAS NACIONALES ADAPTABLES: medidas del Gobierno, la Junta o la UE, datos de paro, vivienda, ayudas, transporte, frontera con Gibraltar, sanidad o educación que tengan un efecto concreto para los vecinos de La Línea. En local_angle explica en una frase cómo se adapta a La Línea de la Concepción (empieza por «En La Línea de la Concepción…»).
+«La Línea» es SOLO la ciudad de La Línea de la Concepción (Cádiz): descarta líneas de metro, tren, autobús, alta velocidad, líneas rojas, etc.
 No inventes resultados: cada uno debe tener una URL real que hayas visto. Prioriza exclusivas, edictos, licitaciones y documentos oficiales. Evita duplicados y resultados donde «línea» no sea la ciudad.
 Devuelve JSON con clave items: máximo 15 objetos con title, url, source_name, published_at (ISO o vacío), excerpt, local_angle (qué cambia en La Línea), scope (local, regional, nacional o internacional), official (boolean).'''
     data, _, _ = ask_json(SYSTEM, prompt, web=True, web_required=True, max_tokens=4000)

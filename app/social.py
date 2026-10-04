@@ -20,11 +20,30 @@ COOKIES = {'CONSENT': 'YES+cb.20240101-00-p0.es+FX+000', 'SOCS': 'CAESHAgBEhJnd3
 COMPLAINT = re.compile(r'\b(quej|denunci|vergüenz|verguenz|indignad|harto|hartos|abandon|suciedad|basura|ratas|cucarach|bache|socav|'
                        r'sin luz|apagad|farola|sin agua|fuga|atasco|cola|aparcamiento|ruido|okupa|inseguridad|robo|peligro|'
                        r'roto|rota|caído|caida|desbord|inund|olor|mosquit|plaga|reclam|protesta|vecinos piden|nadie hace)', re.I)
+PROPOSAL = re.compile(r'\b(propone|proponen|propuesta|piden|pedimos|solicitan|solicitamos|reclaman|recogida de firmas|firmas|iniciativa|'
+                      r'sugerencia|mejorar|que se instale|que se arregle|exigen|exigimos|reivindic)', re.I)
+ASSOCIATION = re.compile(r'\b(asociaci[oó]n|aavv|a\.?vv\.?|vecinal|plataforma|colectivo|federaci[oó]n|ampa|afa|hermandad|cofrad[ií]a|'
+                         r'peña|ong|voluntari|fundaci[oó]n|club|coordinadora|sindicato|comunidad de vecinos)', re.I)
+SALE = re.compile(r'\b(vendo|se vende|venta|vendemos|alquilo|se alquila|alquiler de|compro|precio|€|euros|oferta|ofertas|descuento|'
+                  r'sorteo|regalo|env[ií]os?|whatsapp|privado|mp|interesados|busco trabajo|se busca|ofrezco|traspaso|liquidaci[oó]n|'
+                  r'rebajas|promoci[oó]n|reserva tu|pide ya|tienda|outlet|segunda mano|perdido|perdida|adopci[oó]n|horóscopo)', re.I)
+MEDIA = re.compile(r'(europasur|diarioarea|8directo|cadenaser|canalsur|andaluciainformacion|elfarodeceuta|lavozdelsur|diariodecadiz|'
+                   r'leer m[aá]s|noticia completa|lee la noticia|enlace en|link en bio)', re.I)
 SOURCE_NAME = 'Redes · quejas vecinales'
 
 
 def kind_of(text):
-    return 'queja' if COMPLAINT.search(text or '') else 'noticia'
+    """queja | propuesta | asociacion, o None si es venta, publicidad o noticia compartida de un medio."""
+    text = text or ''
+    if SALE.search(text) or MEDIA.search(text):
+        return None
+    if ASSOCIATION.search(text):
+        return 'asociacion'
+    if PROPOSAL.search(text):
+        return 'propuesta'
+    if COMPLAINT.search(text):
+        return 'queja'
+    return None
 
 
 def _social_source_id():
@@ -70,6 +89,31 @@ def google_web(query, days=3, limit=20):
     return out
 
 
+def ddg_web(query, limit=20):
+    """DuckDuckGo (versión HTML) de la última semana, como reserva de Google."""
+    out = []
+    try:
+        r = requests.post('https://html.duckduckgo.com/html/', data={'q': query, 'df': 'w', 'kl': 'es-es'}, headers=HEADERS, timeout=20)
+        soup = BeautifulSoup(r.text, 'html.parser')
+        for res in soup.select('.result'):
+            a = res.select_one('a.result__a')
+            if not a: continue
+            href = a.get('href', '')
+            if 'uddg=' in href:
+                href = unquote(parse_qs(urlparse(href).query).get('uddg', [''])[0])
+            if 'facebook.com' not in (urlparse(href).hostname or ''): continue
+            snip = res.select_one('.result__snippet')
+            out.append({'title': a.get_text(' ', strip=True)[:240], 'url': href, 'snippet': snip.get_text(' ', strip=True)[:600] if snip else ''})
+            if len(out) >= limit: break
+    except Exception:
+        pass
+    return out
+
+
+def web_search(query, days=3, limit=20):
+    return google_web(query, days, limit) or ddg_web(query, limit)
+
+
 def watched():
     """Páginas y grupos de Facebook/Instagram que vigilas."""
     return db.rows("SELECT * FROM sources WHERE kind='social' AND name!=? ORDER BY name", (SOURCE_NAME,))
@@ -82,15 +126,18 @@ def _page_name(url):
     return path[0] if path else 'Facebook'
 
 
-def _add(item, sid, outlet):
+def _add(item, sid, outlet, kind=None):
     text = item['title'] + ' ' + item.get('snippet', '')
+    kind = kind or kind_of(text)
+    if not kind:
+        return None  # ventas, publicidad o noticias de medios compartidas
     if not sources.exact_locality(text) and 'linea' not in outlet.lower() and 'línea' not in outlet.lower():
         return None
     cid = sources.add_candidate(item['title'], item['url'], item.get('snippet', ''), SOURCE_NAME, sid,
                                 datetime.now(timezone.utc).isoformat(timespec='seconds'),
                                 {'priority': 60, 'official': 0, 'local_scope': 1}, outlet=outlet)
     if cid:
-        db.exec_('UPDATE candidates SET social_type=? WHERE id=?', (kind_of(text), cid))
+        db.exec_('UPDATE candidates SET social_type=? WHERE id=?', (kind, cid))
     return cid
 
 
@@ -105,31 +152,38 @@ def scan():
         path = urlparse(src['url']).path.strip('/')
         target = '/'.join(path.split('/')[:2]) if path.startswith('groups/') else path.split('/')[0]
         host = urlparse(src['url']).hostname or 'facebook.com'
-        for item in google_web(f'site:{host}/{target}', days=3, limit=15):
+        for item in web_search(f'site:{host}/{target}', days=3, limit=15):
             cid = _add(item, sid, src['name'])
             if cid: added.append(cid)
     # 2. Quejas vecinales públicas
-    for q in ('site:facebook.com "La Línea" vecinos (queja OR denuncian OR quejan OR reclaman)',
-              'site:facebook.com "La Línea de la Concepción" (basura OR baches OR "sin luz" OR ratas OR suciedad OR inseguridad)',
-              'site:facebook.com/groups "La Línea" (queja OR denuncia OR vergüenza OR abandono)'):
-        for item in google_web(q, days=3, limit=15):
+    for q in ('site:facebook.com "La Línea" vecinos (queja OR denuncian OR quejan OR reclaman OR abandono)',
+              'site:facebook.com "La Línea de la Concepción" (basura OR baches OR "sin luz" OR ratas OR suciedad OR inseguridad OR aceras)',
+              'site:facebook.com "La Línea" (propuesta OR proponen OR "recogida de firmas" OR piden OR solicitan)',
+              'site:facebook.com ("asociación de vecinos" OR AAVV OR plataforma OR colectivo OR federación) "La Línea"',
+              'site:facebook.com/groups "La Línea" (queja OR denuncia OR propuesta OR asociación)'):
+        for item in web_search(q, days=3, limit=15):
             cid = _add(item, sid, _page_name(item['url']))
             if cid: added.append(cid)
     # 3. Barrido con ChatGPT (búsqueda web), si está disponible
     try:
         from . import ai
         if any(ai.web_enabled(p) for p in ai.provider_chain()):
-            prompt = ('Busca publicaciones PÚBLICAS de los últimos 3 días en páginas y grupos de Facebook (y otras redes) sobre La Línea de la Concepción '
-                      'con quejas de vecinos (limpieza, baches, alumbrado, agua, seguridad, ruidos, tráfico, servicios) o avisos y noticias locales. '
-                      'Solo resultados reales con URL que hayas visto. Devuelve JSON {"items":[{"title","url","page_name","summary","type":"queja|noticia"}]} con máximo 12.')
+            prompt = ('Busca publicaciones PÚBLICAS de los últimos 3 días en páginas y grupos de Facebook de La Línea de la Concepción (Cádiz) con: '
+                      'quejas de vecinos sobre calles y servicios (limpieza, baches, alumbrado, agua, seguridad, ruidos, tráfico, parques), '
+                      'propuestas ciudadanas, y comunicados o actividades de asociaciones vecinales, colectivos, plataformas, AMPAs, hermandades o clubes. '
+                      'Descarta ventas, anuncios, sorteos, publicidad y noticias de medios compartidas. Solo resultados reales con URL que hayas visto. '
+                      'Devuelve JSON {"items":[{"title","url","page_name","summary","type":"queja|propuesta|asociacion"}]} con máximo 12.')
             data, _, _ = ai.ask_json(ai.SYSTEM, prompt, web=True, web_required=True, max_tokens=3000)
             for it in (data.get('items') or [])[:12]:
                 if str(it.get('url', '')).startswith('http'):
-                    cid = _add({'title': it.get('title', ''), 'url': it['url'], 'snippet': it.get('summary', '')}, sid, it.get('page_name') or _page_name(it['url']))
+                    text = it.get('title', '') + ' ' + it.get('summary', '')
+                    if SALE.search(text) or MEDIA.search(text):
+                        continue
+                    kind = it.get('type') if it.get('type') in ('queja', 'propuesta', 'asociacion') else None
+                    cid = _add({'title': it.get('title', ''), 'url': it['url'], 'snippet': it.get('summary', '')}, sid,
+                               it.get('page_name') or _page_name(it['url']), kind)
                     if cid:
                         added.append(cid)
-                        if it.get('type') in ('queja', 'noticia'):
-                            db.exec_('UPDATE candidates SET social_type=? WHERE id=?', (it['type'], cid))
     except Exception as exc:
         errors.append('Búsqueda con IA: ' + str(exc)[:200])
     db.log('social_scan', f'Redes: {len(added)} publicaciones nuevas')
@@ -149,7 +203,10 @@ def items():
         if d and d < limit:
             continue
         r['date_iso'] = d.isoformat() if d else None
-        r['social_type'] = r.get('social_type') or kind_of((r.get('title') or '') + ' ' + (r.get('excerpt') or ''))
+        kind = r.get('social_type') if r.get('social_type') in ('queja', 'propuesta', 'asociacion') else kind_of((r.get('title') or '') + ' ' + (r.get('excerpt') or ''))
+        if not kind:
+            continue  # ventas, publicidad o noticias compartidas: no se muestran
+        r['social_type'] = kind
         r['group'] = 'Redes sociales'
         out.append(r)
     out.sort(key=lambda r: r.get('date_iso') or '', reverse=True)

@@ -131,5 +131,6 @@ label{display:grid;gap:6px;font-weight:700;font-size:14px}
 
 .kind{border-radius:6px;padding:1px 7px;font-weight:800;font-size:12px}
 .kind.queja{background:#FDE3E6;color:var(--red)}
-.kind.noticia{background:#E3ECFF;color:var(--blue)}
+.kind.propuesta{background:#E3ECFF;color:var(--blue)}
+.kind.asociacion{background:#E0F6EA;color:#00753A}
 .focus{background:#EEF3FF;border-radius:12px;padding:10px 14px;font-size:14px}

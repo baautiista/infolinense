@@ -275,9 +275,12 @@ class SocialPanel(unittest.TestCase):
             result = social.scan()
         rows = {r['url']: r for r in social.items()}
         self.assertTrue(result['added'])
+        self.assertEqual(social.kind_of('Vendo sofá en La Línea, 50 euros'), None)
+        self.assertEqual(social.kind_of('La asociación de vecinos de La Atunara convoca una asamblea'), 'asociacion')
+        self.assertEqual(social.kind_of('Vecinos proponen un carril bici en La Línea'), 'propuesta')
         group_post = rows['https://www.facebook.com/groups/lalineavecinos/posts/123']
         self.assertEqual(group_post['social_type'], 'queja')
-        self.assertEqual(rows['https://www.facebook.com/aytolalinea/posts/9']['social_type'], 'noticia')
+        self.assertNotIn('https://www.facebook.com/aytolalinea/posts/9', rows)  # noticia institucional: no es queja ni propuesta
         self.assertNotIn('https://otra.web/x', rows)
 
 
@@ -339,3 +342,32 @@ class StoryImage(unittest.TestCase):
                                                'image_hint': items[0]['image']}, '', 'playa Poniente La Línea alga asiática')
         self.assertEqual(found[0]['url'], items[0]['image'])
         self.assertEqual(web.call_args_list[0][0][0], 'playa Poniente La Línea alga asiática')
+
+
+class Sources(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        db.init_db()
+
+    def test_edicts_board_is_read(self):
+        from app import sources
+        today = datetime.now().strftime('%d/%m/%Y')
+        html = f'''<table><tr><th>Publicación</th><th>Fin</th><th>Título</th><th></th></tr>
+          <tr><td>{today}</td><td>30/10/2099</td><td>Convocatoria Subvenciones</td>
+          <td><a href="/edictos/edicto/descarga.action;jsessionid=ABC?codigo=2026-179627">Ver</a></td></tr>
+          <tr><td>01/01/2020</td><td>01/02/2020</td><td>Edicto antiguo</td><td><a href="/x?codigo=1">Ver</a></td></tr></table>'''
+
+        class R:
+            text = html
+            def raise_for_status(self): pass
+        with patch.object(sources, 'fetch', return_value=R()):
+            items = sources.parse_edictos({'url': 'https://www.sedeelectronica.lalinea.es/edictos/edicto/buscar-edictos-filtro-pub'})
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0]['url'], 'https://www.sedeelectronica.lalinea.es/edictos/edicto/descarga.action?codigo=2026-179627')
+        self.assertEqual(sources.source_group({'source_kind': 'edictos', 'url': items[0]['url']}), 'Licitaciones y edictos')
+
+    def test_only_the_city(self):
+        from app import sources
+        self.assertFalse(sources.exact_locality('Avería en la línea 1 del metro de Sevilla'))
+        self.assertFalse(sources.exact_locality('La Línea roja del Gobierno en la negociación'))
+        self.assertTrue(sources.exact_locality('Colas en la frontera de La Línea con Gibraltar'))

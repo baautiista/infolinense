@@ -1,5 +1,5 @@
 import os, json, threading, time, ipaddress, zipfile
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from urllib.parse import urlparse
 from zoneinfo import ZoneInfo
 from io import BytesIO
@@ -13,7 +13,7 @@ from . import db, sources, pipeline, publishers, photos, canva, ai, planner, lay
 from .auth import login, require_auth
 from .config import BASE_DIR, RENDER_DIR, UPLOAD_DIR, SCAN_INTERVAL_MINUTES, AUTO_PIPELINE, OPENAI_API_KEY, ADMIN_PASSWORD, JWT_SECRET, PUBLISH_MODE, CORS_ORIGINS, PUBLIC_BASE_URL, AUTO_PUBLISH
 
-VERSION='3.3.0'
+VERSION='3.4.0'
 app=FastAPI(title='InfoLinense Desk',version=VERSION)
 app.add_middleware(CORSMiddleware,allow_origins=CORS_ORIGINS,allow_credentials=False,allow_methods=['*'],allow_headers=['Authorization','Content-Type'])
 db.init_db()
@@ -192,12 +192,20 @@ def candidates(status:str='new'):
         rows=db.rows(base+" WHERE c.status IN ('new','researched','draft','needs_config') OR (c.status='review_ready' AND c.editorial_priority!='no_interest')")
     else:
         rows=db.rows(base+' WHERE c.status=?',(status,))
+    now=datetime.now(timezone.utc); out=[]
     for r in rows:
         r['group']=sources.source_group(r)
+        if r['group']=='Redes sociales' and status=='pending': continue  # están en la pestaña Redes
         d=sources.publication_datetime(r.get('published_at')) or sources.publication_datetime((r.get('created_at') or '').replace(' ','T')+'+00:00')
         r['date_iso']=d.isoformat() if d else None
-    rows.sort(key=lambda r:r.get('date_iso') or '',reverse=True)  # lo más reciente primero
-    return rows
+        keep=r.get('article_id') or (r.get('editorial_priority') or 'undecided') not in ('undecided','')
+        days=sources.WINDOW_DAYS.get(r['group'],sources.MAX_CANDIDATE_AGE_DAYS)
+        if not keep and d and d<now-timedelta(days=days): continue  # antigua: no se muestra
+        out.append(r)
+    order={g:i for i,g in enumerate(sources.BLOCKS)}
+    out.sort(key=lambda r:r.get('date_iso') or '',reverse=True)  # lo más reciente primero
+    out.sort(key=lambda r:order.get(r['group'],9))
+    return out
 
 @app.get('/api/articles',dependencies=[Depends(require_auth)])
 def list_articles():
@@ -601,7 +609,7 @@ def validate_source(s):
     try:
         if not ipaddress.ip_address(host).is_global: raise HTTPException(400,'No se permiten direcciones privadas')
     except ValueError: pass
-    if s.kind not in ('rss','html','bop','procurement','social') or not 0<=s.priority<=100 or not s.name.strip() or len(s.name)>120:
+    if s.kind not in ('rss','html','bop','procurement','social','edictos') or not 0<=s.priority<=100 or not s.name.strip() or len(s.name)>120:
         raise HTTPException(400,'Revisa el nombre, tipo y prioridad de la fuente')
     if s.kind=='social' and host not in ('facebook.com','www.facebook.com','instagram.com','www.instagram.com'):
         raise HTTPException(400,'Las fuentes sociales aceptan páginas de Facebook o Instagram')

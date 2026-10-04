@@ -11,9 +11,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from . import db, sources, pipeline, publishers, photos, canva, ai, planner, layout
 from .auth import login, require_auth
-from .config import BASE_DIR, RENDER_DIR, UPLOAD_DIR, SCAN_INTERVAL_MINUTES, AUTO_PIPELINE, OPENAI_API_KEY, ADMIN_PASSWORD, JWT_SECRET, PUBLISH_MODE, CORS_ORIGINS, PUBLIC_BASE_URL
+from .config import BASE_DIR, RENDER_DIR, UPLOAD_DIR, SCAN_INTERVAL_MINUTES, AUTO_PIPELINE, OPENAI_API_KEY, ADMIN_PASSWORD, JWT_SECRET, PUBLISH_MODE, CORS_ORIGINS, PUBLIC_BASE_URL, AUTO_PUBLISH
 
-VERSION='2.5.0'
+VERSION='3.0.0'
 app=FastAPI(title='InfoLinense Desk',version=VERSION)
 app.add_middleware(CORSMiddleware,allow_origins=CORS_ORIGINS,allow_credentials=False,allow_methods=['*'],allow_headers=['Authorization','Content-Type'])
 db.init_db()
@@ -59,7 +59,7 @@ async def ai_error_handler(request,exc):
 def auth_login(body:LoginIn): return {'token':login(body.password)}
 @app.get('/api/health')
 def health():
-    return {'ok':True,'version':VERSION,'auth_configured':bool(ADMIN_PASSWORD and JWT_SECRET),'openai_configured':bool(OPENAI_API_KEY),'claude_configured':bool(ai.ANTHROPIC_API_KEY),'ai_configured':ai.AI_ENABLED,'ai_provider':ai.ACTIVE_PROVIDER or None,'ai_fallback':[p for p in ai.provider_chain()[1:]],'draft_provider':ai.ACTIVE_PROVIDER or 'source_draft','draft_mode':'ai' if ai.AI_ENABLED else 'source_draft','web_search':{p:ai.web_enabled(p) for p in ai.provider_chain()},'publish_mode':PUBLISH_MODE,'auto_publish':False}
+    return {'ok':True,'version':VERSION,'auth_configured':bool(ADMIN_PASSWORD and JWT_SECRET),'openai_configured':bool(OPENAI_API_KEY),'claude_configured':bool(ai.ANTHROPIC_API_KEY),'ai_configured':ai.AI_ENABLED,'ai_provider':ai.ACTIVE_PROVIDER or None,'ai_fallback':[p for p in ai.provider_chain()[1:]],'draft_provider':ai.ACTIVE_PROVIDER or 'source_draft','draft_mode':'ai' if ai.AI_ENABLED else 'source_draft','web_search':{p:ai.web_enabled(p) for p in ai.provider_chain()},'publish_mode':PUBLISH_MODE,'auto_publish':bool(AUTO_PUBLISH and PUBLISH_MODE!='none')}
 
 @app.get('/api/ai/check',dependencies=[Depends(require_auth)])
 def ai_check():
@@ -93,7 +93,7 @@ def canva_callback(code:str='',state:str='',error:str=''):
     if error: raise HTTPException(400,'Canva no autorizó la conexión')
     try: canva.complete(code,state)
     except ValueError as e: raise HTTPException(400,str(e))
-    return RedirectResponse('https://infolinense-desk.lovable.app/?canva=connected',status_code=303)
+    return RedirectResponse((PUBLIC_BASE_URL or '')+'/#settings',status_code=303)
 
 @app.post('/api/articles/{aid}/canva',dependencies=[Depends(require_auth)])
 def create_canva_design(aid:int):
@@ -180,8 +180,26 @@ def candidates(status:str='new'):
              FROM candidates c LEFT JOIN sources s ON s.id=c.source_id
              LEFT JOIN articles a ON a.candidate_id=c.id AND a.status!='rejected'"""
     if status=='pending':
-        return db.rows(base+" WHERE c.status IN ('new','researched','draft') ORDER BY c.score DESC,c.id DESC")
-    return db.rows(base+' WHERE c.status=? ORDER BY c.score DESC,c.id DESC')
+        rows=db.rows(base+" WHERE c.status IN ('new','researched','draft','needs_config') OR (c.status='review_ready' AND c.editorial_priority!='no_interest')")
+    else:
+        rows=db.rows(base+' WHERE c.status=?',(status,))
+    for r in rows:
+        r['group']=sources.source_group(r)
+        d=sources.publication_datetime(r.get('published_at')) or sources.publication_datetime((r.get('created_at') or '').replace(' ','T')+'+00:00')
+        r['date_iso']=d.isoformat() if d else None
+    rows.sort(key=lambda r:r.get('date_iso') or '',reverse=True)  # lo más reciente primero
+    return rows
+
+@app.get('/api/articles',dependencies=[Depends(require_auth)])
+def list_articles():
+    """Todas las noticias redactadas que siguen vivas (borrador, revisión, aprobadas y publicadas recientes)."""
+    rows=db.rows("""SELECT a.id,a.candidate_id,a.section,a.headline,a.status,a.image_url,a.updated_at,a.publish_url,
+                    c.planned_at,c.editorial_priority,c.source_name,c.outlet,d.exported canva_exported
+                    FROM articles a LEFT JOIN candidates c ON c.id=a.candidate_id LEFT JOIN canva_designs d ON d.article_id=a.id
+                    WHERE a.status IN ('draft','review_ready','approved') OR (a.status='published' AND a.updated_at>=datetime('now','-3 day'))""")
+    order={'urgent':0,'today':1,'this_week':2,'future':3}
+    rows.sort(key=lambda r:(r['status']=='published',order.get(r.get('editorial_priority'),9),r.get('planned_at') or '9999'))
+    return rows
 @app.post('/api/candidates/{cid}/investigate',dependencies=[Depends(require_auth)])
 def investigate(cid:int):
     try: return {'ok':True,'research':pipeline.investigate_candidate(cid)}
@@ -281,7 +299,7 @@ def review():
     return db.rows("""SELECT a.*,c.title source_title,c.url source_url,c.score,c.source_name,d.url canva_url,d.exported canva_exported FROM articles a LEFT JOIN candidates c ON c.id=a.candidate_id LEFT JOIN canva_designs d ON d.article_id=a.id WHERE a.status IN ('review_ready','approved') ORDER BY a.id DESC""")
 @app.get('/api/articles/{aid}',dependencies=[Depends(require_auth)])
 def article(aid:int):
-    a=db.row('SELECT a.*,c.url source_url,c.score,c.source_name FROM articles a LEFT JOIN candidates c ON c.id=a.candidate_id WHERE a.id=?',(aid,))
+    a=db.row('SELECT a.*,c.url source_url,c.score,c.source_name,c.outlet,c.planned_at FROM articles a LEFT JOIN candidates c ON c.id=a.candidate_id WHERE a.id=?',(aid,))
     if not a: raise HTTPException(404)
     return a
 @app.get('/api/articles/{aid}/carousel',dependencies=[Depends(require_auth)])
@@ -516,15 +534,24 @@ def research_more(aid:int):
     return db.row('SELECT * FROM articles WHERE id=?',(new_aid,))
 @app.post('/api/articles/{aid}/publish',dependencies=[Depends(require_auth)])
 def publish(aid:int):
-    a=db.row('SELECT * FROM articles WHERE id=?',(aid,))
+    """«Aprobar y publicar»: aprueba la noticia y la publica en la web (Lovable) si está configurada."""
+    a=db.row('SELECT a.*,c.url source_url,c.source_name,c.outlet FROM articles a LEFT JOIN candidates c ON c.id=a.candidate_id WHERE a.id=?',(aid,))
     if not a: raise HTTPException(404)
-    if a['status']!='approved': raise HTTPException(400,'Primero debes aprobar la noticia')
-    artwork=db.row('SELECT exported FROM canva_designs WHERE article_id=?',(aid,))
-    if not canva.ready() or not canva.connected() or not artwork or not artwork['exported'] or not (RENDER_DIR/f'article_{aid}.png').is_file():
-        raise HTTPException(400,'Regenera la imagen final en Canva antes de publicar')
+    if a['status']=='published': return {'ok':True,'url':a.get('publish_url') or '','published':True}
+    if not (a.get('headline') or '').strip() or not (a.get('body') or '').strip(): raise HTTPException(400,'Falta el titular o el texto')
+    if not a.get('image_local') or not Path(a['image_local']).is_file(): raise HTTPException(400,'Elige una foto antes de publicar')
+    db.exec_("UPDATE articles SET status='approved',updated_at=CURRENT_TIMESTAMP WHERE id=?",(aid,))
+    db.exec_("UPDATE candidates SET status='review_ready' WHERE id=?",(a['candidate_id'],))
+    if PUBLISH_MODE=='none' or not AUTO_PUBLISH:
+        return {'ok':True,'published':False,'message':'Aprobada. La publicación en la web no está configurada en Railway.'}
     try:
-        url=publishers.publish(a); db.exec_("UPDATE articles SET status='published',publish_url=?,updated_at=CURRENT_TIMESTAMP WHERE id=?",(url,aid)); return {'ok':True,'url':url}
-    except Exception as e: raise HTTPException(400,str(e))
+        url=publishers.publish(a)
+    except Exception as e:
+        raise HTTPException(502,'Aprobada, pero la web no aceptó la noticia: '+str(e)[:250])
+    db.exec_("UPDATE articles SET status='published',publish_url=?,updated_at=CURRENT_TIMESTAMP WHERE id=?",(url,aid))
+    db.log('publish',f'Noticia {aid} publicada en la web')
+    db.exec_("UPDATE candidates SET status='published' WHERE id=?",(a['candidate_id'],))
+    return {'ok':True,'url':url,'published':True}
 @app.get('/api/sources',dependencies=[Depends(require_auth)])
 def list_sources(): return db.rows('SELECT * FROM sources ORDER BY priority DESC')
 def validate_source(s):

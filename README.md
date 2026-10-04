@@ -24,6 +24,13 @@ El backend FastAPI corre en Railway y el panel editorial de Lovable consume la m
 2. Publica el panel como aplicación privada con pantalla de contraseña. Añade **solo su origen exacto** (`https://<tu-proyecto>.lovable.app`) a `CORS_ORIGINS` en Railway. Si usas dominio propio, añádelo separado por coma. Redepliega si Railway no aplica las variables automáticamente.
 3. Accede al panel, prueba Dashboard y Revisión y comprueba **Plantillas → Canva**. Los PNG privados solo existen tras exportar desde Canva y se descargan mediante `fetch` con token; un enlace `<img src="https://backend/media/render/...">` directo devolverá 401.
 
+## Novedades 3.0
+
+- **Redacta ChatGPT**: con `AI_PROVIDER=auto` el principal es OpenAI; Claude solo entra si ChatGPT falla.
+- **Noticias actuales y por fuentes**: solo entran noticias con fecha comprobable de los últimos `MAX_CANDIDATE_AGE_DAYS` (2 por defecto); si la lista no trae fecha se lee de la propia página. Lo antiguo sin prioridad se retira solo. El radar se divide en Ayuntamiento, Boletines y edictos, Licitaciones, Medios, Redes sociales, Gibraltar y región, y Nacional e internacional, y muestra el medio real (también en Google News).
+- **Panel nuevo para móvil** (raíz del servidor): Noticias, Agenda, Redacción y Ajustes. Se eliminan Inicio con métricas, Plantillas, Revisión y Kit por separado: todo se hace en la ficha de la noticia.
+- **Publicar en infolinense.com**: el botón «Publicar» aprueba y envía la noticia a la web de Lovable (`PUBLISH_MODE=lovable`, `LOVABLE_WEBHOOK_URL`, `PUBLISH_WEBHOOK_SECRET`). Instrucciones para la web en `lovable/PROMPT_WEB_PUBLICAR.md`.
+
 ## Novedades 2.5
 
 - **Redacción automática**: al marcar una noticia como Urgente, Hoy, Esta semana o Futura se investiga y redacta sola, una a una (urgentes primero). También se retoman al arrancar y tras cada búsqueda. Se desactiva con `AUTO_DRAFT_USEFUL=false`.

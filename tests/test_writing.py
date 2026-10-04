@@ -230,3 +230,28 @@ class AutoDraft(unittest.TestCase):
         main.triage_candidate(cid, main.TriageIn(priority='no_interest'))
         time.sleep(0.2)
         self.assertIsNone(pipeline.existing_article(cid))
+
+
+class WebPublish(unittest.TestCase):
+    def test_lovable_receives_article_with_secret_and_photo(self):
+        from app import publishers
+        photo = Path(_temp.name) / 'pub.jpg'
+        from PIL import Image
+        Image.new('RGB', (800, 600), 'blue').save(photo)
+        sent = {}
+
+        def fake_post(url, json=None, headers=None, timeout=None):
+            sent.update(url=url, json=json, headers=headers)
+            return Resp(200, {'url': 'https://infolinense.com/noticia/x'})
+        art = {'id': 7, 'headline': 'Más de 550 toneladas de alga', 'subtitle': 'E', 'body': 'Uno.\nDos.', 'section': 'Playas',
+               'image_local': str(photo), 'sources_json': '[]', 'source_url': 'https://lalinea.es/a'}
+        Resp.text = ''
+        with patch.object(publishers, 'PUBLISH_MODE', 'lovable'), patch.object(publishers, 'LOVABLE_WEBHOOK_URL', 'https://x.supabase.co/functions/v1/publish-article'), \
+             patch.object(publishers, 'PUBLISH_WEBHOOK_SECRET', 's3cret'), patch.object(publishers.requests, 'post', side_effect=fake_post):
+            url = publishers.publish(art)
+        self.assertEqual(url, 'https://infolinense.com/noticia/x')
+        self.assertEqual(sent['headers']['x-infolinense-secret'], 's3cret')
+        self.assertEqual(sent['json']['section'], 'MEDIO AMBIENTE')
+        self.assertEqual(sent['json']['slug'], 'mas-de-550-toneladas-de-alga-7')
+        self.assertTrue(sent['json']['image_base64'])
+        self.assertEqual(sent['json']['body_html'], '<p>Uno.</p><p>Dos.</p>')

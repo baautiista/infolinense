@@ -37,9 +37,13 @@ def parse_rss(source):
     items = []
     for it in root.findall('.//item')[:120]:
         title, link = clean(it.findtext('title')), clean(it.findtext('link'))
+        outlet = clean(it.findtext('source'))  # Google News indica el medio original
+        if outlet and title.endswith(' - ' + outlet):
+            title = title[:-(len(outlet) + 3)].strip()
         if title and link:
             items.append({'title': title, 'url': link, 'excerpt': clean(it.findtext('description')),
-                          'published_at': clean(it.findtext('pubDate'))})
+                          'published_at': clean(it.findtext('pubDate')) or clean(it.findtext('{http://purl.org/dc/elements/1.1/}date')),
+                          'outlet': outlet})
     if not items:
         ns = {'a': 'http://www.w3.org/2005/Atom'}
         for it in root.findall('.//a:entry', ns)[:120]:
@@ -168,7 +172,44 @@ def is_duplicate(title, url):
         if difflib.SequenceMatcher(None, normalized, prior).ratio() > 0.90: return True
     return False
 
-def add_candidate(title, url, excerpt, source_name, source_id=None, published_at='', source_meta=None, local_angle=''):
+_DATE_META = ('article:published_time', 'og:published_time', 'datePublished', 'pubdate', 'date', 'DC.date.issued',
+              'article:modified_time', 'publish-date', 'sailthru.date')
+
+
+def page_date(url):
+    """Fecha de publicación leída de la propia página (meta, <time> o JSON-LD)."""
+    try:
+        r = fetch(url, timeout=12)
+        if not r.ok: return ''
+        soup = BeautifulSoup(r.text[:400000], 'html.parser')
+        for key in _DATE_META:
+            tag = soup.find('meta', attrs={'property': key}) or soup.find('meta', attrs={'name': key}) or soup.find('meta', attrs={'itemprop': key})
+            if tag and tag.get('content') and publication_datetime(tag['content'].strip()):
+                return tag['content'].strip()
+        m = re.search(r'"datePublished"\s*:\s*"([^"]+)"', r.text)
+        if m and publication_datetime(m.group(1)): return m.group(1)
+        t = soup.find('time', attrs={'datetime': True})
+        if t and publication_datetime(t['datetime']): return t['datetime']
+    except Exception:
+        pass
+    return ''
+
+
+def source_group(row):
+    """Grupo de fuente para dividir el radar: Ayuntamiento, Medios, Boletines y edictos, Licitaciones, Redes, Región, Web."""
+    kind = (row.get('source_kind') or row.get('kind') or '').lower()
+    blob = ' '.join(str(row.get(k) or '') for k in ('source_name', 'outlet', 'url')).lower()
+    if kind == 'procurement' or 'licitac' in blob or 'contratac' in blob or 'contratos' in blob: return 'Licitaciones'
+    if kind == 'bop' or any(w in blob for w in ('bop', 'boe', 'boja', 'edicto')): return 'Boletines y edictos'
+    if kind == 'social' or 'facebook' in blob or 'instagram' in blob: return 'Redes sociales'
+    if 'lalinea.es' in blob or 'ayuntamiento' in blob: return 'Ayuntamiento'
+    if any(w in blob for w in ('gibraltar.gov', 'apba', 'junta', 'diputaci')): return 'Gibraltar y región'
+    if (row.get('scope') or '') in ('nacional', 'internacional'): return 'Nacional e internacional'
+    if (row.get('scope') or '') == 'regional': return 'Gibraltar y región'
+    return 'Medios'
+
+
+def add_candidate(title, url, excerpt, source_name, source_id=None, published_at='', source_meta=None, local_angle='', outlet=''):
     source_meta = source_meta or {'priority': 60, 'official': 0, 'local_scope': 0}
     title, excerpt = clean(title)[:260], clean(excerpt)[:1000]
     local_angle = clean(local_angle)[:800]
@@ -177,9 +218,9 @@ def add_candidate(title, url, excerpt, source_name, source_id=None, published_at
     if is_duplicate(title, url): return None
     score = heuristic_score(title, excerpt + ' ' + local_angle, source_meta)
     relevance = 'low' if score < 50 else ('medium' if score < 70 else 'high')
-    return db.exec_('''INSERT OR IGNORE INTO candidates(source_id,source_name,title,url,published_at,excerpt,score,relevance,status,local_angle)
-                       VALUES(?,?,?,?,?,?,?,?,?,?)''',
-                    (source_id, source_name, title, url, published_at, excerpt, score, relevance, 'new', local_angle))
+    return db.exec_('''INSERT OR IGNORE INTO candidates(source_id,source_name,title,url,published_at,excerpt,score,relevance,status,local_angle,outlet)
+                       VALUES(?,?,?,?,?,?,?,?,?,?,?)''',
+                    (source_id, source_name, title, url, published_at, excerpt, score, relevance, 'new', local_angle, clean(outlet)[:120]))
 
 def read_source(source):
     if source['kind'] == 'rss': return parse_rss(source)
@@ -227,9 +268,19 @@ def scan_all():
                 source = jobs[job]
                 try:
                     items = job.result(); count = 0
+                    items = [i for i in items if not db.row('SELECT 1 FROM candidates WHERE url=?', (i['url'],))]
+                    # Solo noticias actuales: si la lista no trae fecha, se lee de la propia página.
+                    undated = [i for i in items if not i.get('published_at') and source['kind'] in ('html', 'rss', 'social')][:40]
+                    if undated:
+                        with ThreadPoolExecutor(max_workers=8) as dates:
+                            for item, date in zip(undated, dates.map(lambda i: page_date(i['url']), undated)):
+                                item['published_at'] = date
                     for item in items:
+                        if not item.get('published_at') and source['kind'] in ('html', 'rss', 'social') and not source.get('local_scope'):
+                            continue  # sin fecha comprobable: no se puede asegurar que sea actual
                         cid = add_candidate(item['title'], item['url'], item.get('excerpt', ''),
-                                            source['name'], source['id'], item.get('published_at', ''), source)
+                                            source['name'], source['id'], item.get('published_at', ''), source,
+                                            outlet=item.get('outlet', ''))
                         if cid: added.append(cid); count += 1
                     source_health(source['id'], len(items), count)
                 except Exception as exc:
@@ -241,15 +292,35 @@ def scan_all():
                 for item in ai.discover_candidates():
                     meta = {'priority': 85 if item.get('official') else 65,
                             'official': bool(item.get('official')), 'local_scope': False}
+                    date = str(item.get('published_at') or '') or page_date(item.get('url', ''))
+                    if not date or db.row('SELECT 1 FROM candidates WHERE url=?', (item.get('url', ''),)):
+                        continue
                     cid = add_candidate(item.get('title', ''), item.get('url', ''),
-                                        item.get('excerpt', ''), item.get('source_name', 'Web'),
-                                        None, str(item.get('published_at') or ''), meta, item.get('local_angle', ''))
-                    if cid: added.append(cid)
+                                        item.get('excerpt', ''), 'Búsqueda web',
+                                        None, date, meta, item.get('local_angle', ''),
+                                        outlet=item.get('source_name', ''))
+                    if cid:
+                        added.append(cid)
+                        scope = str(item.get('scope') or '').lower()
+                        db.exec_('UPDATE candidates SET scope=? WHERE id=?', (scope[:20], cid))
             except Exception as exc: errors.append('Descubrimiento web IA: ' + str(exc)[:250])
-        db.log('scan', f'Escaneo: {len(added)} nuevas; {len(errors)} errores')
+        archived = archive_stale()
+        db.log('scan', f'Escaneo: {len(added)} nuevas; {archived} antiguas retiradas; {len(errors)} errores')
         return {'added': added, 'errors': errors, 'sources_checked': len(active), 'busy': False}
     finally:
         _scan_lock.release()
+
+def archive_stale():
+    """Retira del radar lo que ya no es actual y nadie ha marcado como útil."""
+    limit = datetime.now(timezone.utc) - timedelta(days=MAX_CANDIDATE_AGE_DAYS)
+    n = 0
+    for row in db.rows("""SELECT id,published_at,created_at FROM candidates
+                          WHERE status IN ('new','researched','needs_config') AND editorial_priority IN ('undecided','')"""):
+        date = publication_datetime(row.get('published_at')) or publication_datetime((row.get('created_at') or '').replace(' ', 'T') + '+00:00')
+        if date and date < limit:
+            db.exec_("UPDATE candidates SET status='archived' WHERE id=?", (row['id'],)); n += 1
+    return n
+
 
 def fetch_article_text(url):
     if '.pdf' in urlparse(url).path.lower(): return ''

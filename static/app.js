@@ -1,68 +1,286 @@
-const $=s=>document.querySelector(s);
-let token=localStorage.getItem('infolinense_token')||'';
-let renderUrls=[];
-const photoCache={};
-let publishConfigured=false;
-function showLogin(){token='';localStorage.removeItem('infolinense_token');renderUrls.forEach(URL.revokeObjectURL);renderUrls=[];$('#view').innerHTML='';$('#login').hidden=false;$('.shell').hidden=true}
-async function showDesk(){ $('#login').hidden=true;$('.shell').hidden=false;try{publishConfigured=(await api('/api/health')).publish_mode!=='none'}catch{publishConfigured=false}await render() }
-async function request(url,opt={}){
-  const headers={...(opt.body instanceof FormData?{}:{'Content-Type':'application/json'}),...(token?{Authorization:`Bearer ${token}`}:{}) ,...(opt.headers||{})};
-  const r=await fetch(url,{...opt,headers});
-  if(r.status===401 && url!=='/api/auth/login'){showLogin();throw new Error('La sesión ha caducado')}
-  if(!r.ok){let detail=await r.text();try{detail=JSON.parse(detail).detail||detail}catch{}throw new Error(detail||r.statusText)}
+/* InfoLinense Desk 3 — panel móvil: Noticias, Agenda, Redacción y Ajustes. */
+const $ = s => document.querySelector(s);
+let token = localStorage.getItem('infolinense_token') || '';
+let view = 'news', editorId = null, group = 'Todas', onlyToday = false;
+let blobUrls = [];
+const polling = {};
+const cache = { photos: {}, article: {} };
+
+const PRIO = [['urgent', 'Urgente'], ['today', 'Hoy'], ['this_week', 'Semana'], ['future', 'Futura']];
+const PRIO_LABEL = Object.fromEntries(PRIO);
+const GROUPS = ['Ayuntamiento', 'Boletines y edictos', 'Licitaciones', 'Medios', 'Redes sociales', 'Gibraltar y región', 'Nacional e internacional'];
+const SECTIONS = [['OBRAS', '#0150FE', '#fff'], ['CIUDAD', '#4F9AFC', '#fff'], ['GIBRALTAR', '#7249E0', '#fff'], ['SUCESOS', '#D02132', '#fff'],
+  ['CULTURA', '#E72E79', '#fff'], ['DEPORTES', '#00AB4F', '#fff'], ['COMERCIO', '#FF8E1A', '#fff'], ['MEDIO AMBIENTE', '#62DBD1', '#061E5C'],
+  ['POLÍTICA', '#08176E', '#fff'], ['SOCIEDAD', '#2756CD', '#fff'], ['PATRIMONIO', '#B9831E', '#fff'], ['AGENDA', '#FDE206', '#061E5C']];
+const SEC = Object.fromEntries(SECTIONS.map(s => [s[0], s]));
+const STATUS = { draft: 'Borrador', review_ready: 'Por revisar', approved: 'Aprobada', published: 'Publicada' };
+
+/* ---------- utilidades ---------- */
+function esc(s) { return String(s ?? '').replace(/[&<>"']/g, m => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[m])) }
+function safeUrl(s) { try { const u = new URL(s); return ['http:', 'https:'].includes(u.protocol) ? esc(u.href) : '#' } catch { return '#' } }
+function jparse(s, d) { try { return JSON.parse(s || '') ?? d } catch { return d } }
+function host(u) { try { return new URL(u).hostname.replace('www.', '') } catch { return '' } }
+function toast(t) { const el = $('#toast'); el.textContent = t; el.hidden = false; clearTimeout(toast.t); toast.t = setTimeout(() => el.hidden = true, 3200) }
+function ago(iso) {
+  if (!iso) return '';
+  const d = new Date(iso), now = new Date(), min = Math.round((now - d) / 60000);
+  if (min < 60) return `hace ${Math.max(1, min)} min`;
+  if (min < 600) return `hace ${Math.round(min / 60)} h`;
+  const day = d.toLocaleDateString('es-ES', { timeZone: 'Europe/Madrid' }) === now.toLocaleDateString('es-ES', { timeZone: 'Europe/Madrid' }) ? 'hoy'
+    : d.toLocaleDateString('es-ES', { timeZone: 'Europe/Madrid', day: 'numeric', month: 'short' });
+  return `${day} ${d.toLocaleTimeString('es-ES', { timeZone: 'Europe/Madrid', hour: '2-digit', minute: '2-digit' })}`;
+}
+function isToday(iso) { return iso && new Date(iso).toLocaleDateString('es-ES', { timeZone: 'Europe/Madrid' }) === new Date().toLocaleDateString('es-ES', { timeZone: 'Europe/Madrid' }) }
+function secBadge(name) { const s = SEC[name] || SEC.CIUDAD; return `<span class="sec" style="background:${s[1]};color:${s[2]}">${esc(s[0])}</span>` }
+function special(n) { const t = `${n.title} ${n.excerpt || ''} ${n.source_name || ''}`.toLowerCase(); if (n.source_kind === 'procurement' || /licitaci|contrataci|adjudicaci/.test(t)) return 'Licitación'; if (n.source_kind === 'bop' || /edicto/.test(t)) return 'Edicto'; if (/exclusiv/.test(t)) return 'Exclusiva'; return '' }
+const wait = ms => new Promise(r => setTimeout(r, ms));
+
+async function request(url, opt = {}) {
+  const headers = { ...(opt.body instanceof FormData ? {} : { 'Content-Type': 'application/json' }), ...(token ? { Authorization: `Bearer ${token}` } : {}) };
+  const r = await fetch(url, { ...opt, headers });
+  if (r.status === 401 && url !== '/api/auth/login') { logout(); throw new Error('La sesión ha caducado') }
+  if (!r.ok) { let d = await r.text(); try { d = JSON.parse(d).detail || d } catch { } throw new Error(typeof d === 'string' ? d : JSON.stringify(d)) }
   return r;
 }
-async function api(url,opt={}){const r=await request(url,opt);return r.headers.get('content-type')?.includes('json')?r.json():r.text()}
-async function renderBlob(id){return (await request(`/media/render/${id}.png`)).blob()}
-async function loadRenders(){renderUrls.forEach(URL.revokeObjectURL);renderUrls=[];for(const img of document.querySelectorAll('img[data-render]')){try{const url=URL.createObjectURL(await renderBlob(img.dataset.render));renderUrls.push(url);img.src=url}catch{img.alt='Vista previa no disponible'}}}
-window.downloadRender=async id=>{try{const url=URL.createObjectURL(await renderBlob(id));const a=document.createElement('a');a.href=url;a.download=`infolinense-${id}.png`;a.click();setTimeout(()=>URL.revokeObjectURL(url),30000)}catch(e){toast(e.message)}};
-window.connectCanva=async()=>{try{const r=await api('/api/canva/connect');window.location.href=r.url}catch(e){toast(e.message)}};
-window.createCanva=async id=>{if(!await saveArticle(id))return;toast('Creando diseño en Canva…');try{const r=await api(`/api/articles/${id}/canva`,{method:'POST'});window.location.href=safeUrl(r.url)}catch(e){toast(e.message)}};
-window.exportCanva=async id=>{try{const r=await api(`/api/articles/${id}/canva/export`,{method:'POST'});toast(r.exported?'Imagen actualizada desde Canva':'Canva no exportó la imagen');await review($('#view'))}catch(e){toast(e.message)}};
-$('#loginForm').onsubmit=async e=>{e.preventDefault();$('#loginError').textContent='';try{const r=await api('/api/auth/login',{method:'POST',body:JSON.stringify({password:$('#password').value})});token=r.token;localStorage.setItem('infolinense_token',token);$('#password').value='';showDesk()}catch(err){$('#loginError').textContent=err.message}};
-$('#logoutBtn').onclick=showLogin;
-let current='dashboard'; const titles={dashboard:['Panel editorial','Radar, redacción, diseño y revisión humana.'],radar:['Radar de noticias','Lo nuevo de La Línea, priorizado y sin duplicados.'],review:['Revisión','Aquí llegan las piezas terminadas antes de publicar.'],templates:['Plantillas','Tus diseños reales, no recreaciones automáticas.'],sources:['Fuentes','Controla exactamente dónde busca InfoLinense.'],settings:['Ajustes','Estado de conexiones y publicación.']};
-function toast(t){const d=document.createElement('div');d.className='toast';d.textContent=t;document.body.appendChild(d);setTimeout(()=>d.remove(),3500)}
-function setView(v){current=v;document.querySelectorAll('nav button').forEach(b=>b.classList.toggle('active',b.dataset.view===v));$('#title').textContent=titles[v][0];$('#subtitle').textContent=titles[v][1];render()}
-document.querySelectorAll('nav button').forEach(b=>b.onclick=()=>setView(b.dataset.view));
-$('#scanBtn').onclick=async()=>{const b=$('#scanBtn');b.classList.add('loading');b.textContent='Buscando…';try{const r=await api('/api/scan',{method:'POST'});toast(r.busy?'Ya hay un rastreo en marcha':`${r.added.length} hallazgos · ${r.errors.length} fuentes con error`);render()}catch(e){toast('Error: '+e.message)}finally{b.classList.remove('loading');b.textContent='Buscar noticias ahora'}};
-async function render(){const v=$('#view');v.innerHTML='<div class="empty">Cargando…</div>';try{if(current==='dashboard')return await dash(v);if(current==='radar')return await radar(v);if(current==='review')return await review(v);if(current==='templates')return await templates(v);if(current==='sources')return await sources(v);if(current==='settings')return await settings(v)}catch(e){if(token)v.innerHTML=`<div class="empty">${esc(e.message)}</div>`}}
-async function dash(v){const d=await api('/api/dashboard');v.innerHTML=`<div class="grid">${[['Nuevas',d.counts.new],['Investigadas',d.counts.researched],['Borradores',d.counts.draft],['En revisión',d.counts.review]].map(x=>`<div class="metric"><small>${x[0]}</small><strong>${x[1]}</strong></div>`).join('')}</div><div class="section-title"><h2>Últimos hallazgos · elige el siguiente paso</h2></div><div class="list">${d.latest.length?d.latest.map(newsRow).join(''):'<div class="empty">Pulsa “Buscar noticias ahora” para iniciar el radar.</div>'}</div>`}
-function researchNotes(n){if(!n.research_json)return '';let r={};try{r=JSON.parse(n.research_json)}catch{}return `<details class="research-notes"><summary>Ver investigación</summary>${(r.facts||[]).slice(0,6).map(x=>`<p>• ${esc(typeof x==='string'?x:JSON.stringify(x))}</p>`).join('')}${(r.caveats||[]).map(x=>`<p><b>Por comprobar:</b> ${esc(x)}</p>`).join('')}${(r.sources||[]).map(x=>`<a href="${safeUrl(x.url)}" target="_blank" rel="noopener noreferrer">${esc(x.name||x.url)}</a>`).join(' ')}</details>`}
-function newsRow(n){const label={new:'Nueva',researched:'Investigada',draft:'Borrador'}[n.status]||n.status;const action=n.status==='new'?`<button class="secondary" onclick="stepCandidate(${n.id},'investigate',this)">Investigar</button>`:n.status==='researched'?`<button class="primary" onclick="stepCandidate(${n.id},'draft',this)">Redactar</button>`:n.status==='draft'?`<button class="secondary" onclick="showDraft(${n.id})">Editar borrador</button><button class="primary" onclick="submitCandidate(${n.id})">Enviar a Revisión</button>`:'';return `<div class="news" id="candidate-${n.id}"><div class="score">${n.score}</div><div><div><span class="pill">${esc(label)}</span><span class="meta">${esc(n.source_name||'')}</span></div><h3>${esc(n.title)}</h3><div class="meta">${n.url?`<a href="${safeUrl(n.url)}" target="_blank" rel="noopener noreferrer">Ver fuente original</a>`:''}</div>${researchNotes(n)}<div class="draft-editor" id="draft-${n.id}"></div></div><div class="actions">${action}<button class="ghost" onclick="archiveCandidate(${n.id})">Descartar</button></div></div>`}
-async function radar(v){const [items,stats]=await Promise.all([api('/api/candidates?status=pending'),api('/api/radar/stats')]);const failing=stats.sources.filter(s=>s.active&&s.last_error);v.innerHTML=`<div class="grid radar-stats"><div class="metric"><small>Publicadas hoy · ${esc(stats.date)}</small><strong>${stats.found} <span class="target">/ ${stats.target}</span></strong></div><div class="metric"><small>Fuentes activas</small><strong>${stats.source_count}</strong></div><div class="metric"><small>Pendientes</small><strong>${items.length}</strong></div><div class="metric"><small>Fuentes con error</small><strong>${failing.length}</strong></div></div><div class="notice"><b>Objetivo: 50 hallazgos locales diarios si se publican suficientes fuentes.</b> Solo cuenta publicaciones con fecha de hoy; ${stats.discovered_today??0} enlaces se detectaron hoy y ${stats.undated_today??0} no indican fecha. Elige cada etapa: Investigar → Redactar → Revisión. Ninguna noticia se publica automáticamente. Facebook e Instagram solo aportan contenido público indexado.</div>${failing.length?`<div class="notice warn">Fuentes con error: ${failing.map(x=>esc(x.name)).join(', ')}. Consulta <a href="#" onclick="setView('sources');return false">Fuentes</a> para ver el detalle.</div>`:''}<div class="section-title"><h2>${items.length} por tramitar</h2></div><div class="list">${items.length?items.map(newsRow).join(''):'<div class="empty">No hay candidatas pendientes.</div>'}</div>`}
-window.stepCandidate=async(id,action,button)=>{button.disabled=true;toast(action==='investigate'?'Recopilando datos y fuentes…':'Preparando borrador…');try{await api(`/api/candidates/${id}/${action}`,{method:'POST'});toast(action==='investigate'?'Lista para redactar':'Borrador listo para editar');await render()}catch(e){toast(e.message);button.disabled=false}};
-window.showDraft=async id=>{const box=$(`#draft-${id}`);try{const a=await api(`/api/candidates/${id}/draft`);box.innerHTML=`<div class="card"><h3>Editar borrador antes de revisión</h3><label>Titular<input class="draft-input" id="dh-${id}" value="${attr(a.headline||'')}"></label><label>Texto para redes<textarea class="draft-input" id="db-${id}" maxlength="2200">${esc(a.body||'')}</textarea></label><label>Resumen gráfico<textarea class="draft-input" id="dg-${id}">${esc(a.graphic_summary||'')}</textarea></label><div class="actions"><button class="secondary" onclick="saveDraft(${id},${a.id},false)">Guardar borrador</button><button class="primary" onclick="saveDraft(${id},${a.id},true)">Guardar y enviar a Revisión</button></div></div>`;box.scrollIntoView({behavior:'smooth',block:'nearest'})}catch(e){toast(e.message)}};
-window.saveDraft=async(id,aid,submit)=>{try{await api(`/api/articles/${aid}`,{method:'PUT',body:JSON.stringify({headline:$(`#dh-${id}`).value,body:$(`#db-${id}`).value,graphic_summary:$(`#dg-${id}`).value})});if(submit){await api(`/api/candidates/${id}/submit`,{method:'POST'});setView('review')}else toast('Borrador guardado')}catch(e){toast(e.message)}};
-window.submitCandidate=async id=>{try{await api(`/api/candidates/${id}/submit`,{method:'POST'});toast('Enviado a Revisión');setView('review')}catch(e){toast(e.message)}};
-window.archiveCandidate=async id=>{try{await api(`/api/candidates/${id}/archive`,{method:'POST'});toast('Descartada');await render()}catch(e){toast(e.message)}};
-async function review(v){const items=await api('/api/review');if(!items.length){v.innerHTML='<div class="empty">Todavía no hay piezas listas. Las noticias menos relevantes llegarán aquí como borradores. La imagen se crea al exportarla desde Canva.</div>';return}v.innerHTML=items.map(a=>reviewCard(a)).join('');items.forEach(a=>{const ta=$(`#social-${a.id}`);if(ta)ta.oninput=()=>{$(`#count-${a.id}`).textContent=ta.value.length+'/2200'}});await loadRenders()}
-function reviewCard(a){const img=a.canva_exported?`/media/render/${a.id}.png`:'';return `<article class="review-card"><div class="review-top"><div class="preview">${img?`<img data-render="${a.id}" alt="Diseño de la noticia">`:'<div class="empty">Pendiente de exportar en Canva</div>'}</div><div class="editor"><div><span class="pill ${a.workflow}">${a.workflow==='quick'?'FICHA PARA REVISIÓN':'INVESTIGADA'}</span><span class="pill">${esc(a.section||'')}</span><span class="meta">Puntuación ${a.score??''}</span></div><h2>${esc(a.headline||'')}</h2><div class="subtitle">${esc(a.subtitle||'')}</div><div class="field"><label>Titular</label><input id="h-${a.id}" value="${attr(a.headline||'')}"></div><div class="field"><label>Resumen gráfico</label><textarea id="g-${a.id}">${esc(a.graphic_summary||a.subtitle||'')}</textarea></div><div class="field"><label>Texto para redes · máximo 2.200 caracteres</label><textarea id="social-${a.id}" maxlength="2200">${esc(a.social_text||'')}</textarea><div class="counter" id="count-${a.id}">${(a.social_text||'').length}/2200</div></div>${a.image_url?`<div class="notice"><b>Foto elegida.</b> <button class="ghost" style="margin-left:8px;padding:5px 8px" onclick="showPhotos(${a.id})">Cambiar foto</button></div><div id="photos-${a.id}"></div>`:`<div class="notice warn"><b>Todavía no hay foto.</b> <button class="ghost" onclick="showPhotos(${a.id})">Buscar foto</button></div><div id="photos-${a.id}"></div>`}${a.ai_image_suggestion?`<div class="notice ai"><b>Sugerencia IA (separada):</b> ${esc(a.ai_image_suggestion)}<br><small>Solo se generaría si tú lo autorizas expresamente.</small></div>`:''}<div class="actions"><button class="secondary" onclick="saveArticle(${a.id})">Guardar texto</button><button class="secondary" onclick="createCanva(${a.id})">${a.canva_url?'Regenerar en Canva':'Crear en Canva'}</button>${a.canva_url?`<button class="ghost" onclick="exportCanva(${a.id})">Actualizar PNG desde Canva</button>`:''}<button class="primary" onclick="approve(${a.id})">Aprobar</button><button class="danger" onclick="rejectA(${a.id})">Descartar</button></div><div class="meta" style="margin-top:12px">Fuente: <a target="_blank" href="${safeUrl(a.source_url)}" rel="noopener noreferrer">${esc(a.source_name||'Ver original')}</a></div></div></div>${a.status==='approved'?`<div class="kit"><h3>Módulo 7 · Kit de redes</h3><div class="kit-grid"><div>${img?`<img data-render="${a.id}" alt="Diseño final" style="width:100%;max-width:360px;border-radius:12px">`:''}</div><div><b>Texto completo</b><div class="textarea-read">${esc(a.social_text||'')}</div><div class="actions"><button class="ghost" onclick="navigator.clipboard.writeText(document.querySelector('#social-${a.id}').value);toast('Texto copiado')">Copiar texto</button><button class="secondary" onclick="downloadRender(${a.id})">Descargar imagen</button><button class="primary" onclick="createCanva(${a.id})">Crear en Canva</button>${publishConfigured?`<button class="primary" onclick="publishA(${a.id})">Publicar en web</button>`:''}</div></div></div></div>`:''}</article>`}
-window.saveArticle=async id=>{try{await api(`/api/articles/${id}`,{method:'PUT',body:JSON.stringify({headline:$(`#h-${id}`).value,graphic_summary:$(`#g-${id}`).value,body:$(`#social-${id}`).value})});toast('Texto guardado; la imagen anterior de Canva debe regenerarse');await review($('#view'));return true}catch(e){toast(e.message);return false}};
-window.approve=async id=>{try{const a=await api(`/api/articles/${id}`);if($('#h-'+id).value!==a.headline||$('#g-'+id).value!==a.graphic_summary||$('#social-'+id).value!==a.body){toast('Guarda el texto y regenera la imagen de Canva antes de aprobar');return}await api(`/api/articles/${id}/approve`,{method:'POST'});toast('Aprobada');await review($('#view'))}catch(e){toast(e.message)}};
-window.rejectA=async id=>{await api(`/api/articles/${id}/reject`,{method:'POST'});toast('Descartada');review($('#view'))};
-window.publishA=async id=>{try{const r=await api(`/api/articles/${id}/publish`,{method:'POST'});toast(r.url?'Publicada':'Publicación completada');review($('#view'))}catch(e){toast(e.message)}};
-async function templates(v){
-  const c=await api('/api/capabilities');
-  let info;try{info=await api('/api/canva/template')}catch(e){v.innerHTML=`<div class="empty">${esc(e.message)}</div>`;return}
-  const fields=info.fields||{};
-  const url=safeUrl(c.canva_template_url);
-  v.innerHTML=`<div class="card"><h2>Plantilla de noticias en Canva</h2><p>${info.valid&&c.canva_connected?'Conectada y lista para usar':'Comprueba la conexión y los campos en Canva'}</p><div class="notice"><b>Campos:</b> HEADLINE (${esc(fields.HEADLINE||'sin detectar')}), SUMMARY (${esc(fields.SUMMARY||'sin detectar')}), SECTION (${esc(fields.SECTION||'sin detectar')}), PHOTO (${esc(fields.PHOTO||'sin detectar')}).</div><p>Redacta primero la noticia. En Revisión elige una foto y pulsa Crear en Canva para obtener el PNG final.</p><a class="secondary" href="${url}" target="_blank" rel="noopener noreferrer">Abrir plantilla en Canva</a></div>`;
-}
-let sourceCache=[],sourceEditId=null;
-async function sources(v){
-  sourceCache=await api('/api/sources');
-  v.innerHTML=`<div class="notice"><b>Redes sociales:</b> las páginas de Facebook e Instagram se buscan mediante publicaciones públicas indexadas; no es una lectura completa ni en tiempo real. El tablón municipal puede fallar: cada fuente muestra el resultado de su última consulta.</div><div class="card" id="source-editor"><h2 id="source-form-title">Añadir fuente</h2><form id="sourceForm" class="source-form"><label>Nombre<input name="name" required maxlength="120" placeholder="Medio o página local"></label><label>URL pública HTTPS<input name="url" type="url" required placeholder="https://ejemplo.es/feed/"></label><label>Tipo<select name="kind"><option value="rss">RSS / Atom</option><option value="html">Portada de noticias</option><option value="social">Facebook / Instagram indexados</option><option value="bop">BOP Cádiz</option><option value="procurement">Licitaciones Gobierto</option></select></label><label>Prioridad (0 a 100)<input name="priority" type="number" min="0" max="100" value="60"></label><label class="check"><input name="official" type="checkbox"> Fuente oficial</label><label class="check"><input name="local_scope" type="checkbox"> Página exclusivamente de La Línea</label><div class="actions"><button class="primary" type="submit">Guardar fuente</button><button class="ghost" type="button" onclick="cancelSourceEdit()">Cancelar edición</button></div></form><p class="meta">Marca “Página exclusivamente de La Línea” solo si todas sus noticias se refieren a la ciudad. Para redes pega la URL de una página pública concreta.</p></div><div class="card" style="margin-top:16px"><div class="source-row"><b>Fuente y última consulta</b><b>Tipo</b><b>Prioridad</b><b>Estado</b><b>Acciones</b></div>${sourceCache.map(s=>`<div class="source-row"><div><b>${esc(s.name)}</b><br><a target="_blank" href="${safeUrl(s.url)}" rel="noopener noreferrer">${esc(s.url)}</a><div class="meta">${s.last_checked_at?`Consultada ${esc(s.last_checked_at)} UTC · ${s.items_seen} vistas · ${s.items_added} nuevas`:'Aún sin consultar'}</div>${s.last_error?`<div class="source-error">${esc(s.last_error)}</div>`:''}</div><span>${s.kind==='social'?'Red indexada':esc(s.kind)}</span><span>${s.priority}</span><button class="ghost" onclick="toggleS(${s.id})">${s.active?'Activa':'Pausada'}</button><div class="actions"><button class="ghost" onclick="checkS(${s.id})">Comprobar</button><button class="secondary" onclick="editS(${s.id})">Editar</button></div></div>`).join('')}</div>`;
-  $('#sourceForm').onsubmit=async e=>{e.preventDefault();const f=e.target;const data=Object.fromEntries(new FormData(f).entries());data.priority=Number(data.priority);data.official=f.elements.official.checked;data.local_scope=f.elements.local_scope.checked;try{await api(sourceEditId?`/api/sources/${sourceEditId}`:'/api/sources',{method:sourceEditId?'PUT':'POST',body:JSON.stringify(data)});sourceEditId=null;toast('Fuente guardada');await sources(v)}catch(err){toast(err.message)}};
-}
-window.cancelSourceEdit=()=>{sourceEditId=null;$('#sourceForm').reset();$('#source-form-title').textContent='Añadir fuente'};
-window.editS=id=>{const s=sourceCache.find(x=>x.id===id);if(!s)return;sourceEditId=id;const f=$('#sourceForm');f.elements.name.value=s.name;f.elements.url.value=s.url;f.elements.kind.value=s.kind;f.elements.priority.value=s.priority;f.elements.official.checked=!!s.official;f.elements.local_scope.checked=!!s.local_scope;$('#source-form-title').textContent='Editar: '+s.name;$('#source-editor').scrollIntoView({behavior:'smooth'})};
-window.checkS=async id=>{toast('Comprobando fuente…');try{const r=await api(`/api/sources/${id}/check`,{method:'POST'});toast(r.ok?`${r.items_seen} elementos accesibles`:'La fuente no responde');await sources($('#view'))}catch(e){toast(e.message)}};
-window.toggleS=async id=>{await api(`/api/sources/${id}/toggle`,{method:'POST'});sources($('#view'))};
-async function settings(v){const h=await api('/api/health');v.innerHTML=`<div class="grid"><div class="metric"><small>IA editorial</small><strong style="font-size:20px">${h.openai_configured?'Conectada':'Borrador de fuente'}</strong></div><div class="metric"><small>Publicación web</small><strong style="font-size:20px">${h.publish_mode}</strong></div></div><div class="card" style="margin-top:16px"><h2>Canva</h2><p id="canva-status">Consultando conexión…</p><button class="secondary" onclick="connectCanva()">Conectar Canva</button></div><div class="card" style="margin-top:16px"><h2>Qué falta para producción</h2><p>1. Las fichas gratuitas se basan en la fuente original. Comprueba los datos y reescribe el texto antes de publicar. La investigación con IA es opcional y requiere una API de pago.</p><p>2. La publicación en infolinense.com requiere conectar su destino real. Lovable aloja este panel editorial.</p><p>3. Las imágenes siempre se buscan en fuentes reales. La IA visual queda bloqueada salvo autorización humana.</p></div>`;const c=await api('/api/capabilities');document.querySelector('#canva-status').textContent=c.canva_connected?'Canva conectado · plantilla de noticias lista':c.canva_configured?'Pendiente de autorización. Pulsa Conectar Canva.':'Falta configurar las credenciales en Railway.'}
-function esc(s){return String(s??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]))}function attr(s){return esc(s).replace(/\n/g,' ')}
-function safeUrl(s){try{const u=new URL(s);return ['http:','https:'].includes(u.protocol)?attr(u.href):'#'}catch{return '#'}}
-if(token)showDesk();else showLogin();
+async function api(url, opt) { const r = await request(url, opt); return r.headers.get('content-type')?.includes('json') ? r.json() : r.text() }
+async function blobUrl(url) { const u = URL.createObjectURL(await (await request(url)).blob()); blobUrls.push(u); return u }
+async function download(url, name) { try { const a = document.createElement('a'); a.href = await blobUrl(url); a.download = name; a.click() } catch (e) { toast(e.message) } }
 
-window.showPhotos=async id=>{const box=$(`#photos-${id}`);box.innerHTML='<div class="notice">Buscando fotografías reales…</div>';try{const imgs=await api(`/api/articles/${id}/photos`);photoCache[id]=imgs;box.innerHTML=imgs.length?`<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:10px">${imgs.map((im,i)=>`<button class="ghost" style="padding:4px" onclick="choosePhoto(${id},${i})"><img src="${safeUrl(im.url)}" style="width:100%;aspect-ratio:4/3;object-fit:cover;border-radius:8px"><small>${esc(im.source||'Fuente')}</small></button>`).join('')}</div>`:'<div class="notice warn">No se han encontrado fotos reales adicionales.</div>'}catch(e){box.innerHTML=`<div class="notice warn">${esc(e.message)}</div>`}};
-window.choosePhoto=async(id,index)=>{try{const im=photoCache[id]?.[index];if(!im)throw new Error('Fotografía no disponible');await api(`/api/articles/${id}/photo`,{method:'POST',body:JSON.stringify(im)});toast('Foto cambiada; crea de nuevo el diseño en Canva');review($('#view'))}catch(e){toast(e.message)}};
+/* ---------- sesión y navegación ---------- */
+function logout() { token = ''; localStorage.removeItem('infolinense_token'); $('#app').hidden = true; $('#login').hidden = false }
+$('#loginForm').onsubmit = async e => {
+  e.preventDefault(); $('#loginError').textContent = '';
+  try { token = (await api('/api/auth/login', { method: 'POST', body: JSON.stringify({ password: $('#password').value }) })).token; localStorage.setItem('infolinense_token', token); $('#password').value = ''; start() }
+  catch (err) { $('#loginError').textContent = err.message }
+};
+function start() { $('#login').hidden = true; $('#app').hidden = false; go(location.hash.slice(1) || 'news') }
+document.querySelectorAll('.tabs button').forEach(b => b.onclick = () => go(b.dataset.view));
+$('#backBtn').onclick = () => history.length > 1 ? history.back() : go('drafts');
+window.onhashchange = () => { const h = location.hash.slice(1); if (h && h !== currentHash()) go(h, true) };
+function currentHash() { return view === 'editor' ? `editor/${editorId}` : view }
+function go(target, fromHash) {
+  const [v, id] = target.split('/');
+  view = ['news', 'agenda', 'drafts', 'settings', 'editor'].includes(v) ? v : 'news';
+  editorId = view === 'editor' ? Number(id) : null;
+  if (!fromHash) location.hash = currentHash();
+  document.querySelectorAll('.tabs button').forEach(b => b.classList.toggle('on', b.dataset.view === (view === 'editor' ? 'drafts' : view)));
+  $('#title').textContent = { news: 'Noticias', agenda: 'Agenda', drafts: 'Redacción', settings: 'Ajustes', editor: 'Noticia' }[view];
+  $('#backBtn').hidden = view !== 'editor';
+  $('#scanBtn').hidden = view !== 'news';
+  render();
+}
+async function render() {
+  blobUrls.forEach(URL.revokeObjectURL); blobUrls = [];
+  const v = $('#view'); v.innerHTML = '<p class="empty">Cargando…</p>'; window.scrollTo(0, 0);
+  try { await ({ news, agenda, drafts, settings, editor }[view])(v) }
+  catch (e) { if (token) v.innerHTML = `<p class="empty">${esc(e.message)}</p>` }
+}
+
+/* ---------- Noticias ---------- */
+$('#scanBtn').onclick = async () => {
+  const b = $('#scanBtn'); b.disabled = true; b.textContent = 'Buscando…';
+  try { const r = await api('/api/scan', { method: 'POST' }); toast(r.busy ? 'Ya hay una búsqueda en marcha' : `${r.added.length} noticias nuevas`); if (view === 'news') render() }
+  catch (e) { toast(e.message) } finally { b.disabled = false; b.textContent = 'Buscar noticias' }
+};
+let newsCache = [];
+async function news(v) {
+  newsCache = await api('/api/candidates?status=pending');
+  drawNews(v);
+}
+function drawNews(v = $('#view')) {
+  const pool = onlyToday ? newsCache.filter(n => isToday(n.date_iso)) : newsCache;
+  const count = g => pool.filter(n => g === 'Todas' || n.group === g).length;
+  const groups = ['Todas', ...GROUPS.filter(g => count(g))];
+  if (!groups.includes(group)) group = 'Todas';
+  const items = pool.filter(n => group === 'Todas' || n.group === group);
+  v.innerHTML = `<div class="filters"><div class="chips scroll">${groups.map(g => `<button class="chip ${g === group ? 'on' : ''}" data-g="${esc(g)}">${esc(g)} <b>${count(g)}</b></button>`).join('')}</div>
+    <label class="switch"><input type="checkbox" id="today" ${onlyToday ? 'checked' : ''}> Solo de hoy</label></div>
+    ${items.length ? `<div class="list">${items.map(card).join('')}</div>` : `<p class="empty">No hay noticias ${onlyToday ? 'de hoy ' : ''}en ${group === 'Todas' ? 'ninguna fuente' : esc(group)}. Pulsa «Buscar noticias».</p>`}`;
+  v.querySelectorAll('[data-g]').forEach(b => b.onclick = () => { group = b.dataset.g; drawNews() });
+  $('#today').onchange = e => { onlyToday = e.target.checked; drawNews() };
+  items.forEach(n => { if ((n.work_state === 'queued' || n.work_state === 'working') && !n.article_id) poll(n.id) });
+}
+function card(n) {
+  const prio = PRIO_LABEL[n.editorial_priority] ? n.editorial_priority : '';
+  const sp = special(n);
+  return `<article class="item" id="c-${n.id}">
+    <div class="meta"><span class="src">${esc(n.outlet || n.source_name || host(n.url))}</span><span>${ago(n.date_iso)}</span>${sp ? `<span class="flag">${sp}</span>` : ''}</div>
+    <h3><a href="${safeUrl(n.url)}" target="_blank" rel="noopener noreferrer">${esc(n.title)}</a></h3>
+    ${n.local_angle ? `<p class="angle">${esc(n.local_angle)}</p>` : ''}
+    <div class="chips">${PRIO.map(([k, t]) => `<button class="chip ${prio === k ? 'on' : ''}" onclick="setPriority(${n.id},'${k}')">${t}</button>`).join('')}<button class="chip no" onclick="setPriority(${n.id},'no_interest')" aria-label="No interesa" title="No interesa">✕</button></div>
+    <div class="state" id="s-${n.id}">${stateLine(n)}</div></article>`;
+}
+function stateLine(n) {
+  if (n.article_id) return `<button class="btn primary small" onclick="go('editor/${n.article_id}')">Abrir borrador</button><span class="muted">${n.planned_at ? 'Agenda: ' + esc(String(n.planned_at).slice(11, 16)) : ''}</span>`;
+  if (n.work_state === 'queued' || n.work_state === 'working') return `<span class="spin"></span><span class="muted">Redactando…</span>`;
+  if (n.work_state === 'error') return `<span class="error">${esc(jparse(n.work_error, {}).message || 'No se pudo redactar')}</span><button class="btn small" onclick="writeNow(${n.id})">Reintentar</button>`;
+  return n.editorial_priority && PRIO_LABEL[n.editorial_priority] ? `<span class="muted">En cola para redactar</span>` : '';
+}
+window.setPriority = async (id, p) => {
+  try {
+    await api(`/api/candidates/${id}/triage`, { method: 'POST', body: JSON.stringify({ priority: p }) });
+    const n = newsCache.find(x => x.id === id);
+    if (p === 'no_interest') { newsCache = newsCache.filter(x => x.id !== id); drawNews(); toast('Descartada'); return }
+    if (n) { n.editorial_priority = p; if (!n.article_id) n.work_state = 'queued'; $(`#c-${id}`).outerHTML = card(n); if (!n.article_id) poll(id) }
+  } catch (e) { toast(e.message) }
+};
+window.writeNow = async id => {
+  const s = $(`#s-${id}`); if (s) s.innerHTML = '<span class="spin"></span><span class="muted">Redactando…</span>';
+  try { const r = await api(`/api/candidates/${id}/write?wait=40`, { method: 'POST' }); r.state === 'done' ? done(id, r.article_id) : poll(id) }
+  catch (e) { if (s) s.innerHTML = `<span class="error">${esc(e.message)}</span><button class="btn small" onclick="writeNow(${id})">Reintentar</button>` }
+};
+async function poll(id) {
+  if (polling[id]) return; polling[id] = true;
+  try {
+    for (let i = 0; i < 150; i++) {
+      const st = await api(`/api/candidates/${id}/write`);
+      const s = $(`#s-${id}`);
+      if (st.state === 'done') return done(id, st.article_id);
+      if (st.state === 'error') { if (s) s.innerHTML = `<span class="error">${esc(st.error?.detail || st.error?.message || 'No se pudo redactar')}</span><button class="btn small" onclick="writeNow(${id})">Reintentar</button>`; return }
+      if (st.state === 'idle') { if (s) s.innerHTML = stateLine({}); return }
+      if (s) s.innerHTML = `<span class="spin"></span><span class="muted">${esc(st.step_text || 'Redactando…')}</span>`;
+      if (!s && view !== 'news') return;
+      await wait(4000);
+    }
+  } catch { } finally { delete polling[id] }
+}
+function done(id, aid) { const n = newsCache.find(x => x.id === id); if (n) { n.article_id = aid; n.work_state = 'done' } const s = $(`#s-${id}`); if (s) s.innerHTML = stateLine({ article_id: aid, planned_at: n?.planned_at }) }
+
+/* ---------- Agenda ---------- */
+async function agenda(v) {
+  const s = await api('/api/schedule');
+  const groups = {};
+  for (const it of s.items) (groups[it.planned_at ? String(it.planned_at).slice(0, 10) : 'sin'] ||= []).push(it);
+  v.innerHTML = s.items.length ? Object.entries(groups).map(([day, items]) => `<h2 class="day">${day === 'sin' ? 'Sin hueco' : new Date(day + 'T12:00').toLocaleDateString('es-ES', { weekday: 'long', day: 'numeric', month: 'long' })}</h2>
+    <div class="list">${items.map(it => `<article class="item slot"><div class="hour">${it.planned_at ? String(it.planned_at).slice(11, 16) : '–'}</div><div class="grow">
+      <div class="meta"><span>${esc(PRIO_LABEL[it.editorial_priority] || '')}</span>${special(it) ? `<span class="flag">${special(it)}</span>` : ''}${it.article_status ? `<span>${STATUS[it.article_status] || ''}</span>` : '<span class="muted">Redactando</span>'}</div>
+      <h3>${it.article_id ? `<a href="#editor/${it.article_id}">${esc(it.article_headline || it.title)}</a>` : esc(it.title)}</h3>
+      <div class="row"><input type="datetime-local" value="${esc(String(it.planned_at || '').slice(0, 16))}" onchange="setTime(${it.id},'${it.editorial_priority}',this.value)">${it.plan_locked ? `<button class="link" onclick="setPriority(${it.id},'${it.editorial_priority}').then(render)">Automática</button>` : ''}</div>
+    </div></article>`).join('')}</div>`).join('')
+    : '<p class="empty">Marca noticias como Urgente, Hoy, Esta semana o Futura y aparecerán aquí repartidas por horas.</p>';
+}
+window.setTime = async (id, p, value) => { if (!value) return; try { await api(`/api/candidates/${id}/triage`, { method: 'POST', body: JSON.stringify({ priority: p, planned_at: value + ':00' }) }); toast('Hora fijada'); render() } catch (e) { toast(e.message) } };
+
+/* ---------- Redacción ---------- */
+async function drafts(v) {
+  const items = await api('/api/articles');
+  v.innerHTML = items.length ? `<div class="list">${items.map(a => `<a class="item art" href="#editor/${a.id}">
+      <div class="meta">${secBadge(a.section)}<span class="st st-${a.status}">${STATUS[a.status] || a.status}</span>${a.planned_at ? `<span>${esc(String(a.planned_at).slice(11, 16))} ${isToday(a.planned_at) ? '' : esc(new Date(a.planned_at).toLocaleDateString('es-ES', { day: 'numeric', month: 'short' }))}</span>` : ''}</div>
+      <h3>${esc(a.headline)}</h3><div class="meta"><span>${esc(a.outlet || a.source_name || '')}</span>${a.canva_exported ? '<span>Imagen lista</span>' : ''}</div></a>`).join('')}</div>`
+    : '<p class="empty">Aún no hay noticias redactadas. Marca una prioridad en Noticias y se redactará sola.</p>';
+}
+
+/* ---------- Editor ---------- */
+function cw(c) { const W = { ' ': .26, '.': .28, ',': .28, ':': .28, ';': .28, '-': .36, "'": .25 }; if (c in W) return W[c]; if ('iljIJ1!¡íÍ'.includes(c)) return .33; if ('tf'.includes(c)) return .40; if ('mwMW'.includes(c)) return .92; if (c !== c.toLowerCase()) return .72; if (/[0-9]/.test(c)) return .62; return .60 }
+function lines(t) { let n = 0, cur = ''; for (const w of String(t || '').split(/\s+/).filter(Boolean)) { const x = (cur + ' ' + w).trim(); if ([...x].reduce((a, c) => a + cw(c), 0) * 74 <= 870 || !cur) cur = x; else { n++; cur = w } } return n + (cur ? 1 : 0) }
+
+async function editor(v) {
+  const [a, kit] = await Promise.all([api(`/api/articles/${editorId}`), api(`/api/articles/${editorId}/kit`)]);
+  cache.article = a;
+  const options = jparse(a.headline_options_json, []), missing = jparse(a.missing_data_json, []), srcs = jparse(a.sources_json, []);
+  const published = a.status === 'published';
+  v.innerHTML = `<div class="editor">
+    <section class="visual">
+      <div class="frame" id="frame">${kit.image_url || kit.photo_download_url ? '<img id="preview" alt="Imagen de la noticia">' : '<p class="empty">Sin foto todavía</p>'}</div>
+      <div class="row wrap">
+        <button class="btn small" onclick="photoPanel()">Cambiar foto</button>
+        <button class="btn small" id="canvaBtn" onclick="makeCanva()">${kit.canva_exported ? 'Rehacer imagen en Canva' : 'Crear imagen en Canva'}</button>
+        ${kit.image_url ? `<button class="btn small" onclick="download('/media/render/${a.id}.png','infolinense-${a.id}.png')">Descargar imagen</button>` : kit.photo_download_url ? `<button class="btn small" onclick="download('${kit.photo_download_url}','infolinense-${a.id}.jpg')">Descargar foto</button>` : ''}
+      </div>
+      <p class="muted small">${kit.image_url ? 'Imagen final con la plantilla de Canva.' : kit.photo_download_url ? 'Foto elegida' + (kit.image_credit ? ': ' + esc(kit.image_credit) : '') + '. Crea la imagen en Canva cuando el texto esté listo.' : ''}</p>
+      <div id="photos"></div>
+    </section>
+    <section class="fields">
+      <div class="meta"><span class="st st-${a.status}">${STATUS[a.status] || a.status}</span>${a.source_url ? `<a href="${safeUrl(a.source_url)}" target="_blank" rel="noopener noreferrer">Fuente: ${esc(a.outlet || a.source_name || host(a.source_url))}</a>` : ''}${published && a.publish_url ? `<a href="${safeUrl(a.publish_url)}" target="_blank" rel="noopener">Ver en la web</a>` : ''}</div>
+      <label>Sección<select id="f-section">${SECTIONS.map(s => `<option ${s[0] === a.section ? 'selected' : ''}>${s[0]}</option>`).join('')}</select></label>
+      <label>Titular<textarea id="f-headline" rows="2">${esc(a.headline)}</textarea></label>
+      ${options.length ? `<details class="alts"><summary>7 titulares alternativos</summary>${options.map((h, i) => `<button class="alt" data-i="${i}">${esc(h)}</button>`).join('')}<button class="link" id="moreHeads">Proponer otros 7</button></details>` : `<button class="link" id="moreHeads">Proponer 7 titulares</button>`}
+      <label>Titular de la imagen <span class="muted" id="fit"></span><input id="f-image_headline" value="${esc(a.image_headline || '')}" placeholder="Vacío: se usa el titular"></label>
+      <label>Entradilla<textarea id="f-subtitle" rows="3">${esc(a.subtitle)}</textarea></label>
+      <label>Texto <span class="muted" id="count"></span><textarea id="f-body" rows="16" maxlength="2200">${esc(a.body)}</textarea></label>
+      <label>Resumen de la imagen<textarea id="f-graphic_summary" rows="2" maxlength="150">${esc(a.graphic_summary)}</textarea></label>
+      ${missing.length ? `<div class="note"><b>Antes de publicar confirma:</b><ul>${missing.map(m => `<li>${esc(typeof m === 'string' ? m : JSON.stringify(m))}</li>`).join('')}</ul></div>` : ''}
+      ${srcs.length ? `<p class="muted small">Fuentes: ${srcs.map(s => `<a href="${safeUrl(s.url)}" target="_blank" rel="noopener noreferrer">${esc(s.name || host(s.url))}</a>`).join(', ')}</p>` : ''}
+      <details class="alts" id="carousel"><summary>${a.carousel_suitable ? 'Carrusel recomendado' : 'Carrusel'}</summary><div id="carouselBox"><p class="muted small">${esc(a.carousel_reason || '')}</p><button class="btn small" onclick="carousel()">Preparar diapositivas</button></div></details>
+    </section>
+  </div>
+  <div class="actions">
+    <button class="btn" onclick="save(true)">Guardar</button>
+    <button class="btn" onclick="copyText()">Copiar</button>
+    ${published ? '<span class="muted">Publicada</span>' : `<button class="btn primary" id="pubBtn" onclick="publish()">Publicar</button>`}
+  </div>`;
+  const f = id => $(`#f-${id}`);
+  const fit = () => { const n = lines(f('image_headline').value || f('headline').value); $('#fit').textContent = n <= 4 ? `${n} de 4 líneas` : `${n} líneas: se recortará`; $('#fit').className = n <= 4 ? 'muted' : 'error' };
+  const count = () => $('#count').textContent = `${f('body').value.length} / 2.200`;
+  f('image_headline').oninput = fit; f('headline').oninput = fit; f('body').oninput = count; fit(); count();
+  v.querySelectorAll('.alt').forEach(b => b.onclick = () => { f('headline').value = options[b.dataset.i]; fit(); toast('Titular cambiado') });
+  $('#moreHeads').onclick = async e => { e.target.textContent = 'Pensando…'; try { await saveArticle(); await api(`/api/articles/${a.id}/headlines`, { method: 'POST' }); render() } catch (er) { toast(er.message); e.target.textContent = 'Reintentar' } };
+  const img = $('#preview');
+  if (img) img.src = await blobUrl(kit.image_url || kit.photo_download_url);
+}
+function values() { const o = {}; ['section', 'headline', 'image_headline', 'subtitle', 'body', 'graphic_summary'].forEach(k => o[k] = $(`#f-${k}`).value); return o }
+async function saveArticle(say) { await api(`/api/articles/${editorId}`, { method: 'PUT', body: JSON.stringify(values()) }); if (say) toast('Guardado') }
+window.save = s => saveArticle(s).catch(e => toast(e.message));
+window.copyText = async () => { const o = values(); await navigator.clipboard.writeText([o.headline, o.subtitle, o.body].filter(Boolean).join('\n\n')); toast('Texto copiado') };
+window.makeCanva = async () => {
+  const b = $('#canvaBtn'); b.disabled = true; b.textContent = 'Creando en Canva…';
+  try { await saveArticle(); const r = await api(`/api/articles/${editorId}/canva`, { method: 'POST' }); toast(r.exported ? 'Imagen creada' : (r.export_error || 'Diseño creado; falta exportar')); render() }
+  catch (e) { toast(e.message); b.disabled = false; b.textContent = 'Crear imagen en Canva' }
+};
+window.publish = async () => {
+  const b = $('#pubBtn'); b.disabled = true; b.textContent = 'Publicando…';
+  try { await saveArticle(); const r = await api(`/api/articles/${editorId}/publish`, { method: 'POST' }); toast(r.published ? 'Publicada en la web' : r.message || 'Aprobada'); render() }
+  catch (e) { toast(e.message); b.disabled = false; b.textContent = 'Publicar' }
+};
+window.photoPanel = async (q = '', refresh = false) => {
+  const box = $('#photos'); box.innerHTML = '<p class="muted"><span class="spin"></span> Buscando fotos…</p>';
+  try {
+    const imgs = await api(`/api/articles/${editorId}/photos${q ? '?q=' + encodeURIComponent(q) : refresh ? '?refresh=true' : ''}`);
+    cache.photos = imgs;
+    box.innerHTML = `<form class="row" id="pq"><input name="q" placeholder="Buscar otra foto" value="${esc(q)}"><button class="btn small">Buscar</button></form>
+      <div class="gallery">${imgs.map((im, i) => `<button class="pic" data-i="${i}"><img src="${safeUrl(im.url)}" loading="lazy" referrerpolicy="no-referrer" alt="" onerror="this.parentElement.remove()"><span>${esc(im.source_name || host(im.source))}</span></button>`).join('') || '<p class="muted">Sin resultados.</p>'}</div>
+      <div class="row wrap"><button class="link" type="button" id="again">Buscar de nuevo en la noticia</button><label class="link upload">Subir foto<input type="file" accept="image/jpeg,image/png,image/webp" hidden id="up"></label></div>`;
+    $('#pq').onsubmit = e => { e.preventDefault(); photoPanel(e.target.q.value) };
+    $('#again').onclick = () => photoPanel('', true);
+    box.querySelectorAll('.pic').forEach(b => b.onclick = async () => { try { await saveArticle(); await api(`/api/articles/${editorId}/photo`, { method: 'POST', body: JSON.stringify(cache.photos[b.dataset.i]) }); toast('Foto cambiada'); render() } catch (e) { toast(e.message) } });
+    $('#up').onchange = async e => { const fd = new FormData(); fd.append('file', e.target.files[0]); try { await saveArticle(); await api(`/api/articles/${editorId}/photo/upload`, { method: 'POST', body: fd }); toast('Foto subida'); render() } catch (er) { toast(er.message) } };
+  } catch (e) { box.innerHTML = `<p class="error">${esc(e.message)}</p>` }
+};
+window.carousel = async () => {
+  const box = $('#carouselBox'); box.innerHTML = '<p class="muted"><span class="spin"></span> Preparando…</p>';
+  try {
+    await saveArticle(); const r = await api(`/api/articles/${editorId}/carousel`, { method: 'POST' });
+    box.innerHTML = r.suitable ? `<ol class="slides">${r.slides.map(s => `<li><b>${esc(s.title)}</b><br>${esc(s.text)}</li>`).join('')}</ol>
+      <div class="row wrap"><button class="btn small" id="cDesign">Crear diapositivas en Canva</button><button class="link" onclick="carousel()">Rehacer</button></div>`
+      : `<p class="muted small">No compensa hacer carrusel: ${esc(r.reason)}</p>`;
+    const d = $('#cDesign');
+    if (d) d.onclick = async () => { d.disabled = true; d.textContent = 'Creando…'; try { const x = await api(`/api/articles/${editorId}/carousel/design`, { method: 'POST', body: JSON.stringify({ photo_urls: [cache.article.image_url] }) }); toast('Carrusel listo'); download(x.download_url, `infolinense-carrusel-${editorId}.zip`) } catch (e) { toast(e.message) } finally { d.disabled = false; d.textContent = 'Crear diapositivas en Canva' } };
+  } catch (e) { box.innerHTML = `<p class="error">${esc(e.message)}</p><button class="btn small" onclick="carousel()">Reintentar</button>` }
+};
+
+/* ---------- Ajustes ---------- */
+async function settings(v) {
+  const [h, caps, srcs] = await Promise.all([api('/api/health'), api('/api/capabilities'), api('/api/sources')]);
+  v.innerHTML = `<section class="panel"><h2>Redacción con IA</h2>
+      <p>${h.ai_configured ? `Redacta ${h.ai_provider === 'openai' ? 'ChatGPT' : 'Claude'}${h.ai_fallback?.length ? ' (con respaldo)' : ''}.` : 'No hay ninguna clave de IA en Railway.'}</p>
+      <button class="btn small" id="aiCheck">Comprobar ahora</button><div id="aiOut"></div></section>
+    <section class="panel"><h2>Canva</h2><p>${caps.canva_connected ? 'Conectado. Las imágenes usan tu plantilla de noticias.' : caps.canva_configured ? 'Falta autorizar la conexión.' : 'Faltan las credenciales de Canva en Railway.'}</p>
+      ${caps.canva_configured ? `<button class="btn small" id="canvaConn">${caps.canva_connected ? 'Volver a conectar' : 'Conectar Canva'}</button>` : ''}</section>
+    <section class="panel"><h2>Web</h2><p>${h.auto_publish ? '«Aprobar y publicar» envía la noticia a infolinense.com.' : 'La publicación en infolinense.com no está configurada: «Aprobar y publicar» solo aprueba.'}</p></section>
+    <section class="panel"><h2>Fuentes</h2>
+      <div class="sources">${srcs.map(s => `<div class="srcrow"><label class="switch"><input type="checkbox" ${s.active ? 'checked' : ''} onchange="toggleSource(${s.id})"> ${esc(s.name)}</label>${s.last_error ? `<span class="error small">Error</span>` : `<span class="muted small">${s.items_added ?? 0} nuevas</span>`}</div>`).join('')}</div>
+      <form id="addSrc" class="stack"><input name="name" placeholder="Nombre del medio o página" required><input name="url" type="url" placeholder="https://… (RSS, portada, Facebook o Instagram)" required>
+      <select name="kind"><option value="rss">RSS</option><option value="html">Portada web</option><option value="social">Facebook / Instagram</option></select><button class="btn small">Añadir fuente</button></form></section>
+    <button class="btn" onclick="logout()">Salir</button>`;
+  $('#aiCheck').onclick = async e => {
+    e.target.disabled = true; e.target.textContent = 'Comprobando…';
+    try { const r = await api('/api/ai/check'); $('#aiOut').innerHTML = r.providers.filter(p => p.configured).map(p => `<p class="${p.ok ? 'ok' : 'error'}"><b>${esc(p.provider_name)}</b> ${p.active ? '(principal)' : '(respaldo)'}: ${p.ok ? 'funciona' : esc(p.message) + (p.http_status ? ` <small>(HTTP ${p.http_status} ${esc(p.code || '')})</small>` : '')}</p>`).join('') || '<p class="error">Sin claves configuradas.</p>' }
+    catch (er) { $('#aiOut').innerHTML = `<p class="error">${esc(er.message)}</p>` } finally { e.target.disabled = false; e.target.textContent = 'Comprobar ahora' }
+  };
+  const cc = $('#canvaConn'); if (cc) cc.onclick = async () => { try { location.href = (await api('/api/canva/connect')).url } catch (e) { toast(e.message) } };
+  $('#addSrc').onsubmit = async e => { e.preventDefault(); const d = Object.fromEntries(new FormData(e.target)); try { await api('/api/sources', { method: 'POST', body: JSON.stringify({ ...d, priority: 60 }) }); toast('Fuente añadida'); render() } catch (er) { toast(er.message) } };
+}
+window.toggleSource = async id => { try { await api(`/api/sources/${id}/toggle`, { method: 'POST' }) } catch (e) { toast(e.message) } };
+window.go = go; window.download = download; window.logout = logout; window.render = render;
+
+if (token) start(); else logout();

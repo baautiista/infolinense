@@ -87,7 +87,9 @@ def init_db():
         'work_state':'TEXT',
         'work_step':'TEXT',
         'work_error':'TEXT',
-        'work_updated_at':'TEXT'
+        'work_updated_at':'TEXT',
+        'outlet':'TEXT',
+        'scope':'TEXT'
     }.items():
         if name not in existing_candidates: c.execute(f'ALTER TABLE candidates ADD COLUMN {name} {ddl}')
     existing_articles={r[1] for r in c.execute('PRAGMA table_info(articles)')}

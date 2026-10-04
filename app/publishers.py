@@ -3,6 +3,43 @@ import html
 from pathlib import Path
 from .config import *
 
+import base64, json, re, unicodedata
+from . import layout
+
+
+def slugify(text):
+    text = unicodedata.normalize('NFD', str(text or '').lower())
+    text = ''.join(c for c in text if unicodedata.category(c) != 'Mn')
+    return re.sub(r'[^a-z0-9]+', '-', text).strip('-')[:90] or 'noticia'
+
+
+def web_payload(article):
+    """Noticia lista para la web de InfoLinense (Lovable)."""
+    family = layout.family_for(article.get('section'), article.get('headline'))
+    photo = Path(article.get('image_local') or '')
+    card = Path(article.get('render_path') or '')
+    try: sources = json.loads(article.get('sources_json') or '[]')
+    except Exception: sources = []
+    paragraphs = [p.strip() for p in (article.get('body') or '').split('\n') if p.strip()]
+    return {
+        'external_id': 'desk-%s' % article['id'],
+        'slug': slugify(article.get('headline')) + '-%s' % article['id'],
+        'title': article.get('headline') or '',
+        'subtitle': article.get('subtitle') or '',
+        'body': article.get('body') or '',
+        'body_html': ''.join('<p>' + html.escape(p) + '</p>' for p in paragraphs),
+        'section': family[0], 'section_color': family[2], 'section_text_color': family[3],
+        'source_url': article.get('source_url') or '',
+        'source_name': article.get('outlet') or article.get('source_name') or '',
+        'sources': [x for x in sources if isinstance(x, dict) and x.get('url')],
+        'image_base64': base64.b64encode(photo.read_bytes()).decode() if photo.is_file() else None,
+        'image_content_type': 'image/jpeg',
+        'social_image_base64': base64.b64encode(card.read_bytes()).decode() if card.is_file() else None,
+        'published_at': __import__('datetime').datetime.now(__import__('datetime').timezone.utc).isoformat(timespec='seconds'),
+        'status': 'published',
+    }
+
+
 def publish(article):
     payload={
       'section':article.get('section'),'title':article.get('headline'),'subtitle':article.get('subtitle'),
@@ -36,13 +73,15 @@ def publish(article):
         },timeout=45)
         post.raise_for_status()
         return post.json()['link']
-    if PUBLISH_MODE=='webhook':
-        if not LOVABLE_WEBHOOK_URL: raise RuntimeError('LOVABLE_WEBHOOK_URL no configurada')
+    if PUBLISH_MODE in ('webhook','lovable'):
+        if not LOVABLE_WEBHOOK_URL: raise RuntimeError('Falta LOVABLE_WEBHOOK_URL en Railway (la dirección de la función de la web)')
+        secret=PUBLISH_WEBHOOK_SECRET or LOVABLE_WEBHOOK_TOKEN
         h={'Content-Type':'application/json'}
-        if LOVABLE_WEBHOOK_TOKEN:h['Authorization']='Bearer '+LOVABLE_WEBHOOK_TOKEN
-        r=requests.post(LOVABLE_WEBHOOK_URL,json=payload,headers=h,timeout=30); r.raise_for_status()
+        if secret: h['Authorization']='Bearer '+secret; h['x-infolinense-secret']=secret
+        r=requests.post(LOVABLE_WEBHOOK_URL,json=web_payload(article),headers=h,timeout=60)
+        if not r.ok: raise RuntimeError('La web respondió HTTP %s: %s' % (r.status_code, r.text[:200]))
         try:d=r.json()
-        except:d={}
+        except Exception:d={}
         return d.get('url') or d.get('public_url') or ''
     if PUBLISH_MODE=='supabase':
         if not SUPABASE_URL or not SUPABASE_SERVICE_ROLE_KEY: raise RuntimeError('Supabase no configurado')

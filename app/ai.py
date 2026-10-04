@@ -13,9 +13,9 @@ def _configured_provider():
         return 'anthropic' if ANTHROPIC_API_KEY else ''
     if AI_PROVIDER in ('openai', 'gpt'):
         return 'openai' if OPENAI_API_KEY else ''
-    # In automatic mode, Claude takes priority when its key is present.
-    if ANTHROPIC_API_KEY: return 'anthropic'
+    # En modo automático redacta ChatGPT (OpenAI); Claude queda como respaldo.
     if OPENAI_API_KEY: return 'openai'
+    if ANTHROPIC_API_KEY: return 'anthropic'
     return ''
 
 
@@ -27,7 +27,7 @@ def provider_chain():
     """Providers to try, in order. The second one is only a fallback."""
     chain = [ACTIVE_PROVIDER] if ACTIVE_PROVIDER else []
     if AI_FALLBACK:
-        for name, key in (('anthropic', ANTHROPIC_API_KEY), ('openai', OPENAI_API_KEY)):
+        for name, key in (('openai', OPENAI_API_KEY), ('anthropic', ANTHROPIC_API_KEY)):
             if key and name not in chain:
                 chain.append(name)
     return chain

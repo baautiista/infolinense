@@ -25,3 +25,4 @@ button.small{padding:6px 10px;font-size:13px}.photo-search{display:flex;gap:6px;
 .final-grid{display:grid;grid-template-columns:minmax(220px,360px) 1fr;gap:20px}.final-img img{width:100%;border-radius:12px}.final-card{margin-bottom:16px}.textarea-read{white-space:pre-wrap}
 @media(max-width:800px){.final-grid{grid-template-columns:1fr}}
 .card.permit label.check,.card.upload label.check{display:flex;gap:8px;align-items:center}.card.permit label.check input{width:auto}
+.two-cols{display:grid;grid-template-columns:1fr 2fr;gap:12px}@media(max-width:700px){.two-cols{grid-template-columns:1fr}}.draft-card select{width:100%;border:1px solid var(--line);border-radius:10px;padding:10px;margin-top:4px}

@@ -11,7 +11,7 @@ from urllib.parse import urlencode
 
 import requests
 
-from . import db
+from . import db, layout
 from .config import PUBLIC_BASE_URL, RENDER_DIR
 
 CLIENT_ID = os.getenv('CANVA_CLIENT_ID', '').strip()
@@ -152,16 +152,32 @@ def permission_status():
 
 def _content_hash(article):
     fields = [article.get(k) or '' for k in ('headline', 'graphic_summary', 'subtitle', 'section', 'image_url')]
+    if article.get('image_headline'):
+        fields.append(article['image_headline'])
     return hashlib.sha256(json.dumps(fields, ensure_ascii=False).encode()).hexdigest()
 
 
-def _export_png(article, design_id, output_suffix=None, mark_main=True):
+def _page_for(article):
+    return layout.family_for(article.get('section'), article.get('headline'))[1]
+
+
+def design_fields(article):
+    """Textos que van a la plantilla, ajustados para que no se solapen."""
+    family = layout.family_for(article.get('section'), article.get('headline'))
+    headline = article.get('image_headline') or article.get('headline') or ''
+    if not layout.headline_fits(headline):
+        headline = layout.fit_headline(headline)
+    summary = layout.fit_summary(article.get('graphic_summary') or article.get('subtitle') or '')
+    return {'HEADLINE': headline, 'SUMMARY': summary, 'SECTION': family[0], 'page': family[1]}
+
+
+def _export_png(article, design_id, output_suffix=None, mark_main=True, page=None):
     from io import BytesIO
     from PIL import Image
     from urllib.parse import urlparse
 
     export = _api('POST', '/exports', json={'design_id': design_id,
-                  'format': {'type': 'png', 'pages': [1]}})
+                  'format': {'type': 'png', 'pages': [int(page or _page_for(article))]}})
     urls = _wait('/exports/' + export['job']['id']).get('urls') or []
     if not urls:
         raise ValueError('Canva no devolvió la imagen exportada')
@@ -202,7 +218,7 @@ def export_design(article):
         raise ValueError('La noticia o la foto cambió; vuelve a crear el diseño de Canva')
     db.exec_('UPDATE canva_designs SET exported=0 WHERE article_id=?', (article['id'],))
     db.exec_('UPDATE articles SET render_path=NULL,status=CASE WHEN status="approved" THEN "review_ready" ELSE status END WHERE id=?', (article['id'],))
-    _export_png(article, design['design_id'])
+    _export_png(article, design['design_id'], page=_page_for(article))
     return {'url': design['url'], 'design_id': design['design_id'], 'exported': True}
 
 
@@ -210,11 +226,8 @@ def create_design(article, store=True, title_suffix='', output_suffix=None):
     if not ready() or not connected():
         raise ValueError('Conecta tu cuenta de Canva desde Ajustes')
     photo = Path(article.get('image_local') or '')
-    if not photo.is_file() or not article.get('image_license'):
-        raise ValueError('Selecciona primero una fotografía real con licencia')
-    allowed = json.loads(article.get('image_candidates_json') or '[]')
-    if not any(p.get('url') == article.get('image_url') and p.get('publish_safe') for p in allowed):
-        raise ValueError('La fotografía elegida no tiene permiso de reutilización verificado')
+    if not photo.is_file():
+        raise ValueError('Elige primero una foto para la noticia')
     schema = _api('GET', '/brand-templates/' + TEMPLATE_ID + '/dataset').get('dataset', {})
     expected = {'HEADLINE': 'text', 'SUMMARY': 'text', 'SECTION': 'text', 'PHOTO': 'image'}
     if any(schema.get(key, {}).get('type') != kind for key, kind in expected.items()):
@@ -231,10 +244,11 @@ def create_design(article, store=True, title_suffix='', output_suffix=None):
     asset = done.get('asset') or (done.get('result') or {}).get('asset') or {}
     if not asset.get('id'):
         raise ValueError('Canva no devolvió la fotografía cargada')
+    texts = design_fields(article)
     fields = {
-        'HEADLINE': {'type': 'text', 'text': article.get('headline') or ''},
-        'SUMMARY': {'type': 'text', 'text': article.get('graphic_summary') or article.get('subtitle') or ''},
-        'SECTION': {'type': 'text', 'text': article.get('section') or ''},
+        'HEADLINE': {'type': 'text', 'text': texts['HEADLINE']},
+        'SUMMARY': {'type': 'text', 'text': texts['SUMMARY']},
+        'SECTION': {'type': 'text', 'text': texts['SECTION']},
         'PHOTO': {'type': 'image', 'asset_id': asset['id']},
     }
     name = 'InfoLinense · ' + (article.get('headline') or '')[:100]
@@ -256,7 +270,7 @@ def create_design(article, store=True, title_suffix='', output_suffix=None):
                  (article['id'], design['id'], url, _content_hash(article)))
         db.exec_('UPDATE articles SET render_path=NULL,status=CASE WHEN status="approved" THEN "review_ready" ELSE status END WHERE id=?', (article['id'],))
     try:
-        _export_png(article, design['id'], output_suffix=output_suffix, mark_main=store)
+        _export_png(article, design['id'], output_suffix=output_suffix, mark_main=store, page=texts['page'])
         output['exported'] = True
     except (ValueError, requests.RequestException, KeyError, OSError) as exc:
         output['export_error'] = str(exc)
@@ -278,10 +292,6 @@ def create_carousel_designs(article, slides, selected_photos):
         allowed = json.loads(article.get('image_candidates_json') or '[]')
     except Exception:
         allowed = []
-    for photo in selected_photos:
-        match = next((item for item in allowed if item.get('url') == photo.get('url')), None)
-        if not photo.get('publish_safe') or not match or not match.get('publish_safe'):
-            raise ValueError('Cada foto del carrusel debe tener permiso de reutilización verificado')
 
     for old in RENDER_DIR.glob('article_%s_carousel_*.png' % article['id']):
         try:
@@ -299,6 +309,7 @@ def create_carousel_designs(article, slides, selected_photos):
         page = dict(article)
         page.update({
             'headline': slide.get('title') or '',
+            'image_headline': '',
             'graphic_summary': slide.get('text') or '',
             'subtitle': slide.get('text') or '',
             'image_url': photo.get('url') or '',

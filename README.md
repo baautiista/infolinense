@@ -24,6 +24,12 @@ El backend FastAPI corre en Railway y el panel editorial de Lovable consume la m
 2. Publica el panel como aplicación privada con pantalla de contraseña. Añade **solo su origen exacto** (`https://<tu-proyecto>.lovable.app`) a `CORS_ORIGINS` en Railway. Si usas dominio propio, añádelo separado por coma. Redepliega si Railway no aplica las variables automáticamente.
 3. Accede al panel, prueba Dashboard y Revisión y comprueba **Plantillas → Canva**. Los PNG privados solo existen tras exportar desde Canva y se descargan mediante `fetch` con token; un enlace `<img src="https://backend/media/render/...">` directo devolverá 401.
 
+## Novedades 2.5
+
+- **Redacción automática**: al marcar una noticia como Urgente, Hoy, Esta semana o Futura se investiga y redacta sola, una a una (urgentes primero). También se retoman al arrancar y tras cada búsqueda. Se desactiva con `AUTO_DRAFT_USEFUL=false`.
+- **Fotos**: primero la foto de la propia noticia (también desde enlaces de Google News), después fotos de otros medios con la misma historia, búsqueda de imágenes en internet y Wikimedia Commons. Se descartan logos, iconos e imágenes pequeñas. Sin comprobaciones de licencia: el editor decide.
+- **Plantilla Canva**: titular a 74 px en las 12 páginas (caben 4 líneas sin pisar el resumen). Cada página es una familia de sección con su color; se exporta la página de la familia (`app/layout.py`). El titular de la imagen (`image_headline`) se ajusta a 4 líneas y el resumen a 150 caracteres.
+
 ## Novedades 2.4
 
 - **IA unificada**: investigar, redactar, titulares, carrusel y descubrimiento usan el proveedor activo (Claude si existe `ANTHROPIC_API_KEY`). Si falla por saldo, límite o caída y hay otra clave, se prueba el otro (`AI_FALLBACK=true`). Antes todo llamaba a OpenAI aunque Claude estuviera configurado.

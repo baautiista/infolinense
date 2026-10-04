@@ -285,7 +285,14 @@ Reglas que nunca rompes:
 - No empieces el cuerpo con «La Línea de la Concepción».
 - Devuelves únicamente JSON válido, sin markdown.'''
 
-SECTIONS = 'URBANISMO, CIUDAD, GIBRALTAR, SUCESOS, CULTURA, DEPORTES, COMERCIO, MEDIO AMBIENTE, POLÍTICA, SOCIEDAD, PATRIMONIO, AGENDA, ECONOMÍA, EMPLEO, SANIDAD, EDUCACIÓN'
+from . import layout
+SECTIONS = ', '.join(layout.FAMILY_NAMES)
+SECTION_GUIDE = ('OBRAS = obras, urbanismo, infraestructuras, movilidad, tráfico, aparcamientos; CIUDAD = Ayuntamiento, servicios municipales, barrios; '
+                 'GIBRALTAR = Gibraltar, frontera, relaciones transfronterizas, Campo de Gibraltar; SUCESOS = seguridad, policía, bomberos, emergencias; '
+                 'CULTURA = carnaval, cofradías, música, teatro, exposiciones, ocio; DEPORTES; COMERCIO = empresas, hostelería, turismo, negocios; '
+                 'POLÍTICA = elecciones, plenos, partidos, administración; SOCIEDAD = economía, empleo, vivienda, educación, sanidad, asociaciones; '
+                 'PATRIMONIO = historia, memoria, efemérides, arqueología; AGENDA = planes, eventos, qué hacer, fin de semana; '
+                 'MEDIO AMBIENTE = playas, limpieza, parques, naturaleza, residuos')
 
 
 def _source_research(candidate,source_text=''):
@@ -366,13 +373,14 @@ TEXTO FUENTE: {(source_text or '')[:10000]}
 DOCUMENTACIÓN: {(research or '')[:8000]}
 
 Devuelve JSON con exactamente estas claves:
-section (una de: {SECTIONS}),
+section (exactamente una de: {SECTIONS}. Guía: {SECTION_GUIDE}),
 headline (titular informativo, máximo 110 caracteres),
 subtitle (entradilla de una o dos frases, máximo 260 caracteres),
 body (cuerpo de la noticia, máximo 2.200 caracteres),
 headline_options (lista de EXACTAMENTE 7 titulares alternativos distintos entre sí y del titular principal, todos fieles a los hechos),
 missing_data (lista de datos que faltan y conviene confirmar),
-graphic_summary (máximo 180 caracteres, para la imagen),
+image_headline (titular corto para la imagen: máximo 70 caracteres, sin perder el dato clave),
+graphic_summary (máximo 140 caracteres, una o dos frases para la imagen),
 carousel_suitable (true solo si la noticia explica varios pasos, cifras, requisitos o consecuencias que se entienden mejor en 3-6 diapositivas),
 carousel_reason (motivo breve),
 ai_image_suggestion (qué foto real buscar; no se genera ninguna imagen).'''
@@ -387,6 +395,12 @@ ai_image_suggestion (qué foto real buscar; no se genera ninguna imagen).'''
             data['headline_options'] = alternate_headlines(data)
         except AIProviderError:
             pass
+    data['section'] = layout.normalize_section(data.get('section'), data.get('headline', '') + ' ' + data.get('body', '')[:400])
+    image_headline = re.sub(r'\s+', ' ', str(data.get('image_headline') or '')).strip().rstrip('.')
+    if not image_headline or not layout.headline_fits(image_headline):
+        image_headline = data['headline'] if layout.headline_fits(data['headline']) else layout.fit_headline(image_headline or data['headline'])
+    data['image_headline'] = image_headline
+    data['graphic_summary'] = layout.fit_summary(data.get('graphic_summary') or data.get('subtitle') or '')
     data['provider'] = provider
     return data
 
@@ -504,8 +518,9 @@ def free_draft(candidate, source_text=''):
               ('URBANISMO', ('obra', 'vivienda', 'urbanismo', 'licit', 'calle', 'plaza')),
               ('DEPORTES', ('deporte', 'balona', 'club', 'campeonato')), ('CULTURA', ('cultura', 'museo', 'teatro', 'festival')),
               ('AGENDA', ('agenda', 'concierto', 'fecha')), ('COMERCIO', ('comercio', 'mercado', 'hostelería'))]
-    section = next((name for name, terms in groups if any(word in low for word in terms)), 'CIUDAD')
+    section = layout.normalize_section('', title + ' ' + excerpt)
     subtitle = clip(details[0], 180).rstrip(' .') + '.' if details else ''
-    return {'section': section, 'headline': title, 'subtitle': subtitle, 'body': body[:2200],
-            'social_text': body[:2200], 'graphic_summary': subtitle, 'ai_image_suggestion': ''}
+    image_headline = title if layout.headline_fits(title) else layout.fit_headline(title)
+    return {'section': section, 'headline': title, 'image_headline': image_headline, 'subtitle': subtitle, 'body': body[:2200],
+            'social_text': body[:2200], 'graphic_summary': layout.fit_summary(subtitle), 'ai_image_suggestion': ''}
 

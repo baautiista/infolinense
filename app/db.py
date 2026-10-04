@@ -99,7 +99,8 @@ def init_db():
         'missing_data_json':'TEXT',
         'ai_provider':'TEXT',
         'image_kind':'TEXT',
-        'image_author':'TEXT'
+        'image_author':'TEXT',
+        'image_headline':'TEXT'
     }.items():
         if name not in existing_articles: c.execute(f'ALTER TABLE articles ADD COLUMN {name} {ddl}')
     if 'content_hash' not in {r[1] for r in c.execute('PRAGMA table_info(canva_designs)')}:
@@ -111,6 +112,7 @@ def init_db():
                  WHERE id IN (SELECT article_id FROM canva_designs WHERE content_hash IS NULL AND exported=1)''')
     c.execute('UPDATE canva_designs SET exported=0 WHERE content_hash IS NULL AND exported=1')
     c.execute("UPDATE candidates SET work_state='error',work_error='El servidor se reinició mientras trabajaba. Pulsa Reintentar.' WHERE work_state='working'")
+    c.execute("UPDATE candidates SET work_state=NULL WHERE work_state='queued'")
     from urllib.parse import quote
     def news(query):
         return 'https://news.google.com/rss/search?q='+quote(query)+'&hl=es&gl=ES&ceid=ES:es'

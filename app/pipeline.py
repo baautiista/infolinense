@@ -1,6 +1,6 @@
 import json, threading
 from . import db, sources, ai, photos
-from .config import QUICK_SCORE_MAX, MIN_AUTO_SCORE, AUTO_DRAFTS_PER_SCAN
+from .config import QUICK_SCORE_MAX, MIN_AUTO_SCORE, AUTO_DRAFTS_PER_SCAN, AUTO_DRAFT_USEFUL
 
 # One lock per candidate so two clicks on «Redactar» never create two drafts.
 _locks = {}
@@ -51,13 +51,12 @@ def draft_candidate(cid):
     except json.JSONDecodeError: research_data = {}
     quick = (c['score'] or 0) <= QUICK_SCORE_MAX
     draft = ai.draft(c, c.get('raw_text') or '', json.dumps(research_data, ensure_ascii=False), quick=quick)
-    image_candidates = photos.search_real_photos(c, draft.get('section', 'CIUDAD'))
-    # Preselect only a photo whose reuse is documented; the editor can choose another one.
-    chosen = next((p for p in image_candidates if p.get('publish_safe')), None)
-    local = ''
-    if chosen:
-        try: local = photos.download_image(chosen['url'])
-        except Exception: chosen = None; local = ''
+    try:
+        image_candidates = photos.search_real_photos(c, draft.get('section', 'CIUDAD'))
+    except Exception:
+        image_candidates = []
+    # Se elige la primera foto válida (normalmente la de la propia noticia); el editor puede cambiarla.
+    chosen, local = photos.first_usable(image_candidates)
     body = (draft.get('body') or '')[:2200]
     workflow = 'source_draft' if not ai.AI_ENABLED else ('quick' if quick else 'researched')
     old = db.row("SELECT id FROM articles WHERE candidate_id=? AND status='rejected'", (cid,))
@@ -65,8 +64,8 @@ def draft_candidate(cid):
         db.exec_('DELETE FROM articles WHERE id=?', (old['id'],))
     aid = db.exec_('''INSERT INTO articles(candidate_id,section,headline,subtitle,body,social_text,graphic_summary,research_notes,sources_json,
         image_url,image_source,image_license,image_local,image_kind,image_author,image_candidates_json,ai_image_suggestion,
-        carousel_suitable,carousel_reason,headline_options_json,missing_data_json,ai_provider,template_id,workflow,status)
-      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''', (
+        carousel_suitable,carousel_reason,headline_options_json,missing_data_json,ai_provider,template_id,workflow,status,image_headline)
+      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''', (
         cid, draft.get('section', 'CIUDAD'), draft.get('headline', ''), draft.get('subtitle', ''), body, body,
         (draft.get('graphic_summary') or '')[:240],
         json.dumps(research_data, ensure_ascii=False), json.dumps((research_data or {}).get('sources', []), ensure_ascii=False),
@@ -77,7 +76,7 @@ def draft_candidate(cid):
         str(draft.get('carousel_reason') or '')[:500],
         json.dumps(draft.get('headline_options') or [], ensure_ascii=False),
         json.dumps(draft.get('missing_data') or [], ensure_ascii=False),
-        draft.get('provider') or '', None, workflow, 'draft'))
+        draft.get('provider') or '', None, workflow, 'draft', draft.get('image_headline') or ''))
     db.exec_('UPDATE candidates SET status=?,section=? WHERE id=?', ('draft', draft.get('section', 'CIUDAD'), cid))
     db.log('pipeline', f'Candidata {cid} -> borrador')
     return aid
@@ -125,6 +124,74 @@ def write_candidate(cid):
         raise
     finally:
         lock.release()
+
+
+# ---------- Redacción automática de las noticias marcadas como útiles ----------
+import queue as _queue
+from datetime import datetime as _dt
+_auto_q = _queue.PriorityQueue()
+_auto_pending = set()
+_auto_guard = threading.Lock()
+_auto_thread = None
+_PRIO = {'urgent': 0, 'today': 1, 'this_week': 2, 'future': 3}
+USEFUL = tuple(_PRIO)
+
+
+def queue_auto_write(cid, priority=None):
+    """Pone en cola la redacción de una noticia útil (una a una, sin duplicados)."""
+    global _auto_thread
+    if not AUTO_DRAFT_USEFUL:
+        return False
+    c = db.row('SELECT id,editorial_priority,status FROM candidates WHERE id=?', (cid,))
+    if not c or (priority or c['editorial_priority']) not in _PRIO or existing_article(cid) or c['status'] == 'archived':
+        return False
+    with _auto_guard:
+        if cid in _auto_pending or is_working(cid):
+            return False
+        _auto_pending.add(cid)
+        _set_work(cid, 'queued', 'queued')
+        _auto_q.put((_PRIO[priority or c['editorial_priority']], _dt.now().timestamp(), cid))
+        if _auto_thread is None or not _auto_thread.is_alive():
+            _auto_thread = threading.Thread(target=_auto_worker, daemon=True)
+            _auto_thread.start()
+    return True
+
+
+def _auto_worker():
+    while True:
+        try:
+            _, _, cid = _auto_q.get(timeout=30)
+        except _queue.Empty:
+            return
+        try:
+            c = db.row('SELECT editorial_priority,status FROM candidates WHERE id=?', (cid,))
+            if c and c['editorial_priority'] in _PRIO and c['status'] != 'archived' and not existing_article(cid):
+                try:
+                    write_candidate(cid)
+                    db.log('auto_draft', f'Candidata {cid} redactada automáticamente')
+                except ValueError as e:
+                    if str(e) != 'busy':
+                        db.log('auto_draft_error', f'{cid}: {str(e)[:200]}')
+                except Exception as e:
+                    db.log('auto_draft_error', f'{cid}: {str(e)[:200]}')
+            elif c and c.get('status') != 'archived':
+                db.exec_("UPDATE candidates SET work_state=NULL WHERE id=? AND work_state='queued'", (cid,))
+        finally:
+            with _auto_guard:
+                _auto_pending.discard(cid)
+
+
+def queue_useful_pending(retry_errors=True):
+    """Encola todas las noticias útiles sin borrador (al arrancar y tras cada búsqueda)."""
+    rows = db.rows("""SELECT c.id,c.editorial_priority,c.work_state FROM candidates c
+                     LEFT JOIN articles a ON a.candidate_id=c.id AND a.status!='rejected'
+                     WHERE a.id IS NULL AND c.status NOT IN ('archived') AND c.editorial_priority IN ('urgent','today','this_week','future')""")
+    n = 0
+    for r in rows:
+        if r.get('work_state') == 'error' and not retry_errors:
+            continue
+        n += bool(queue_auto_write(r['id'], r['editorial_priority']))
+    return n
 
 
 def is_working(cid):

@@ -16,6 +16,7 @@ os.environ.setdefault('DB_PATH', str(Path(_temp.name) / 'writing.sqlite'))
 os.environ.setdefault('RENDER_DIR', str(Path(_temp.name) / 'renders'))
 os.environ.setdefault('UPLOAD_DIR', str(Path(_temp.name) / 'uploads'))
 os.environ.setdefault('TEMPLATE_DIR', str(Path(_temp.name) / 'templates'))
+os.environ['AUTO_DRAFT_USEFUL'] = 'false'  # solo la prueba de AutoDraft la activa
 
 from app import ai, db, pipeline, planner, main  # noqa: E402
 from fastapi import HTTPException  # noqa: E402
@@ -190,3 +191,42 @@ class Agenda(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class TemplateLayout(unittest.TestCase):
+    def test_long_headline_fits_four_lines_and_section_picks_its_page(self):
+        from app import layout, canva
+        long = 'Más de 550 toneladas de alga asiática retiradas en Poniente en lo que va de 2026'
+        self.assertEqual(len(layout.headline_lines(long)), 4)  # medido en Canva a 74 px
+        too_long = long + ' según el balance municipal presentado este lunes en el pleno'
+        fitted = canva.design_fields({'headline': too_long, 'section': 'Playas', 'subtitle': 'x' * 400})
+        self.assertTrue(layout.headline_fits(fitted['HEADLINE']))
+        self.assertEqual((fitted['SECTION'], fitted['page']), ('MEDIO AMBIENTE', 8))
+        self.assertLessEqual(len(fitted['SUMMARY']), layout.SUMMARY_MAX)
+        self.assertEqual(layout.family_for('Fútbol')[1], 6)
+        self.assertEqual(layout.family_for('AGENDA')[3], '#061E5C')
+
+
+class AutoDraft(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        db.init_db()
+
+    def test_marking_a_story_useful_drafts_it_automatically(self):
+        cid = new_candidate('Nueva línea de autobús en La Línea')
+        with patch.object(pipeline.sources, 'fetch_article_text', return_value='Texto'), \
+             patch.object(pipeline.photos, 'search_real_photos', return_value=[]), \
+             patch.object(ai, 'research', return_value={'facts': []}), \
+             patch.object(ai, 'draft', return_value=dict(DRAFT)), patch.object(pipeline, 'AUTO_DRAFT_USEFUL', True):
+            main.triage_candidate(cid, main.TriageIn(priority='today'))
+            for _ in range(100):
+                if pipeline.existing_article(cid): break
+                time.sleep(0.05)
+        self.assertIsNotNone(pipeline.existing_article(cid))
+        self.assertEqual(db.row('SELECT COUNT(*) n FROM articles WHERE candidate_id=?', (cid,))['n'], 1)
+
+    def test_no_interest_is_not_drafted(self):
+        cid = new_candidate('Otra noticia de La Línea')
+        main.triage_candidate(cid, main.TriageIn(priority='no_interest'))
+        time.sleep(0.2)
+        self.assertIsNone(pipeline.existing_article(cid))

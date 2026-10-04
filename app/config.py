@@ -22,6 +22,8 @@ AI_FALLBACK = os.getenv('AI_FALLBACK','true').lower() in {'1','true','yes','on'}
 SCAN_INTERVAL_MINUTES = int(os.getenv('SCAN_INTERVAL_MINUTES','60'))
 MAX_CANDIDATE_AGE_DAYS = int(os.getenv('MAX_CANDIDATE_AGE_DAYS','3'))
 AUTO_DRAFTS_PER_SCAN = int(os.getenv('AUTO_DRAFTS_PER_SCAN','4'))
+# Redactar automáticamente las noticias marcadas como Urgente/Hoy/Esta semana/Futura
+AUTO_DRAFT_USEFUL = os.getenv('AUTO_DRAFT_USEFUL','true').lower() in {'1','true','yes','on'}
 AUTO_PIPELINE = os.getenv('AUTO_PIPELINE','false').lower() in {'1','true','yes','on'}
 QUICK_SCORE_MAX = int(os.getenv('QUICK_SCORE_MAX','69'))
 MIN_AUTO_SCORE = int(os.getenv('MIN_AUTO_SCORE','42'))

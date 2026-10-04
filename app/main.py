@@ -9,11 +9,11 @@ from fastapi.responses import FileResponse, RedirectResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from . import db, sources, pipeline, publishers, photos, canva, ai, planner
+from . import db, sources, pipeline, publishers, photos, canva, ai, planner, layout
 from .auth import login, require_auth
 from .config import BASE_DIR, RENDER_DIR, UPLOAD_DIR, SCAN_INTERVAL_MINUTES, AUTO_PIPELINE, OPENAI_API_KEY, ADMIN_PASSWORD, JWT_SECRET, PUBLISH_MODE, CORS_ORIGINS, PUBLIC_BASE_URL
 
-VERSION='2.4.0'
+VERSION='2.5.0'
 app=FastAPI(title='InfoLinense Desk',version=VERSION)
 app.add_middleware(CORSMiddleware,allow_origins=CORS_ORIGINS,allow_credentials=False,allow_methods=['*'],allow_headers=['Authorization','Content-Type'])
 db.init_db()
@@ -27,7 +27,7 @@ class SourceIn(BaseModel):
     official:bool=False
     local_scope:bool=False
 class EditArticle(BaseModel):
-    section:str|None=None; headline:str|None=None; subtitle:str|None=None; body:str|None=None; graphic_summary:str|None=None
+    section:str|None=None; headline:str|None=None; subtitle:str|None=None; body:str|None=None; graphic_summary:str|None=None; image_headline:str|None=None
 class PhotoChoice(BaseModel): url:str; source:str=''; license:str=''; author:str=''; confirm_permission:bool=False
 class TriageIn(BaseModel): priority:str; planned_at:str|None=None
 class CarouselPhoto(BaseModel): url:str; source:str=''; license:str=''; author:str=''; publish_safe:bool=False
@@ -68,6 +68,10 @@ def ai_check():
 @app.get('/api/capabilities',dependencies=[Depends(require_auth)])
 def capabilities():
     return {'real_photo_only':True,'ai_image_generation':False,'max_social_chars':2200,'ai_configured':ai.AI_ENABLED,'ai_provider':ai.ACTIVE_PROVIDER or None,'draft_provider':ai.ACTIVE_PROVIDER or 'source_draft','auto_pipeline':AUTO_PIPELINE,'public_base_url':PUBLIC_BASE_URL,'canva_configured':canva.ready(),'canva_connected':canva.connected(),'canva_redirect_uri':canva.callback_url(),'primary_template':'canva' if canva.ready() and canva.connected() else 'unavailable','canva_template_url':'https://www.canva.com/brand/brand-templates/'+canva.TEMPLATE_ID if canva.TEMPLATE_ID else None}
+
+@app.get('/api/sections',dependencies=[Depends(require_auth)])
+def sections():
+    return [{'name':f[0],'page':f[1],'background':f[2],'color':f[3]} for f in layout.FAMILIES]
 
 @app.get('/api/canva/connect',dependencies=[Depends(require_auth)])
 def connect_canva():
@@ -135,6 +139,7 @@ def scan():
         if AUTO_PIPELINE: r['pipeline']=pipeline.auto_process(r['added'])
         try: planner.rebuild_schedule()
         except Exception as e: db.log('schedule_error',str(e)[:250])
+        r['auto_drafts_queued']=pipeline.queue_useful_pending()
     return r
 @app.get('/api/schedule',dependencies=[Depends(require_auth)])
 def schedule():
@@ -164,6 +169,8 @@ def triage_candidate(cid:int,body:TriageIn):
     else:
         db.exec_("UPDATE candidates SET editorial_priority=?,planned_at=?,plan_locked=?,plan_reason=NULL,status=CASE WHEN status='archived' THEN 'new' ELSE status END WHERE id=?",(priority,planned,locked,cid))
     planner.rebuild_schedule()
+    if priority in pipeline.USEFUL:
+        pipeline.queue_auto_write(cid,priority)  # redacción automática de lo marcado como útil
     return db.row('SELECT * FROM candidates WHERE id=?',(cid,))
 
 @app.get('/api/candidates',dependencies=[Depends(require_auth)])
@@ -200,6 +207,8 @@ def _work_status(cid):
     a=pipeline.existing_article(cid)
     if pipeline.is_working(cid):
         state='working'
+    elif not a and c.get('work_state')=='queued':
+        state='working'
     elif a:
         state='done'
     else:
@@ -213,7 +222,7 @@ def _work_status(cid):
             error['detail']=ai_error_text(err)
         else:
             error['detail']=error.get('message')
-    step_text={'investigating':'Investigando la noticia y sus fuentes…','drafting':'Redactando el borrador…'}
+    step_text={'queued':'En cola: se redactará automáticamente…','investigating':'Investigando la noticia y sus fuentes…','drafting':'Redactando el borrador…'}
     return {'candidate_id':cid,'state':state,'step':c.get('work_step') if state=='working' else None,
             'step_text':step_text.get(c.get('work_step') or '','Trabajando…') if state=='working' else None,
             'next_action':'open' if a else ('draft' if c['status']=='researched' else 'investigate_and_draft'),
@@ -322,11 +331,12 @@ def design_carousel(aid:int,body:CarouselDesignIn):
     try: candidates=json.loads(a.get('image_candidates_json') or '[]')
     except Exception: candidates=[]
     by_url={item.get('url'):item for item in candidates if isinstance(item,dict)}
-    if not 1<=len(body.photo_urls)<=6: raise HTTPException(400,'Selecciona entre una y seis fotos autorizadas')
+    if not 1<=len(body.photo_urls)<=6: raise HTTPException(400,'Selecciona entre una y seis fotos')
     selected=[]
     for url in body.photo_urls:
-        photo=by_url.get(url)
-        if not photo or not photo.get('publish_safe'): raise HTTPException(400,'Cada foto debe tener permiso de reutilización verificado')
+        photo=by_url.get(url) or {'url':url,'source':'','kind':'web','publish_safe':True}
+        if str(url).startswith('upload:'):
+            raise HTTPException(400,'Para el carrusel elige fotos de la búsqueda')
         selected.append(photo)
     try: return canva.create_carousel_designs(a,slides,selected)
     except ValueError as e: raise HTTPException(400,str(e))
@@ -382,11 +392,10 @@ def kit(aid:int):
             'auto_publish':False}
 
 def photo_credit(a):
-    kind=a.get('image_kind') or ''
-    origin={'user_upload':'Foto subida por InfoLinense','commons':'Wikimedia Commons','official_source':'Foto de la fuente oficial',
-            'external_source':'Foto de la fuente','external_confirmed':'Foto de internet con permiso confirmado'}.get(kind,'')
-    parts=[x for x in [origin,a.get('image_author') or '',a.get('image_license') or '',a.get('image_source') or ''] if x]
-    return ' · '.join(dict.fromkeys(parts))
+    """De dónde salió la foto (solo informativo)."""
+    if (a.get('image_kind') or '')=='user_upload' or str(a.get('image_url') or '').startswith('upload:'): return 'Foto subida por ti'
+    host=urlparse(a.get('image_source') or a.get('image_url') or '').hostname or ''
+    return host.replace('www.','')
 
 @app.get('/api/articles/{aid}/photo/file',dependencies=[Depends(require_auth)])
 def photo_file(aid:int):
@@ -401,6 +410,8 @@ def edit_article(aid:int,body:EditArticle):
     if not original: raise HTTPException(404)
     fields=[]; vals=[]
     for k,v in body.model_dump(exclude_none=True).items():
+        if k=='section':
+            v=layout.normalize_section(v)
         if k=='body':
             v=v[:2200]
             fields.append('social_text=?'); vals.append(v)
@@ -419,7 +430,7 @@ def article_photos(aid:int,refresh:bool=False,q:str=''):
         # Búsqueda libre en Wikimedia Commons (licencias libres documentadas).
         try: cached=json.loads(a.get('image_candidates_json') or '[]')
         except Exception: cached=[]
-        found=photos.commons_images(q.strip()[:120])
+        found=photos.search_photos(q.strip()[:120])
         known={x.get('url') for x in cached}
         merged=cached+[x for x in found if x.get('url') not in known]
         db.exec_('UPDATE articles SET image_candidates_json=? WHERE id=?',(json.dumps(merged,ensure_ascii=False),aid))
@@ -441,16 +452,10 @@ def choose_photo(aid:int,p:PhotoChoice):
     try: allowed=json.loads(a.get('image_candidates_json') or '[]')
     except Exception: allowed=[]
     item=next((x for x in allowed if x.get('url')==url),None)
-    if not item or not item.get('publish_safe'):
-        # Foto de la fuente o de otra web: solo se puede usar si el editor confirma el permiso.
-        if not p.confirm_permission or not p.license.strip():
-            raise HTTPException(400,'Esta foto no tiene una licencia libre comprobada. Indica el permiso o la licencia y marca «Tengo permiso para usarla».')
-        new={**(item or {}),'url':url,'source':(p.source or (item or {}).get('source') or parsed.hostname)[:300],
-             'license':('Permiso confirmado por el editor: '+p.license.strip())[:220],'author':(p.author or (item or {}).get('author') or '')[:120],
-             'kind':(item or {}).get('kind') or 'external_confirmed','publish_safe':True,'confirmed_by_editor':True}
-        allowed=[x for x in allowed if x.get('url')!=url]+[new]
-        item=new
-    try: local=photos.download_image(url)
+    if not item:
+        item={'url':url,'source':p.source or url,'source_name':parsed.hostname or '','license':'','author':p.author,'kind':'web','publish_safe':True}
+        allowed=allowed+[item]
+    try: local=photos.download_image(url,min_width=300,min_height=200)
     except Exception as e: raise HTTPException(400,'No se pudo descargar la foto: '+str(e)[:200])
     db.exec_("UPDATE articles SET image_url=?,image_source=?,image_license=?,image_author=?,image_kind=?,image_local=?,image_candidates_json=?,render_path=NULL,ai_image_suggestion='',status=CASE WHEN status='approved' THEN 'review_ready' ELSE status END,updated_at=CURRENT_TIMESTAMP WHERE id=?",
              (url,item.get('source') or p.source,item.get('license') or p.license,item.get('author') or p.author,item.get('kind') or '',local,json.dumps(allowed,ensure_ascii=False),aid))
@@ -458,9 +463,9 @@ def choose_photo(aid:int,p:PhotoChoice):
     return {'ok':True}
 
 @app.post('/api/articles/{aid}/photo/upload',dependencies=[Depends(require_auth)])
-async def upload_article_photo(aid:int,file:UploadFile=File(...),license:str=Form(...),source:str=Form('Fotografía propia'),author:str=Form('')):
+async def upload_article_photo(aid:int,file:UploadFile=File(...),license:str=Form(''),source:str=Form('Fotografía propia'),author:str=Form('')):
     if not db.row('SELECT id FROM articles WHERE id=?',(aid,)): raise HTTPException(404)
-    if not license.strip() or not source.strip(): raise HTTPException(400,'Indica la licencia y la procedencia de la fotografía')
+    source=source or 'Fotografía propia'
     data=await file.read(20_000_001)
     if len(data)>20_000_000: raise HTTPException(400,'La fotografía debe pesar menos de 20 MB')
     try:
@@ -493,13 +498,8 @@ def approve(aid:int):
     a=db.row('SELECT * FROM articles WHERE id=?',(aid,))
     if not a: raise HTTPException(404)
     if a['status']!='review_ready': raise HTTPException(400,'Solo se puede aprobar una pieza en revisión')
-    if not a.get('image_local') or not Path(a['image_local']).is_file() or not a.get('image_license'):
-        raise HTTPException(400,'Selecciona una fotografía real con licencia antes de aprobar')
-    try: candidates=json.loads(a.get('image_candidates_json') or '[]')
-    except (TypeError,ValueError): candidates=[]
-    selected=next((p for p in candidates if p.get('url')==a.get('image_url')),None)
-    if not selected or not selected.get('publish_safe'):
-        raise HTTPException(400,'No se ha verificado el permiso de reutilización de esta fotografía')
+    if not a.get('image_local') or not Path(a['image_local']).is_file():
+        raise HTTPException(400,'Elige una foto antes de aprobar')
     artwork=db.row('SELECT exported FROM canva_designs WHERE article_id=?',(aid,))
     if not canva.ready() or not canva.connected() or not artwork or not artwork['exported'] or not (RENDER_DIR/f'article_{aid}.png').is_file():
         raise HTTPException(400,'Crea y exporta primero el diseño final con la plantilla de Canva')
@@ -597,8 +597,12 @@ def scheduler_loop():
             if not r.get('busy'):
                 if AUTO_PIPELINE: pipeline.auto_process(r['added'])
                 planner.rebuild_schedule()
+                pipeline.queue_useful_pending()
         except Exception as e: db.log('scheduler_error',str(e)[:250])
         time.sleep(max(15,SCAN_INTERVAL_MINUTES)*60)
 @app.on_event('startup')
 def startup():
-    if os.getenv('DISABLE_SCHEDULER','false').lower() not in {'1','true','yes'}: threading.Thread(target=scheduler_loop,daemon=True).start()
+    if os.getenv('DISABLE_SCHEDULER','false').lower() not in {'1','true','yes'}:
+        threading.Thread(target=scheduler_loop,daemon=True).start()
+        try: pipeline.queue_useful_pending()
+        except Exception as e: db.log('auto_draft_error',str(e)[:250])

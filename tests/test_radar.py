@@ -11,6 +11,7 @@ from unittest.mock import patch
 from PIL import Image
 
 _temp = tempfile.TemporaryDirectory()
+os.environ['AUTO_DRAFT_USEFUL'] = 'false'
 os.environ['DATA_DIR'] = _temp.name
 os.environ['DB_PATH'] = str(Path(_temp.name) / 'radar.sqlite')
 os.environ['RENDER_DIR'] = str(Path(_temp.name) / 'renders')

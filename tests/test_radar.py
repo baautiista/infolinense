@@ -133,20 +133,27 @@ class RadarChecks(unittest.TestCase):
             responses.append((method, path, kwargs))
             if path.endswith('/dataset'):
                 return {'dataset': {k: {'type': v} for k, v in {'HEADLINE': 'text', 'SUMMARY': 'text', 'SECTION': 'text', 'PHOTO': 'image'}.items()}}
-            return {'job': {'id': 'test-job'}}
-        def mock_wait(path):
-            if 'asset-uploads' in path: return {'asset': {'id': 'own-asset'}}
-            if 'autofills' in path: return {'design': {'id': 'canva-design', 'urls': {'edit_url': 'https://www.canva.com/design/test'}}}
-            return {'urls': ['https://export.canva.com/test.png']}
+            # Respuestas con la forma documentada por la API Connect de Canva.
+            if method == 'GET' and '/asset-uploads/' in path:
+                return {'job': {'id': 'up', 'status': 'success', 'asset': {'id': 'own-asset'}}}
+            if method == 'GET' and '/autofills/' in path:
+                return {'job': {'id': 'af', 'status': 'success', 'result': {'type': 'create_design', 'design': {
+                    'id': 'canva-design', 'url': 'https://www.canva.com/design/canva-design/edit',
+                    'urls': {'edit_url': 'https://www.canva.com/api/temp-edit', 'view_url': 'https://www.canva.com/api/temp-view'}}}}}
+            if method == 'GET' and '/exports/' in path:
+                return {'job': {'id': 'ex', 'status': 'success', 'urls': ['https://export.canva.com/test.png']}}
+            return {'job': {'id': 'test-job', 'status': 'in_progress'}}
         class Download:
             content = png.getvalue()
             def raise_for_status(self): pass
         with patch.object(canva, 'CLIENT_ID', 'test'), patch.object(canva, 'CLIENT_SECRET', 'test'), \
              patch.object(canva, 'TEMPLATE_ID', 'EAHWTjWEEnA'), patch.object(canva, 'PUBLIC_BASE_URL', 'https://example.org'), \
              patch.object(canva, 'connected', return_value=True), patch.object(canva, '_api', side_effect=mock_api), \
-             patch.object(canva, '_wait', side_effect=mock_wait), patch.object(canva.requests, 'get', return_value=Download()):
+             patch.object(canva.time, 'sleep'), patch.object(canva.requests, 'get', return_value=Download()):
             result = canva.create_design(article)
             self.assertTrue(result['exported'])
+            self.assertEqual(result['url'], 'https://www.canva.com/design/canva-design/edit')
+            self.assertEqual(result['design_id'], 'canva-design')
             self.assertEqual(db.row('SELECT exported FROM canva_designs WHERE article_id=?', (aid,))['exported'], 1)
             fields = next(kwargs['json']['data'] for method, path, kwargs in responses if path == '/autofills')
             self.assertEqual(fields['HEADLINE']['text'], article['headline'])

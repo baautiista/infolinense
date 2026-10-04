@@ -105,15 +105,26 @@ def _api(method, path, **kwargs):
         raise ValueError('No se pudo contactar con Canva') from exc
 
 
-def _wait(path):
-    for _ in range(25):
-        job = _api('GET', path).get('job', {})
+def _wait(path, first=None):
+    job = (first or {}).get('job') or {}
+    for attempt in range(40):
+        if attempt or not job.get('status'):
+            job = _api('GET', path).get('job', {})
         if job.get('status') == 'success':
             return job
         if job.get('status') == 'failed':
-            raise ValueError('Canva no pudo completar el diseño o la carga de la foto')
+            err = job.get('error') or {}
+            detail = err.get('message') or err.get('code') if isinstance(err, dict) else ''
+            raise ValueError('Canva no pudo completar el trabajo' + (': ' + str(detail)[:180] if detail else ''))
         time.sleep(2)
     raise ValueError('Canva aún procesa el diseño; vuelve a intentarlo en unos segundos')
+
+
+def _design_from_job(job):
+    """Canva devuelve el diseño en job.result.design (versiones antiguas: job.design)."""
+    result = job.get('result') or {}
+    design = result.get('design') or job.get('design') or {}
+    return design if isinstance(design, dict) else {}
 
 
 def template_status():
@@ -216,7 +227,8 @@ def create_design(article, store=True, title_suffix='', output_suffix=None):
     metadata = json.dumps({'name_base64': base64.b64encode(filename.encode()).decode()})
     upload = _api('POST', '/asset-uploads', data=data,
                   headers={'Content-Type': 'application/octet-stream', 'Asset-Upload-Metadata': metadata})
-    asset = _wait('/asset-uploads/' + upload['job']['id']).get('asset', {})
+    done = _wait('/asset-uploads/' + upload['job']['id'], upload)
+    asset = done.get('asset') or (done.get('result') or {}).get('asset') or {}
     if not asset.get('id'):
         raise ValueError('Canva no devolvió la fotografía cargada')
     fields = {
@@ -231,12 +243,13 @@ def create_design(article, store=True, title_suffix='', output_suffix=None):
     job = _api('POST', '/autofills', json={'type': 'create_from_brand_template',
                     'brand_template_id': TEMPLATE_ID,
                     'title': name, 'data': fields})
-    design = _wait('/autofills/' + job['job']['id']).get('design', {})
-    url = design.get('urls', {}).get('edit_url') or design.get('urls', {}).get('view_url')
-    if not url and design.get('id'):
-        url = 'https://www.canva.com/design/' + design['id']
-    if not url:
-        raise ValueError('Canva terminó el trabajo pero no devolvió el enlace del diseño')
+    done = _wait('/autofills/' + job['job']['id'], job)
+    design = _design_from_job(done)
+    if not design.get('id'):
+        raise ValueError('Canva terminó el trabajo pero no devolvió el diseño (respuesta: %s)' % json.dumps(done, ensure_ascii=False)[:200])
+    # design.url es el enlace estable de edición; urls.edit_url caduca a los 30 días.
+    url = design.get('url') or (design.get('urls') or {}).get('edit_url') or (design.get('urls') or {}).get('view_url') \
+        or 'https://www.canva.com/design/%s/edit' % design['id']
     output = {'url': url, 'design_id': design.get('id'), 'exported': False}
     if store:
         db.exec_('INSERT OR REPLACE INTO canva_designs(article_id,design_id,url,exported,content_hash,updated_at) VALUES(?,?,?,0,?,CURRENT_TIMESTAMP)',

@@ -47,14 +47,33 @@ def ask_openai(instructions, user_text, web=False):
     if not response.ok:
         try:
             data = response.json()
-            message = str((data.get('error') or {}).get('message') or '')
+            api_error = data.get('error') or {}
+            message = str(api_error.get('message') or '')
+            error_code = str(api_error.get('code') or '').lower()
+            error_type = str(api_error.get('type') or '').lower()
         except Exception:
             message = ''
+            error_code = ''
+            error_type = ''
         message = re.sub(r'sk-[A-Za-z0-9_-]+', '[clave oculta]', message)[:220]
         if response.status_code in (401, 403):
             detail = 'OpenAI no acepta la clave API. Revisa que OPENAI_API_KEY sea válida y tenga facturación habilitada.'
         elif response.status_code == 429:
-            detail = 'OpenAI ha limitado temporalmente las peticiones o no queda saldo de API.'
+            quota_codes = {
+                'insufficient_quota', 'credit_balance_exhausted',
+                'organization_spend_limit_exceeded', 'project_spend_limit_exceeded',
+                'organization_usage_limit_exceeded', 'usage_limit_exceeded',
+            }
+            rate_codes = {'rate_limit_exceeded', 'slow_down'}
+            if error_code in quota_codes or error_type == 'insufficient_quota':
+                detail = ('La API de OpenAI se quedó sin saldo o alcanzó un límite de gasto. '
+                          'Revisa Billing y Limits en OpenAI Platform; añade saldo solo si aparece agotado.')
+            elif error_code in rate_codes or error_type == 'rate_limit_error':
+                detail = ('OpenAI está recibiendo demasiadas peticiones seguidas. '
+                          'Espera un minuto y pulsa Reintentar; no hace falta añadir saldo si Billing está al día.')
+            else:
+                detail = ('OpenAI rechazó la petición por un límite. Revisa Billing y Limits; '
+                          'si están bien, espera un minuto y pulsa Reintentar.')
         else:
             detail = f'ChatGPT rechazó la solicitud (HTTP {response.status_code})'
             if message:

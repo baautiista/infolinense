@@ -31,6 +31,28 @@ def fetch(url, timeout=18):
         'Accept': 'application/rss+xml,application/atom+xml,application/xml,text/html,*/*;q=0.5',
     })
 
+def best_image(html_text, base=''):
+    """La imagen más grande de un fragmento HTML (srcset de WordPress incluido)."""
+    if not html_text or '<img' not in html_text:
+        return ''
+    soup = BeautifulSoup(html_text, 'html.parser')
+    for img in soup.find_all('img'):
+        options = []
+        for part in (img.get('srcset') or '').split(','):
+            bits = part.strip().split()
+            if bits:
+                try: options.append((int(bits[1].rstrip('w')) if len(bits) > 1 and bits[1].endswith('w') else 0, bits[0]))
+                except ValueError: options.append((0, bits[0]))
+        src = img.get('data-src') or img.get('src') or ''
+        if src: options.append((int(img.get('width') or 0) if str(img.get('width') or '').isdigit() else 0, src))
+        options = [o for o in options if o[1] and not o[1].startswith('data:')]
+        if options:
+            url = urljoin(base, max(options)[1])
+            if not re.search(r'(logo|icon|avatar|emoji|gravatar)', url, re.I):
+                return url
+    return ''
+
+
 def parse_rss(source):
     r = fetch(source['url']); r.raise_for_status()
     root = ET.fromstring(r.content)
@@ -41,9 +63,13 @@ def parse_rss(source):
         if outlet and title.endswith(' - ' + outlet):
             title = title[:-(len(outlet) + 3)].strip()
         if title and link:
+            raw = (it.findtext('{http://purl.org/rss/1.0/modules/content/}encoded') or '') + (it.findtext('description') or '')
+            media = next((m for m in (it.find('{http://search.yahoo.com/mrss/}content'), it.find('{http://search.yahoo.com/mrss/}thumbnail'),
+                                       it.find('enclosure')) if m is not None), None)
+            image = media.attrib.get('url', '') if media is not None and 'image' in media.attrib.get('type', 'image') else ''
             items.append({'title': title, 'url': link, 'excerpt': clean(it.findtext('description')),
                           'published_at': clean(it.findtext('pubDate')) or clean(it.findtext('{http://purl.org/dc/elements/1.1/}date')),
-                          'outlet': outlet})
+                          'outlet': outlet, 'image': image or best_image(raw, link)})
     if not items:
         ns = {'a': 'http://www.w3.org/2005/Atom'}
         for it in root.findall('.//a:entry', ns)[:120]:
@@ -209,7 +235,7 @@ def source_group(row):
     return 'Medios'
 
 
-def add_candidate(title, url, excerpt, source_name, source_id=None, published_at='', source_meta=None, local_angle='', outlet=''):
+def add_candidate(title, url, excerpt, source_name, source_id=None, published_at='', source_meta=None, local_angle='', outlet='', image=''):
     source_meta = source_meta or {'priority': 60, 'official': 0, 'local_scope': 0}
     title, excerpt = clean(title)[:260], clean(excerpt)[:1000]
     local_angle = clean(local_angle)[:800]
@@ -218,9 +244,9 @@ def add_candidate(title, url, excerpt, source_name, source_id=None, published_at
     if is_duplicate(title, url): return None
     score = heuristic_score(title, excerpt + ' ' + local_angle, source_meta)
     relevance = 'low' if score < 50 else ('medium' if score < 70 else 'high')
-    return db.exec_('''INSERT OR IGNORE INTO candidates(source_id,source_name,title,url,published_at,excerpt,score,relevance,status,local_angle,outlet)
-                       VALUES(?,?,?,?,?,?,?,?,?,?,?)''',
-                    (source_id, source_name, title, url, published_at, excerpt, score, relevance, 'new', local_angle, clean(outlet)[:120]))
+    return db.exec_('''INSERT OR IGNORE INTO candidates(source_id,source_name,title,url,published_at,excerpt,score,relevance,status,local_angle,outlet,image_hint)
+                       VALUES(?,?,?,?,?,?,?,?,?,?,?,?)''',
+                    (source_id, source_name, title, url, published_at, excerpt, score, relevance, 'new', local_angle, clean(outlet)[:120], image or ''))
 
 def read_source(source):
     if source['kind'] == 'rss': return parse_rss(source)
@@ -281,7 +307,7 @@ def scan_all():
                             continue  # sin fecha comprobable: no se puede asegurar que sea actual
                         cid = add_candidate(item['title'], item['url'], item.get('excerpt', ''),
                                             source['name'], source['id'], item.get('published_at', ''), source,
-                                            outlet=item.get('outlet', ''))
+                                            outlet=item.get('outlet', ''), image=item.get('image', ''))
                         if cid: added.append(cid); count += 1
                     source_health(source['id'], len(items), count)
                 except Exception as exc:

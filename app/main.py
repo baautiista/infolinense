@@ -13,7 +13,7 @@ from . import db, sources, pipeline, publishers, photos, canva, ai, planner, lay
 from .auth import login, require_auth
 from .config import BASE_DIR, RENDER_DIR, UPLOAD_DIR, SCAN_INTERVAL_MINUTES, AUTO_PIPELINE, OPENAI_API_KEY, ADMIN_PASSWORD, JWT_SECRET, PUBLISH_MODE, CORS_ORIGINS, PUBLIC_BASE_URL, AUTO_PUBLISH
 
-VERSION='3.2.0'
+VERSION='3.3.0'
 app=FastAPI(title='InfoLinense Desk',version=VERSION)
 app.add_middleware(CORSMiddleware,allow_origins=CORS_ORIGINS,allow_credentials=False,allow_methods=['*'],allow_headers=['Authorization','Content-Type'])
 db.init_db()
@@ -466,8 +466,9 @@ def article_photos(aid:int,refresh:bool=False,q:str=''):
         try: cached=json.loads(a.get('image_candidates_json') or '[]')
         except Exception: cached=[]
         if cached: return cached
-    cand={'title':a.get('source_title') or a.get('headline'),'url':a.get('source_url'),'excerpt':a.get('excerpt'),'source_id':a.get('source_id')}
-    imgs=photos.search_real_photos(cand,a.get('section') or 'CIUDAD')
+    hint=(db.row('SELECT image_hint FROM candidates WHERE id=?',(a.get('candidate_id'),)) or {}).get('image_hint')
+    cand={'title':a.get('headline') or a.get('source_title'),'url':a.get('source_url'),'image_hint':hint}
+    imgs=photos.search_real_photos(cand,a.get('section') or 'CIUDAD',a.get('photo_query'))
     db.exec_('UPDATE articles SET image_candidates_json=? WHERE id=?',(json.dumps(imgs,ensure_ascii=False),aid)); return imgs
 @app.post('/api/articles/{aid}/photo',dependencies=[Depends(require_auth)])
 def choose_photo(aid:int,p:PhotoChoice):
@@ -492,10 +493,16 @@ def choose_photo(aid:int,p:PhotoChoice):
 @app.post('/api/articles/{aid}/photo/auto',dependencies=[Depends(require_auth)])
 def auto_photo(aid:int):
     """Busca fotos en internet y pone automáticamente la primera que se pueda usar."""
-    a=db.row('SELECT a.*,c.title source_title,c.url source_url,c.source_id FROM articles a LEFT JOIN candidates c ON c.id=a.candidate_id WHERE a.id=?',(aid,))
+    a=db.row('SELECT a.*,c.title source_title,c.url source_url,c.source_id,c.image_hint FROM articles a LEFT JOIN candidates c ON c.id=a.candidate_id WHERE a.id=?',(aid,))
     if not a: raise HTTPException(404)
-    cand={'title':a.get('headline') or a.get('source_title'),'url':a.get('source_url')}
-    imgs=photos.search_real_photos(cand,a.get('section') or '')
+    cand={'title':a.get('headline') or a.get('source_title'),'url':a.get('source_url'),'image_hint':a.get('image_hint')}
+    query=a.get('photo_query') or ''
+    if not query and ai.AI_ENABLED:
+        try:
+            query=ai.photo_query(a)
+            db.exec_('UPDATE articles SET photo_query=? WHERE id=?',(query,aid))
+        except ai.AIProviderError: query=''
+    imgs=photos.search_real_photos(cand,a.get('section') or '',query)
     try: previous=json.loads(a.get('image_candidates_json') or '[]')
     except Exception: previous=[]
     known={x.get('url') for x in imgs}

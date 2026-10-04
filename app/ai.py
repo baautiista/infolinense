@@ -421,7 +421,8 @@ image_headline (titular corto para la imagen: máximo 70 caracteres, sin perder 
 graphic_summary (máximo 140 caracteres, una o dos frases para la imagen),
 carousel_suitable (true solo si la noticia explica varios pasos, cifras, requisitos o consecuencias que se entienden mejor en 3-6 diapositivas),
 carousel_reason (motivo breve),
-ai_image_suggestion (qué foto real buscar; no se genera ninguna imagen).'''
+ai_image_suggestion (qué foto real buscar; no se genera ninguna imagen),
+photo_query (búsqueda de imágenes en internet de 3 a 6 palabras que describa la escena concreta y el lugar, p. ej. «playa Poniente La Línea alga asiática» o «calle Real La Línea obras»).'''
     data, provider, _ = ask_json(style_guide(), prompt, max_tokens=5000)
     if not isinstance(data, dict) or not data.get('headline') or not data.get('body'):
         raise AIProviderError('La IA devolvió un borrador incompleto. Reintenta.', provider, kind='empty')
@@ -444,6 +445,15 @@ ai_image_suggestion (qué foto real buscar; no se genera ninguna imagen).'''
     data['graphic_summary'] = layout.fit_summary(data.get('graphic_summary') or data.get('subtitle') or '')
     data['provider'] = provider
     return data
+
+
+def photo_query(article):
+    """Búsqueda de imágenes descriptiva para una noticia ya redactada."""
+    prompt = (f"Escribe una búsqueda de imágenes en internet de 3 a 6 palabras para ilustrar esta noticia de La Línea de la Concepción. "
+              f"Describe la escena concreta y el lugar (p. ej. «playa Poniente La Línea alga asiática»). Responde solo JSON {{\"q\": \"...\"}}.\n"
+              f"TITULAR: {article.get('headline', '')}\nENTRADILLA: {article.get('subtitle', '')}")
+    data, _, _ = ask_json(SYSTEM, prompt, max_tokens=200)
+    return re.sub(r'\s+', ' ', str((data or {}).get('q') or '')).strip()[:120]
 
 
 def alternate_headlines(article):

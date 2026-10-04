@@ -213,6 +213,7 @@ async function editor(v) {
       <div class="frame" id="frame">${kit.image_url || kit.photo_download_url ? '<img id="preview" alt="Imagen de la noticia">' : '<p class="empty">Sin foto todavía</p>'}</div>
       <div class="row wrap">
         <button class="btn small" onclick="photoPanel()">Cambiar foto</button>
+        <button class="btn small" onclick="autoPhoto()">Foto automática</button>
         <button class="btn small" id="canvaBtn" onclick="makeCanva()">${kit.canva_exported ? 'Rehacer imagen en Canva' : 'Crear imagen en Canva'}</button>
         ${kit.image_url ? `<button class="btn small" onclick="download('/media/render/${a.id}.png','infolinense-${a.id}.png')">Descargar imagen</button>` : kit.photo_download_url ? `<button class="btn small" onclick="download('${kit.photo_download_url}','infolinense-${a.id}.jpg')">Descargar foto</button>` : ''}
       </div>

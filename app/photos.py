@@ -14,7 +14,7 @@ from bs4 import BeautifulSoup
 from PIL import Image
 
 from .config import UPLOAD_DIR, GOOGLE_SEARCH_API_KEY, GOOGLE_SEARCH_CX
-from . import db
+from . import db, sources
 
 UA = ('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
       '(KHTML, like Gecko) Chrome/126.0 Safari/537.36')
@@ -83,17 +83,10 @@ def page_images(url, limit=6):
             tag = soup.find('meta', attrs=attrs)
             if tag and tag.get('content'):
                 found.append(urljoin(base, tag['content']))
-        for img in soup.select('article img, main img, .article img, .entry-content img, figure img')[:15]:
-            src = img.get('data-src') or img.get('data-lazy-src') or img.get('src') or ''
-            if img.get('srcset') and not src.startswith('http'):
-                src = img['srcset'].split(',')[-1].strip().split(' ')[0]
-            try:
-                if int(img.get('width') or 999) < 300:
-                    continue
-            except ValueError:
-                pass
-            if src and not src.startswith('data:'):
-                found.append(urljoin(base, src))
+        for img in soup.select('article img, main img, .article img, .entry-content img, .post-content img, figure img')[:15]:
+            src = sources.best_image(str(img), base)
+            if src:
+                found.append(full_size(src))
         for u in found:
             if u.startswith('http') and not _JUNK.search(u):
                 out.append(_item(u, base, 'source'))
@@ -272,6 +265,14 @@ def commons_images(query, limit=8):
     return out
 
 
+_WP_SIZE = re.compile(r'-\d{2,4}x\d{2,4}(?=\.(jpe?g|png|webp)(\?|$))', re.I)
+
+
+def full_size(url):
+    """En WordPress la miniatura se llama foto-300x175.jpg; el original es foto.jpg."""
+    return _WP_SIZE.sub('', url or '')
+
+
 def _unique(items):
     seen, out = set(), []
     for x in items:
@@ -282,16 +283,33 @@ def _unique(items):
     return out
 
 
-def search_real_photos(candidate, section=''):
-    url = candidate.get('url', '')
-    real = resolve_google_news(url)
-    title = re.sub(r'\s+[-–|]\s+[^-–|]{3,40}$', '', candidate.get('title') or '')
-    found = page_images(real, limit=3)  # la foto de la propia noticia, primero
+_NOT_VISUAL = re.compile(r'^(toneladas|euros|millones|miles|metros|kilos|personas|años|meses|días|semanas|horas|'
+                         r'.*(adas|ados|idas|idos|ará|arán|erá|erán)|anuncia|abre|pide|piden|recibe|presenta|aprueba)$', re.I)
+
+
+def photo_query_for(title, section=''):
+    words = [w for w in keywords(re.sub(r'\s+[-–|]\s+[^-–|]{3,40}$', '', title or ''), 10)
+             if not _NOT_VISUAL.match(w) and not w.isdigit()][:4]
+    return (' '.join(words) + ' La Línea') if words else 'La Línea de la Concepción ' + (section or '')
+
+
+def search_real_photos(candidate, section='', query=None):
+    """1) La foto que acompaña a la propia noticia (RSS o página). 2) Internet con una búsqueda descriptiva."""
+    found = []
+    hint = candidate.get('image_hint') or ''
+    if hint:
+        found += [_item(full_size(hint), candidate.get('url') or hint, 'source'), _item(hint, candidate.get('url') or hint, 'source')]
+    real = resolve_google_news(candidate.get('url', ''))
+    found += page_images(real, limit=3)
+    title = candidate.get('title') or ''
     words = keywords(title, 7)
-    query = ' '.join(words) + ' La Línea' if words else 'La Línea de la Concepción ' + (section or '')
+    query = (query or '').strip() or photo_query_for(title, section)
+    if 'línea' not in query.lower() and 'linea' not in query.lower():
+        query += ' La Línea'
     found += internet_images(query)
-    if len(found) < 6 and len(words) > 3:
-        found += internet_images(' '.join(words[:3]) + ' La Línea de la Concepción')  # búsqueda más amplia
+    broader = photo_query_for(title, section)
+    if len(found) < 6 and broader.lower() != query.lower():
+        found += internet_images(broader)  # segunda búsqueda con las palabras visuales del titular
     return _unique(found)[:24]
 
 

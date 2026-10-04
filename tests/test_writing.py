@@ -313,3 +313,29 @@ class NewsStyle(unittest.TestCase):
         with patch.object(photos.requests, 'Session', return_value=FakeSession()):
             found = photos.duckduckgo_images('playa Poniente La Línea')
         self.assertEqual([f['url'] for f in found], ['https://diario.es/fotos/playa-poniente.jpg'])
+
+
+class StoryImage(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        db.init_db()
+
+    def test_rss_keeps_the_image_of_each_story_at_full_size(self):
+        from app import sources, photos
+        feed = '''<?xml version="1.0"?><rss xmlns:content="http://purl.org/rss/1.0/modules/content/"><channel><item>
+          <title>La ciudad participará en la feria de turismo de Londres</title><link>https://lalinea.es/feria-londres/</link>
+          <content:encoded><![CDATA[<p><img src="https://lalinea.es/wp-content/uploads/2026/10/Feria-de-Londres-300x175.jpg" width="300"
+          srcset="https://lalinea.es/wp-content/uploads/2026/10/Feria-de-Londres-300x175.jpg 300w, https://lalinea.es/wp-content/uploads/2026/10/Feria-de-Londres.jpg 580w"></p>]]></content:encoded>
+          </item></channel></rss>'''
+
+        class R:
+            content = feed.encode()
+            def raise_for_status(self): pass
+        with patch.object(sources, 'fetch', return_value=R()):
+            items = sources.parse_rss({'url': 'https://lalinea.es/feed/'})
+        self.assertEqual(items[0]['image'], 'https://lalinea.es/wp-content/uploads/2026/10/Feria-de-Londres.jpg')
+        with patch.object(photos, 'page_images', return_value=[]), patch.object(photos, 'internet_images', return_value=[]) as web:
+            found = photos.search_real_photos({'title': 'Más de 550 toneladas de alga asiática retiradas en Poniente', 'url': 'https://lalinea.es/a',
+                                               'image_hint': items[0]['image']}, '', 'playa Poniente La Línea alga asiática')
+        self.assertEqual(found[0]['url'], items[0]['image'])
+        self.assertEqual(web.call_args_list[0][0][0], 'playa Poniente La Línea alga asiática')

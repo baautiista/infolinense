@@ -1,19 +1,21 @@
-/* InfoLinense Desk 3 — panel móvil: Noticias, Agenda, Redacción y Ajustes. */
+/* InfoLinense Desk 4 — trabajo por fases: 1 Ordenar · 2 Redacción · 3 Revisar · 4 Publicar. */
 const $ = s => document.querySelector(s);
 let token = localStorage.getItem('infolinense_token') || '';
-let view = 'news', editorId = null, group = 'Todas', onlyToday = false;
+let view = 'sort', editorId = null, block = null, editorFrom = 'review';
 let blobUrls = [];
 const polling = {};
 const cache = { photos: {}, article: {} };
 
-const PRIO = [['urgent', 'Urgente'], ['today', 'Hoy'], ['this_week', 'Semana'], ['future', 'Futura']];
+const PRIO = [['urgent', 'Urgente'], ['today', 'Hoy'], ['this_week', 'Esta semana'], ['future', 'Más adelante']];
 const PRIO_LABEL = Object.fromEntries(PRIO);
-const GROUPS = ['Ayuntamiento', 'Licitaciones y edictos', 'Otros medios', 'Nacionales adaptables'];
+const BLOCKS = ['Ayuntamiento', 'Licitaciones y edictos', 'Otros medios', 'Nacionales adaptables', 'Redes sociales'];
 const SECTIONS = [['OBRAS', '#0150FE', '#fff'], ['CIUDAD', '#4F9AFC', '#fff'], ['GIBRALTAR', '#7249E0', '#fff'], ['SUCESOS', '#D02132', '#fff'],
   ['CULTURA', '#E72E79', '#fff'], ['DEPORTES', '#00AB4F', '#fff'], ['COMERCIO', '#FF8E1A', '#fff'], ['MEDIO AMBIENTE', '#62DBD1', '#061E5C'],
   ['POLÍTICA', '#08176E', '#fff'], ['SOCIEDAD', '#2756CD', '#fff'], ['PATRIMONIO', '#B9831E', '#fff'], ['AGENDA', '#FDE206', '#061E5C']];
 const SEC = Object.fromEntries(SECTIONS.map(s => [s[0], s]));
-const STATUS = { draft: 'Borrador', review_ready: 'Por revisar', approved: 'Aprobada', published: 'Publicada' };
+const STATUS = { draft: 'Borrador', review_ready: 'Revisada', approved: 'Aprobada', published: 'Publicada' };
+const PHASES = [['sort', 'Ordenar'], ['writing', 'Redacción'], ['review', 'Revisar'], ['publish', 'Publicar']];
+const KIND = { queja: 'Queja', propuesta: 'Propuesta', asociacion: 'Asociación' };
 
 /* ---------- utilidades ---------- */
 function esc(s) { return String(s ?? '').replace(/[&<>"']/g, m => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[m])) }
@@ -32,7 +34,6 @@ function ago(iso) {
 }
 function isToday(iso) { return iso && new Date(iso).toLocaleDateString('es-ES', { timeZone: 'Europe/Madrid' }) === new Date().toLocaleDateString('es-ES', { timeZone: 'Europe/Madrid' }) }
 function secBadge(name) { const s = SEC[name] || SEC.CIUDAD; return `<span class="sec" style="background:${s[1]};color:${s[2]}">${esc(s[0])}</span>` }
-function special(n) { const t = `${n.title} ${n.excerpt || ''} ${n.source_name || ''}`.toLowerCase(); if (n.source_kind === 'procurement' || /licitaci|contrataci|adjudicaci/.test(t)) return 'Licitación'; if (n.source_kind === 'bop' || /edicto/.test(t)) return 'Edicto'; if (/exclusiv/.test(t)) return 'Exclusiva'; return '' }
 const wait = ms => new Promise(r => setTimeout(r, ms));
 
 async function request(url, opt = {}) {
@@ -53,151 +54,135 @@ $('#loginForm').onsubmit = async e => {
   try { token = (await api('/api/auth/login', { method: 'POST', body: JSON.stringify({ password: $('#password').value }) })).token; localStorage.setItem('infolinense_token', token); $('#password').value = ''; start() }
   catch (err) { $('#loginError').textContent = err.message }
 };
-function start() { $('#login').hidden = true; $('#app').hidden = false; go(location.hash.slice(1) || 'news') }
+async function start() {
+  $('#login').hidden = true; $('#app').hidden = false;
+  const h = location.hash.slice(1);
+  if (h) return go(h);
+  // Al abrir, se va a la primera fase con trabajo pendiente.
+  try { const w = await api('/api/workflow'); go(w.sort ? 'sort' : w.review ? 'review' : w.drafting ? 'writing' : w.publish ? 'publish' : 'sort') } catch { go('sort') }
+}
 document.querySelectorAll('.tabs button').forEach(b => b.onclick = () => go(b.dataset.view));
-$('#backBtn').onclick = () => history.length > 1 ? history.back() : go('drafts');
+$('#settingsBtn').onclick = () => go('settings');
+$('#backBtn').onclick = () => go(editorFrom);
 window.onhashchange = () => { const h = location.hash.slice(1); if (h && h !== currentHash()) go(h, true) };
 function currentHash() { return view === 'editor' ? `editor/${editorId}` : view }
 function go(target, fromHash) {
   const [v, id] = target.split('/');
-  view = ['news', 'social', 'agenda', 'drafts', 'settings', 'editor'].includes(v) ? v : 'news';
+  if (view !== 'editor' && v === 'editor') editorFrom = view === 'settings' ? 'review' : view;
+  view = ['sort', 'writing', 'review', 'publish', 'settings', 'editor'].includes(v) ? v : 'sort';
   editorId = view === 'editor' ? Number(id) : null;
   if (!fromHash) location.hash = currentHash();
-  document.querySelectorAll('.tabs button').forEach(b => b.classList.toggle('on', b.dataset.view === (view === 'editor' ? 'drafts' : view)));
-  $('#title').textContent = { news: 'Noticias', social: 'Redes', agenda: 'Agenda', drafts: 'Redacción', settings: 'Ajustes', editor: 'Noticia' }[view];
+  document.querySelectorAll('.tabs button').forEach(b => b.classList.toggle('on', b.dataset.view === (view === 'editor' ? editorFrom : view)));
+  $('#title').textContent = { sort: 'Ordenar', writing: 'Redacción', review: 'Revisar', publish: 'Publicar', settings: 'Ajustes', editor: 'Noticia' }[view];
   $('#backBtn').hidden = view !== 'editor';
-  $('#scanBtn').hidden = !['news', 'social'].includes(view);
-  $('#scanBtn').textContent = view === 'social' ? 'Investigar redes' : 'Buscar noticias';
-  render();
+  $('#scanBtn').hidden = view !== 'sort';
+  render(); counts();
+}
+async function counts() {
+  try {
+    const w = await api('/api/workflow');
+    const n = { sort: w.sort, writing: w.drafting, review: w.review, publish: w.publish };
+    document.querySelectorAll('.tabs button').forEach(b => { const c = b.querySelector('.n'); if (c) c.textContent = n[b.dataset.view] || '' });
+  } catch { }
 }
 async function render() {
   blobUrls.forEach(URL.revokeObjectURL); blobUrls = [];
   const v = $('#view'); v.innerHTML = '<p class="empty">Cargando…</p>'; window.scrollTo(0, 0);
-  try { await ({ news, social: socialView, agenda, drafts, settings, editor }[view])(v) }
+  try { await ({ sort: sortView, writing: writingView, review: reviewView, publish: publishView, settings, editor }[view])(v) }
   catch (e) { if (token) v.innerHTML = `<p class="empty">${esc(e.message)}</p>` }
 }
+function nextPhase(label, target, note = '') { return `<div class="next"><p>${note}</p><button class="btn primary" onclick="go('${target}')">${label}</button></div>` }
 
-/* ---------- Noticias ---------- */
+/* ---------- Fase 1: Ordenar ---------- */
 $('#scanBtn').onclick = async () => {
-  const b = $('#scanBtn'), social = view === 'social'; b.disabled = true; b.textContent = social ? 'Investigando…' : 'Buscando…';
+  const b = $('#scanBtn'); b.disabled = true; b.textContent = 'Buscando…';
   try {
-    const r = await api(social ? '/api/social/scan' : '/api/scan', { method: 'POST' });
-    toast(r.busy ? 'Ya hay una búsqueda en marcha' : `${r.added.length} ${social ? 'publicaciones' : 'noticias'} nuevas`); render()
-  } catch (e) { toast(e.message) } finally { b.disabled = false; b.textContent = social ? 'Investigar redes' : 'Buscar noticias' }
+    const [r, sr] = await Promise.all([api('/api/scan', { method: 'POST' }), api('/api/social/scan', { method: 'POST' }).catch(() => ({ added: [] }))]);
+    toast(r.busy ? 'Ya hay una búsqueda en marcha' : `${r.added.length + sr.added.length} nuevas`); render(); counts();
+  } catch (e) { toast(e.message) } finally { b.disabled = false; b.textContent = 'Buscar' }
 };
-let newsCache = [];
-async function news(v) {
-  newsCache = await api('/api/candidates?status=pending');
-  drawNews(v);
+let queue = [];
+async function sortView(v) {
+  queue = await api('/api/sort-queue');
+  drawSort(v);
 }
-function drawNews(v = $('#view')) {
-  const pool = onlyToday ? newsCache.filter(n => isToday(n.date_iso)) : newsCache;
-  const count = g => pool.filter(n => g === 'Todas' || n.group === g).length;
-  const groups = ['Todas', ...GROUPS.filter(g => count(g))];
-  if (!groups.includes(group)) group = 'Todas';
-  const items = pool.filter(n => group === 'Todas' || n.group === group);
-  v.innerHTML = `<div class="filters"><div class="chips scroll">${groups.map(g => `<button class="chip ${g === group ? 'on' : ''}" data-g="${esc(g)}">${esc(g)} <b>${count(g)}</b></button>`).join('')}</div>
-    <label class="switch"><input type="checkbox" id="today" ${onlyToday ? 'checked' : ''}> Solo de hoy</label></div>
-    ${items.length ? `<div class="list">${items.map(card).join('')}</div>` : `<p class="empty">No hay noticias ${onlyToday ? 'de hoy ' : ''}en ${group === 'Todas' ? 'ninguna fuente' : esc(group)}. Pulsa «Buscar noticias».</p>`}`;
-  v.querySelectorAll('[data-g]').forEach(b => b.onclick = () => { group = b.dataset.g; drawNews() });
-  $('#today').onchange = e => { onlyToday = e.target.checked; drawNews() };
-  items.forEach(n => { if ((n.work_state === 'queued' || n.work_state === 'working') && !n.article_id) poll(n.id) });
+function drawSort(v = $('#view')) {
+  const count = g => queue.filter(n => n.group === g).length;
+  if (!block || !count(block)) block = BLOCKS.find(count) || BLOCKS[0];
+  const items = queue.filter(n => n.group === block);
+  const n = items[0];
+  v.innerHTML = `<div class="chips scroll blocks">${BLOCKS.map(g => `<button class="chip ${g === block ? 'on' : ''}" data-g="${esc(g)}" ${count(g) ? '' : 'disabled'}>${esc(g)} <b>${count(g)}</b></button>`).join('')}</div>
+    ${n ? `<p class="progress">${esc(block)}: quedan ${items.length}</p>${focusCard(n)}
+      ${items.length > 1 ? `<details class="peek"><summary>Ver las ${items.length - 1} siguientes</summary>${items.slice(1, 15).map(x => `<p class="peeki">${esc(x.title)}</p>`).join('')}</details>` : ''}`
+    : queue.length ? '' : `<p class="empty">Todo ordenado. Pulsa «Buscar» para traer noticias nuevas.</p>${nextPhase('Ir a Redacción', 'writing', 'Las noticias marcadas se están redactando solas.')}`}`;
+  v.querySelectorAll('[data-g]').forEach(b => b.onclick = () => { block = b.dataset.g; drawSort() });
 }
-function card(n) {
-  const prio = PRIO_LABEL[n.editorial_priority] ? n.editorial_priority : '';
+function special(n) { const t = `${n.title} ${n.excerpt || ''} ${n.source_name || ''}`.toLowerCase(); if (n.source_kind === 'procurement' || /licitaci|contrataci|adjudicaci/.test(t)) return 'Licitación'; if (n.source_kind === 'edictos' || n.source_kind === 'bop' || /edicto/.test(t)) return 'Edicto'; if (/exclusiv/.test(t)) return 'Exclusiva'; return '' }
+function focusCard(n) {
   const sp = special(n);
-  return `<article class="item" id="c-${n.id}">
-    <div class="meta">${n.social_type ? `<span class="kind ${n.social_type}">${{ queja: 'Queja', propuesta: 'Propuesta', asociacion: 'Asociación' }[n.social_type] || ''}</span>` : ''}<span class="src">${esc(n.outlet || n.source_name || host(n.url))}</span><span>${ago(n.date_iso)}</span>${sp ? `<span class="flag">${sp}</span>` : ''}</div>
-    <h3><a href="${safeUrl(n.url)}" target="_blank" rel="noopener noreferrer">${esc(n.title)}</a></h3>
-    ${n.local_angle ? `<p class="angle">${esc(n.local_angle)}</p>` : ''}
-    <div class="chips">${PRIO.map(([k, t]) => `<button class="chip ${prio === k ? 'on' : ''}" onclick="setPriority(${n.id},'${k}')">${t}</button>`).join('')}<button class="chip no" onclick="setPriority(${n.id},'no_interest')" aria-label="No interesa" title="No interesa">✕</button></div>
-    <div class="state" id="s-${n.id}">${stateLine(n)}</div></article>`;
+  return `<article class="focuscard" id="fc">
+    <div class="meta">${n.social_type ? `<span class="kind ${n.social_type}">${KIND[n.social_type] || ''}</span>` : ''}${sp ? `<span class="flag">${sp}</span>` : ''}<span class="src">${esc(n.outlet || n.source_name || host(n.url))}</span><span>${ago(n.date_iso)}</span></div>
+    <h2>${esc(n.title)}</h2>
+    ${n.local_angle ? `<p class="angle">${esc(n.local_angle)}</p>` : n.excerpt && n.excerpt !== n.title ? `<p class="angle">${esc(n.excerpt.slice(0, 260))}</p>` : ''}
+    <a class="link" href="${safeUrl(n.url)}" target="_blank" rel="noopener noreferrer">Ver la fuente</a>
+    <div class="decide">${PRIO.map(([k, t]) => `<button class="btn ${k === 'urgent' ? 'urgent' : k === 'today' ? 'primary' : ''}" onclick="decide(${n.id},'${k}')">${t}</button>`).join('')}
+      <button class="btn no" onclick="decide(${n.id},'no_interest')">No interesa</button></div></article>`;
 }
-function stateLine(n) {
-  if (n.article_id) return `<button class="btn primary small" onclick="go('editor/${n.article_id}')">Abrir borrador</button><span class="muted">${n.planned_at ? 'Agenda: ' + esc(String(n.planned_at).slice(11, 16)) : ''}</span>`;
-  if (n.work_state === 'queued' || n.work_state === 'working') return `<span class="spin"></span><span class="muted">Redactando…</span>`;
-  if (n.work_state === 'error') return `<span class="error">${esc(jparse(n.work_error, {}).message || 'No se pudo redactar')}</span><button class="btn small" onclick="writeNow(${n.id})">Reintentar</button>`;
-  return n.editorial_priority && PRIO_LABEL[n.editorial_priority] ? `<span class="muted">En cola para redactar</span>` : '';
-}
-window.setPriority = async (id, p) => {
+window.decide = async (id, p) => {
+  const card = $('#fc'); if (card) card.classList.add('gone');
   try {
     await api(`/api/candidates/${id}/triage`, { method: 'POST', body: JSON.stringify({ priority: p }) });
-    const n = newsCache.find(x => x.id === id);
-    if (p === 'no_interest') { newsCache = newsCache.filter(x => x.id !== id); const el = $(`#c-${id}`); if (el) el.remove(); toast('Descartada'); return }
-    if (n) { n.editorial_priority = p; if (!n.article_id) n.work_state = 'queued'; $(`#c-${id}`).outerHTML = card(n); if (!n.article_id) poll(id) }
-  } catch (e) { toast(e.message) }
+    queue = queue.filter(x => x.id !== id);
+    if (p !== 'no_interest') toast(`${PRIO_LABEL[p]}: se redacta sola`);
+    drawSort(); counts();
+  } catch (e) { toast(e.message); if (card) card.classList.remove('gone') }
 };
-window.writeNow = async id => {
-  const s = $(`#s-${id}`); if (s) s.innerHTML = '<span class="spin"></span><span class="muted">Redactando…</span>';
-  try { const r = await api(`/api/candidates/${id}/write?wait=40`, { method: 'POST' }); r.state === 'done' ? done(id, r.article_id) : poll(id) }
-  catch (e) { if (s) s.innerHTML = `<span class="error">${esc(e.message)}</span><button class="btn small" onclick="writeNow(${id})">Reintentar</button>` }
-};
-async function poll(id) {
-  if (polling[id]) return; polling[id] = true;
-  try {
-    for (let i = 0; i < 150; i++) {
-      const st = await api(`/api/candidates/${id}/write`);
-      const s = $(`#s-${id}`);
-      if (st.state === 'done') return done(id, st.article_id);
-      if (st.state === 'error') { if (s) s.innerHTML = `<span class="error">${esc(st.error?.detail || st.error?.message || 'No se pudo redactar')}</span><button class="btn small" onclick="writeNow(${id})">Reintentar</button>`; return }
-      if (st.state === 'idle') { if (s) s.innerHTML = stateLine({}); return }
-      if (s) s.innerHTML = `<span class="spin"></span><span class="muted">${esc(st.step_text || 'Redactando…')}</span>`;
-      if (!s && !['news', 'social'].includes(view)) return;
-      await wait(4000);
-    }
-  } catch { } finally { delete polling[id] }
-}
-function done(id, aid) { const n = newsCache.find(x => x.id === id); if (n) { n.article_id = aid; n.work_state = 'done' } const s = $(`#s-${id}`); if (s) s.innerHTML = stateLine({ article_id: aid, planned_at: n?.planned_at }) }
 
-/* ---------- Redes ---------- */
-let socialKind = 'todo', socialPage = 'Todas';
-async function socialView(v) {
-  const data = await api('/api/social');
-  newsCache = data.items;
-  const draw = () => {
-    const byKind = newsCache.filter(n => socialKind === 'todo' || n.social_type === socialKind);
-    const pages = ['Todas', ...new Set(byKind.map(n => n.outlet || n.source_name))];
-    if (!pages.includes(socialPage)) socialPage = 'Todas';
-    const items = byKind.filter(n => socialPage === 'Todas' || (n.outlet || n.source_name) === socialPage);
-    const n = k => newsCache.filter(x => k === 'todo' || x.social_type === k).length;
-    v.innerHTML = `<div class="filters"><div class="chips">${[['todo', 'Todo'], ['queja', 'Quejas'], ['propuesta', 'Propuestas'], ['asociacion', 'Asociaciones']].map(([k, t]) => `<button class="chip ${k === socialKind ? 'on' : ''}" data-k="${k}">${t} <b>${n(k)}</b></button>`).join('')}</div>
-      <div class="chips scroll">${pages.map(p => `<button class="chip ${p === socialPage ? 'on' : ''}" data-p="${esc(p)}">${esc(p)}</button>`).join('')}</div></div>
-      ${items.length ? `<div class="list">${items.map(card).join('')}</div>` : '<p class="empty">No hay publicaciones recientes. Pulsa «Investigar redes».</p>'}
-      <section class="panel" style="margin-top:16px"><h2>Páginas y grupos vigilados</h2>
-        <p class="muted small">Solo se ve lo público: grupos cerrados no se pueden leer sin permiso de Facebook.</p>
-        <div class="sources">${data.watched.map(s => `<div class="srcrow"><label class="switch"><input type="checkbox" ${s.active ? 'checked' : ''} onchange="toggleSource(${s.id})"> ${esc(s.name)}</label><a class="small" href="${safeUrl(s.url)}" target="_blank" rel="noopener">Abrir</a></div>`).join('') || '<p class="muted small">Ninguna todavía.</p>'}</div>
-        <form id="addFb" class="stack"><input name="name" placeholder="Nombre (p. ej. Quejas La Línea)" required><input name="url" type="url" placeholder="https://www.facebook.com/groups/…" required><button class="btn small">Vigilar</button></form></section>`;
-    v.querySelectorAll('[data-k]').forEach(b => b.onclick = () => { socialKind = b.dataset.k; draw() });
-    v.querySelectorAll('[data-p]').forEach(b => b.onclick = () => { socialPage = b.dataset.p; draw() });
-    $('#addFb').onsubmit = async e => { e.preventDefault(); const d = Object.fromEntries(new FormData(e.target)); try { await api('/api/sources', { method: 'POST', body: JSON.stringify({ ...d, kind: 'social', priority: 60, local_scope: true }) }); toast('Ahora se vigila'); render() } catch (er) { toast(er.message) } };
-    items.forEach(x => { if ((x.work_state === 'queued' || x.work_state === 'working') && !x.article_id) poll(x.id) });
-  };
-  draw();
+/* ---------- Fase 2: Redacción ---------- */
+async function writingView(v) {
+  const rows = await api('/api/drafting');
+  const ready = rows.filter(r => r.state === 'ready').length;
+  v.innerHTML = rows.length ? `<div class="bar"><span style="width:${Math.round(100 * ready / rows.length)}%"></span></div>
+    <p class="progress">${ready} de ${rows.length} listas para revisar</p>
+    <div class="list">${rows.map(r => `<article class="item row-${r.state}"><div class="meta"><span>${esc(PRIO_LABEL[r.editorial_priority] || '')}</span>${r.planned_at ? `<span>${esc(String(r.planned_at).slice(11, 16))}</span>` : ''}</div>
+      <h3>${esc(r.headline || r.title)}</h3>
+      <div class="state">${r.state === 'ready' ? `<button class="btn small primary" onclick="go('editor/${r.article_id}')">Revisar</button>` :
+        r.state === 'error' ? `<span class="error">${esc(jparse(r.work_error, {}).message || 'No se pudo redactar')}</span><button class="btn small" onclick="retry(${r.id})">Reintentar</button>` :
+        `<span class="spin"></span><span class="muted">${r.state === 'working' ? 'Redactando…' : 'En cola'}</span>`}</div></article>`).join('')}</div>
+    ${ready ? nextPhase('Pasar a Revisar', 'review') : ''}`
+    : `<p class="empty">No hay nada redactándose. Marca noticias en Ordenar.</p>${nextPhase('Ir a Ordenar', 'sort')}`;
+  if (rows.some(r => r.state === 'queued' || r.state === 'working')) setTimeout(() => { if (view === 'writing') { writingView(v); counts() } }, 6000);
+}
+window.retry = async id => { try { await api(`/api/candidates/${id}/write?wait=0`, { method: 'POST' }); render() } catch (e) { toast(e.message) } };
+
+/* ---------- Fase 3: Revisar ---------- */
+let reviewIds = [];
+async function reviewView(v) {
+  const rows = (await api('/api/drafting')).filter(r => r.state === 'ready');
+  reviewIds = rows.map(r => r.article_id);
+  v.innerHTML = rows.length ? `<p class="progress">${rows.length} por revisar. Corrige texto, foto e imagen y pulsa «Revisada».</p>
+    <div class="list">${rows.map(r => `<a class="item" href="#editor/${r.article_id}"><div class="meta"><span>${esc(PRIO_LABEL[r.editorial_priority] || '')}</span>${r.planned_at ? `<span>${esc(String(r.planned_at).slice(11, 16))}</span>` : ''}</div><h3>${esc(r.headline || r.title)}</h3></a>`).join('')}</div>`
+    : `<p class="empty">No queda nada por revisar.</p>${nextPhase('Ir a Publicar', 'publish')}`;
 }
 
-/* ---------- Agenda ---------- */
-async function agenda(v) {
-  const s = await api('/api/schedule');
-  const groups = {};
-  for (const it of s.items) (groups[it.planned_at ? String(it.planned_at).slice(0, 10) : 'sin'] ||= []).push(it);
-  v.innerHTML = s.items.length ? Object.entries(groups).map(([day, items]) => `<h2 class="day">${day === 'sin' ? 'Sin hueco' : new Date(day + 'T12:00').toLocaleDateString('es-ES', { weekday: 'long', day: 'numeric', month: 'long' })}</h2>
-    <div class="list">${items.map(it => `<article class="item slot"><div class="hour">${it.planned_at ? String(it.planned_at).slice(11, 16) : '–'}</div><div class="grow">
-      <div class="meta"><span>${esc(PRIO_LABEL[it.editorial_priority] || '')}</span>${special(it) ? `<span class="flag">${special(it)}</span>` : ''}${it.article_status ? `<span>${STATUS[it.article_status] || ''}</span>` : '<span class="muted">Redactando</span>'}</div>
-      <h3>${it.article_id ? `<a href="#editor/${it.article_id}">${esc(it.article_headline || it.title)}</a>` : esc(it.title)}</h3>
-      <div class="row"><input type="datetime-local" value="${esc(String(it.planned_at || '').slice(0, 16))}" onchange="setTime(${it.id},'${it.editorial_priority}',this.value)">${it.plan_locked ? `<button class="link" onclick="setPriority(${it.id},'${it.editorial_priority}').then(render)">Automática</button>` : ''}</div>
-    </div></article>`).join('')}</div>`).join('')
-    : '<p class="empty">Marca noticias como Urgente, Hoy, Esta semana o Futura y aparecerán aquí repartidas por horas.</p>';
+/* ---------- Fase 4: Publicar ---------- */
+async function publishView(v) {
+  const rows = await api('/api/to-publish');
+  const today = new Date().toLocaleDateString('sv-SE', { timeZone: 'Europe/Madrid' });
+  const isTodayRow = r => !r.planned_at || String(r.planned_at).slice(0, 10) <= today;
+  const row = r => `<article class="item slot"><div class="hour">${r.planned_at ? esc(String(r.planned_at).slice(11, 16)) : '–'}</div><div class="grow">
+      <div class="meta">${secBadge(r.section)}<span class="st st-${r.status}">${STATUS[r.status]}</span><span>${r.canva_exported ? 'Imagen lista' : r.has_photo ? 'Con foto' : 'Sin foto'}</span></div>
+      <h3><a href="#editor/${r.id}">${esc(r.headline)}</a></h3>
+      ${r.status === 'published' ? (r.publish_url ? `<a class="link" href="${safeUrl(r.publish_url)}" target="_blank" rel="noopener">Ver en la web</a>` : '') :
+        `<div class="row wrap"><input type="datetime-local" value="${esc(String(r.planned_at || '').slice(0, 16))}" onchange="setTime(${r.candidate_id},'${r.editorial_priority || 'today'}',this.value)">
+         <button class="btn small primary" onclick="publishNow(${r.id},this)">Publicar</button></div>`}</div></article>`;
+  const todayRows = rows.filter(isTodayRow), later = rows.filter(r => !isTodayRow(r));
+  v.innerHTML = rows.length ? `<h2 class="day">Hoy</h2><div class="list">${todayRows.map(row).join('') || '<p class="muted">Nada para hoy.</p>'}</div>
+    ${later.length ? `<h2 class="day">Próximos días</h2><div class="list">${later.map(row).join('')}</div>` : ''}`
+    : `<p class="empty">Aún no hay noticias revisadas.</p>${nextPhase('Ir a Revisar', 'review')}`;
 }
 window.setTime = async (id, p, value) => { if (!value) return; try { await api(`/api/candidates/${id}/triage`, { method: 'POST', body: JSON.stringify({ priority: p, planned_at: value + ':00' }) }); toast('Hora fijada'); render() } catch (e) { toast(e.message) } };
-
-/* ---------- Redacción ---------- */
-async function drafts(v) {
-  const items = await api('/api/articles');
-  v.innerHTML = items.length ? `<div class="list">${items.map(a => `<a class="item art" href="#editor/${a.id}">
-      <div class="meta">${secBadge(a.section)}<span class="st st-${a.status}">${STATUS[a.status] || a.status}</span>${a.planned_at ? `<span>${esc(String(a.planned_at).slice(11, 16))} ${isToday(a.planned_at) ? '' : esc(new Date(a.planned_at).toLocaleDateString('es-ES', { day: 'numeric', month: 'short' }))}</span>` : ''}</div>
-      <h3>${esc(a.headline)}</h3><div class="meta"><span>${esc(a.outlet || a.source_name || '')}</span>${a.canva_exported ? '<span>Imagen lista</span>' : ''}</div></a>`).join('')}</div>`
-    : '<p class="empty">Aún no hay noticias redactadas. Marca una prioridad en Noticias y se redactará sola.</p>';
-}
+window.publishNow = async (id, b) => { b.disabled = true; b.textContent = 'Publicando…'; try { const r = await api(`/api/articles/${id}/publish`, { method: 'POST' }); toast(r.published ? 'Publicada en la web' : r.message || 'Aprobada'); render(); counts() } catch (e) { toast(e.message); b.disabled = false; b.textContent = 'Publicar' } };
 
 /* ---------- Editor ---------- */
 function cw(c) { const W = { ' ': .26, '.': .28, ',': .28, ':': .28, ';': .28, '-': .36, "'": .25 }; if (c in W) return W[c]; if ('iljIJ1!¡íÍ'.includes(c)) return .33; if ('tf'.includes(c)) return .40; if ('mwMW'.includes(c)) return .92; if (c !== c.toLowerCase()) return .72; if (/[0-9]/.test(c)) return .62; return .60 }
@@ -236,7 +221,7 @@ async function editor(v) {
   <div class="actions">
     <button class="btn" onclick="save(true)">Guardar</button>
     <button class="btn" onclick="copyText()">Copiar</button>
-    ${published ? '<span class="muted">Publicada</span>' : `<button class="btn primary" id="pubBtn" onclick="publish()">Publicar</button>`}
+    ${published ? '<span class="muted">Publicada</span>' : a.status === 'draft' ? `<button class="btn primary" onclick="reviewed()">Revisada</button>` : `<button class="btn primary" id="pubBtn" onclick="publish()">Publicar</button>`}
   </div>`;
   const f = id => $(`#f-${id}`);
   const fit = () => { const n = lines(f('image_headline').value || f('headline').value); $('#fit').textContent = n <= 4 ? `${n} de 4 líneas` : `${n} líneas: se recortará`; $('#fit').className = n <= 4 ? 'muted' : 'error' };
@@ -256,6 +241,15 @@ window.makeCanva = async () => {
   const b = $('#canvaBtn'); b.disabled = true; b.textContent = 'Creando en Canva…';
   try { await saveArticle(); const r = await api(`/api/articles/${editorId}/canva`, { method: 'POST' }); toast(r.exported ? 'Imagen creada' : (r.export_error || 'Diseño creado; falta exportar')); render() }
   catch (e) { toast(e.message); b.disabled = false; b.textContent = 'Crear imagen en Canva' }
+};
+window.reviewed = async () => {
+  try {
+    await saveArticle(); await api(`/api/articles/${editorId}/ready`, { method: 'POST' });
+    const next = reviewIds.filter(x => x !== editorId)[0];
+    reviewIds = reviewIds.filter(x => x !== editorId);
+    toast('Revisada: pasa a Publicar'); counts();
+    if (next) go('editor/' + next); else go('publish');
+  } catch (e) { toast(e.message) }
 };
 window.publish = async () => {
   const b = $('#pubBtn'); b.disabled = true; b.textContent = 'Publicando…';
@@ -308,7 +302,12 @@ async function settings(v) {
       <div class="sources">${srcs.map(s => `<div class="srcrow"><label class="switch"><input type="checkbox" ${s.active ? 'checked' : ''} onchange="toggleSource(${s.id})"> ${esc(s.name)}</label>${s.last_error ? `<span class="error small">Error</span>` : `<span class="muted small">${s.items_added ?? 0} nuevas</span>`}</div>`).join('')}</div>
       <form id="addSrc" class="stack"><input name="name" placeholder="Nombre del medio o página" required><input name="url" type="url" placeholder="https://… (RSS, portada, Facebook o Instagram)" required>
       <select name="kind"><option value="rss">RSS</option><option value="html">Portada web</option><option value="social">Facebook / Instagram</option></select><button class="btn small">Añadir fuente</button></form></section>
+    <section class="panel"><h2>Páginas y grupos de Facebook vigilados</h2><p class="muted small">Solo lo público. Se buscan quejas, propuestas y asociaciones.</p>
+      <div class="sources" id="fbList"></div>
+      <form id="addFb" class="stack"><input name="name" placeholder="Nombre (p. ej. AVV La Atunara)" required><input name="url" type="url" placeholder="https://www.facebook.com/groups/…" required><button class="btn small">Vigilar</button></form></section>
     <button class="btn" onclick="logout()">Salir</button>`;
+  api('/api/social').then(d => { $('#fbList').innerHTML = d.watched.map(s => `<div class="srcrow"><label class="switch"><input type="checkbox" ${s.active ? 'checked' : ''} onchange="toggleSource(${s.id})"> ${esc(s.name)}</label></div>`).join('') || '<p class="muted small">Ninguna todavía.</p>' }).catch(() => { });
+  $('#addFb').onsubmit = async e => { e.preventDefault(); const d = Object.fromEntries(new FormData(e.target)); try { await api('/api/sources', { method: 'POST', body: JSON.stringify({ ...d, kind: 'social', priority: 60, local_scope: true }) }); toast('Ahora se vigila'); render() } catch (er) { toast(er.message) } };
   $('#aiCheck').onclick = async e => {
     e.target.disabled = true; e.target.textContent = 'Comprobando…';
     try { const r = await api('/api/ai/check'); $('#aiOut').innerHTML = r.providers.filter(p => p.configured).map(p => `<p class="${p.ok ? 'ok' : 'error'}"><b>${esc(p.provider_name)}</b> ${p.active ? '(principal)' : '(respaldo)'}: ${p.ok ? 'funciona' : esc(p.message) + (p.http_status ? ` <small>(HTTP ${p.http_status} ${esc(p.code || '')})</small>` : '')}</p>`).join('') || '<p class="error">Sin claves configuradas.</p>' }

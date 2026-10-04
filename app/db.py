@@ -43,6 +43,7 @@ def init_db():
       name TEXT NOT NULL, path TEXT NOT NULL, format TEXT DEFAULT '4:5', active INTEGER DEFAULT 1,
       slide_map_json TEXT NOT NULL DEFAULT '{}', created_at TEXT DEFAULT CURRENT_TIMESTAMP
     );
+    CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY, value TEXT);
     CREATE TABLE IF NOT EXISTS activity(
       id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT, message TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP
     );
@@ -156,6 +157,12 @@ def init_db():
     c.execute("UPDATE sources SET priority=97 WHERE kind='procurement'")
     # Las búsquedas indexadas de Facebook/Instagram pasan al panel Redes (allí se filtran ventas y publicidad).
     c.execute("UPDATE sources SET active=0 WHERE name IN ('Facebook · publicaciones indexadas','Instagram · publicaciones indexadas','Instagram · Turismo local')")
+    # Empezar de cero (una sola vez, versión 3.5): se archiva todo lo pendiente; lo publicado se conserva.
+    if not c.execute("SELECT 1 FROM settings WHERE key='fresh_start_35'").fetchone():
+        c.execute("UPDATE articles SET status='rejected' WHERE status IN ('draft','review_ready','approved')")
+        c.execute("UPDATE candidates SET status='archived',editorial_priority='undecided',planned_at=NULL,plan_locked=0,work_state=NULL "
+                  "WHERE status!='published'")
+        c.execute("INSERT INTO settings(key,value) VALUES('fresh_start_35',datetime('now'))")
     c.commit(); c.close()
 
 def rows(sql,args=()):

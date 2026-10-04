@@ -24,6 +24,11 @@ El backend FastAPI corre en Railway y el panel editorial de Lovable consume la m
 2. Publica el panel como aplicación privada con pantalla de contraseña. Añade **solo su origen exacto** (`https://<tu-proyecto>.lovable.app`) a `CORS_ORIGINS` en Railway. Si usas dominio propio, añádelo separado por coma. Redepliega si Railway no aplica las variables automáticamente.
 3. Accede al panel, prueba Dashboard y Revisión y comprueba **Plantillas → Canva**. Los PNG privados solo existen tras exportar desde Canva y se descargan mediante `fetch` con token; un enlace `<img src="https://backend/media/render/...">` directo devolverá 401.
 
+## Novedades 4.0
+
+- **Trabajo por fases**: 1 Ordenar (noticia a noticia por bloques: Urgente, Hoy, Esta semana, Más adelante o No interesa), 2 Redacción (se redactan solas; progreso y reintentos), 3 Revisar (ficha con «Revisada» que pasa a la siguiente) y 4 Publicar (agenda de hoy y próximos días con «Publicar»). Al abrir, el panel va a la primera fase con trabajo. Ajustes en el engranaje.
+- **Empezar de cero**: al desplegar la 4.0 se archiva una sola vez todo lo pendiente (lo publicado se conserva) y el radar arranca limpio.
+
 ## Novedades 3.4
 
 - **Cuatro bloques** en Noticias: Ayuntamiento, Licitaciones y edictos, Otros medios y Nacionales adaptables. Las redes van aparte, en Redes.

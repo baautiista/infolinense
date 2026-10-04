@@ -13,7 +13,7 @@ from . import db, sources, pipeline, publishers, photos, canva, ai, planner, lay
 from .auth import login, require_auth
 from .config import BASE_DIR, RENDER_DIR, UPLOAD_DIR, SCAN_INTERVAL_MINUTES, AUTO_PIPELINE, OPENAI_API_KEY, ADMIN_PASSWORD, JWT_SECRET, PUBLISH_MODE, CORS_ORIGINS, PUBLIC_BASE_URL, AUTO_PUBLISH
 
-VERSION='3.4.0'
+VERSION='4.0.0'
 app=FastAPI(title='InfoLinense Desk',version=VERSION)
 app.add_middleware(CORSMiddleware,allow_origins=CORS_ORIGINS,allow_credentials=False,allow_methods=['*'],allow_headers=['Authorization','Content-Type'])
 db.init_db()
@@ -206,6 +206,62 @@ def candidates(status:str='new'):
     out.sort(key=lambda r:r.get('date_iso') or '',reverse=True)  # lo más reciente primero
     out.sort(key=lambda r:order.get(r['group'],9))
     return out
+
+# ---------- Trabajo por fases: 1 Ordenar · 2 Redacción · 3 Revisar · 4 Publicar ----------
+def _sort_queue():
+    rows=[r for r in candidates('pending') if not r.get('article_id') and (r.get('editorial_priority') or 'undecided') in ('undecided','')]
+    rows+= [r for r in social.items() if not r.get('article_id') and (r.get('editorial_priority') or 'undecided') in ('undecided','')]
+    return rows
+
+def _drafting():
+    rows=db.rows("""SELECT c.id,c.title,c.source_name,c.outlet,c.editorial_priority,c.planned_at,c.work_state,c.work_step,c.work_error,
+                      a.id article_id,a.status article_status,a.headline
+                      FROM candidates c LEFT JOIN articles a ON a.candidate_id=c.id AND a.status!='rejected'
+                      WHERE c.status NOT IN ('archived','published') AND c.editorial_priority IN ('urgent','today','this_week','future')
+                        AND (a.id IS NULL OR a.status='draft')""")
+    order={'urgent':0,'today':1,'this_week':2,'future':3}
+    rows.sort(key=lambda r:(order.get(r['editorial_priority'],9),r.get('planned_at') or '9999'))
+    for r in rows:
+        r['state']='ready' if r.get('article_id') else ('error' if r.get('work_state')=='error' else 'working' if pipeline.is_working(r['id']) or r.get('work_state')=='working' else 'queued')
+    return rows
+
+@app.get('/api/workflow',dependencies=[Depends(require_auth)])
+def workflow():
+    """Cuántas piezas hay en cada fase del día."""
+    drafting=_drafting()
+    publish=db.rows("SELECT id FROM articles WHERE status IN ('review_ready','approved')")
+    published=db.row("SELECT COUNT(*) n FROM articles WHERE status='published' AND updated_at>=date('now')")['n']
+    return {'sort':len(_sort_queue()),'drafting':sum(1 for r in drafting if r['state']!='ready'),
+            'errors':sum(1 for r in drafting if r['state']=='error'),'review':sum(1 for r in drafting if r['state']=='ready'),
+            'publish':len(publish),'published_today':published}
+
+@app.get('/api/sort-queue',dependencies=[Depends(require_auth)])
+def sort_queue():
+    return _sort_queue()
+
+@app.get('/api/drafting',dependencies=[Depends(require_auth)])
+def drafting():
+    return _drafting()
+
+@app.post('/api/articles/{aid}/ready',dependencies=[Depends(require_auth)])
+def mark_ready(aid:int):
+    """Revisada: pasa a la fase Publicar."""
+    a=db.row('SELECT id,candidate_id,status FROM articles WHERE id=?',(aid,))
+    if not a: raise HTTPException(404)
+    if a['status']=='draft':
+        db.exec_("UPDATE articles SET status='review_ready',updated_at=CURRENT_TIMESTAMP WHERE id=?",(aid,))
+        db.exec_("UPDATE candidates SET status='review_ready' WHERE id=?",(a['candidate_id'],))
+    return {'ok':True}
+
+@app.get('/api/to-publish',dependencies=[Depends(require_auth)])
+def to_publish():
+    rows=db.rows("""SELECT a.id,a.headline,a.section,a.status,a.image_local,a.publish_url,c.planned_at,c.editorial_priority,c.id candidate_id,
+                      d.exported canva_exported FROM articles a LEFT JOIN candidates c ON c.id=a.candidate_id
+                      LEFT JOIN canva_designs d ON d.article_id=a.id
+                      WHERE a.status IN ('review_ready','approved') OR (a.status='published' AND a.updated_at>=date('now'))""")
+    for r in rows: r['has_photo']=bool(r.pop('image_local',None))
+    rows.sort(key=lambda r:(r['status']=='published',r.get('planned_at') or '9999'))
+    return rows
 
 @app.get('/api/articles',dependencies=[Depends(require_auth)])
 def list_articles():

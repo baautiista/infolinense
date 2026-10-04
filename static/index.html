@@ -8,7 +8,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Figtree:wght@400;500;600;700&family=Poppins:wght@700;800;900&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="/static/styles.css?v=3.4">
+<link rel="stylesheet" href="/static/styles.css?v=4.0">
 </head>
 <body>
 <div id="login" class="login" hidden>
@@ -25,19 +25,19 @@
 <div id="app" hidden>
   <header class="top">
     <button class="back" id="backBtn" hidden aria-label="Volver">‹</button>
-    <h1 id="title">Noticias</h1>
-    <button class="btn primary small" id="scanBtn">Buscar noticias</button>
+    <h1 id="title">Ordenar</h1>
+    <button class="btn primary small" id="scanBtn">Buscar</button>
+    <button class="gear" id="settingsBtn" aria-label="Ajustes">⚙</button>
   </header>
-  <main id="view"></main>
-  <nav class="tabs" aria-label="Secciones">
-    <button data-view="news" class="on"><span class="ico">◎</span>Noticias</button>
-    <button data-view="social"><span class="ico">✆</span>Redes</button>
-    <button data-view="agenda"><span class="ico">◷</span>Agenda</button>
-    <button data-view="drafts"><span class="ico">✎</span>Redacción</button>
-    <button data-view="settings"><span class="ico">⚙</span>Ajustes</button>
+  <nav class="tabs" aria-label="Fases del día">
+    <button data-view="sort" class="on"><span class="num">1</span>Ordenar<span class="n"></span></button>
+    <button data-view="writing"><span class="num">2</span>Redacción<span class="n"></span></button>
+    <button data-view="review"><span class="num">3</span>Revisar<span class="n"></span></button>
+    <button data-view="publish"><span class="num">4</span>Publicar<span class="n"></span></button>
   </nav>
+  <main id="view"></main>
 </div>
 <div id="toast" class="toast" role="status" hidden></div>
-<script src="/static/app.js?v=3.4"></script>
+<script src="/static/app.js?v=4.0"></script>
 </body>
 </html>

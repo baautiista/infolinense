@@ -1,4 +1,4 @@
-# InfoLinense Desk 2.3 — despliegue
+# InfoLinense Desk 2.4 — despliegue
 
 El backend FastAPI corre en Railway y el panel editorial de Lovable consume la misma API. El flujo gráfico usa exclusivamente la plantilla de marca de Canva `EAHWTjWEEnA`; la imagen final procede de su exportación PNG.
 
@@ -23,6 +23,17 @@ El backend FastAPI corre en Railway y el panel editorial de Lovable consume la m
 1. Crea un proyecto nuevo en Lovable con el contenido de `lovable/PROMPT_LOVABLE.md` y sustituye `TU_BACKEND` por el dominio real de Railway; configura `VITE_INFOLINENSE_API_URL=https://<dominio>`.
 2. Publica el panel como aplicación privada con pantalla de contraseña. Añade **solo su origen exacto** (`https://<tu-proyecto>.lovable.app`) a `CORS_ORIGINS` en Railway. Si usas dominio propio, añádelo separado por coma. Redepliega si Railway no aplica las variables automáticamente.
 3. Accede al panel, prueba Dashboard y Revisión y comprueba **Plantillas → Canva**. Los PNG privados solo existen tras exportar desde Canva y se descargan mediante `fetch` con token; un enlace `<img src="https://backend/media/render/...">` directo devolverá 401.
+
+## Novedades 2.4
+
+- **IA unificada**: investigar, redactar, titulares, carrusel y descubrimiento usan el proveedor activo (Claude si existe `ANTHROPIC_API_KEY`). Si falla por saldo, límite o caída y hay otra clave, se prueba el otro (`AI_FALLBACK=true`). Antes todo llamaba a OpenAI aunque Claude estuviera configurado.
+- **Errores reales**: los fallos de IA devuelven `detail` con el proveedor, el código HTTP y lo que respondió (`error` trae los datos estructurados). `GET /api/ai/check` hace una petición mínima real a cada proveedor.
+- **Botón Redactar**: `POST /api/candidates/{id}/write` abre el borrador si existe, o investiga (si hace falta) y redacta. Nunca duplica. Si tarda, responde 202 y se consulta `GET /api/candidates/{id}/write`.
+- **Redacción**: titular, entradilla, cuerpo de unos 2.200 caracteres, 7 titulares alternativos (`headline_options_json`) y datos que faltan (`missing_data_json`).
+- **Fotos**: fotos de la fuente con permiso confirmado por el editor, búsqueda libre en Wikimedia Commons (`?q=`), subida propia y descarga de la foto original (`/photo/file`). Procedencia siempre visible.
+- **Agenda**: lo fijado a mano y lo ya publicado no se mueve; si el día se llena se usan huecos cada media hora.
+- **Panel final** («Listo para publicar») en el panel del servidor; `kit` incluye `copy_text`, crédito de imagen y descargas. No hay publicación automática.
+- `lovable/PROMPT_ACTUALIZACION_2_4.md` contiene el texto para actualizar el frontend de Lovable.
 
 ## Flujo editorial
 

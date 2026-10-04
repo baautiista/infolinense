@@ -17,6 +17,8 @@ ANTHROPIC_MODEL = os.getenv('ANTHROPIC_MODEL','claude-sonnet-5-5').strip()
 ANTHROPIC_WORKSPACE_ID = os.getenv('ANTHROPIC_WORKSPACE_ID','').strip()
 ANTHROPIC_WEB_SEARCH = os.getenv('ANTHROPIC_WEB_SEARCH','false').lower() in {'1','true','yes','on'}
 AI_PROVIDER = os.getenv('AI_PROVIDER','auto').strip().lower()
+# Si el proveedor principal falla (saldo, límite, caída), probar el otro si tiene clave.
+AI_FALLBACK = os.getenv('AI_FALLBACK','true').lower() in {'1','true','yes','on'}
 SCAN_INTERVAL_MINUTES = int(os.getenv('SCAN_INTERVAL_MINUTES','60'))
 MAX_CANDIDATE_AGE_DAYS = int(os.getenv('MAX_CANDIDATE_AGE_DAYS','3'))
 AUTO_DRAFTS_PER_SCAN = int(os.getenv('AUTO_DRAFTS_PER_SCAN','4'))

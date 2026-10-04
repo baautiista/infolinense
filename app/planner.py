@@ -44,9 +44,21 @@ def _read_rows():
                   a.status AS article_status,a.headline AS article_headline
            FROM candidates c
            LEFT JOIN sources s ON s.id=c.source_id
-           LEFT JOIN articles a ON a.candidate_id=c.id
+           LEFT JOIN articles a ON a.candidate_id=c.id AND a.status!='rejected'
            WHERE c.status!='archived'"""
     )
+
+
+def _day_candidates(day, now):
+    """Main slots first, then every half hour between 8:30 and 22:00 if the day is full."""
+    main = [datetime(day.year, day.month, day.day, h, m, tzinfo=TZ) for h, m in DAY_SLOTS]
+    extra = []
+    t = datetime(day.year, day.month, day.day, 8, 30, tzinfo=TZ)
+    end = datetime(day.year, day.month, day.day, 22, 0, tzinfo=TZ)
+    while t <= end:
+        if t not in main: extra.append(t)
+        t += timedelta(minutes=30)
+    return [c for c in main + extra if c > now + timedelta(minutes=10)]
 
 
 def get_schedule():
@@ -69,7 +81,8 @@ def rebuild_schedule():
     occupied = set()
     locked_ids = set()
     for row in rows:
-        if row.get("plan_locked") and row.get("planned_at"):
+        fixed = row.get("plan_locked") or row.get("article_status") == "published"
+        if fixed and row.get("planned_at"):
             try:
                 dt = datetime.fromisoformat(str(row["planned_at"]).replace("Z", "+00:00"))
                 if dt.tzinfo is None:
@@ -89,6 +102,8 @@ def rebuild_schedule():
     for row in rows:
         if row["id"] in locked_ids:
             continue
+        if row.get("article_status") == "published":
+            continue  # Ya publicada: se conserva su hora.
         bucket = row.get("editorial_priority")
         chosen = None
         reason = ""
@@ -103,10 +118,7 @@ def rebuild_schedule():
             if chosen is None:
                 reason = "Urgente: requiere hueco inmediato; no se encontró uno hoy."
         elif bucket == "today":
-            for hour, minute in DAY_SLOTS:
-                candidate = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
-                if candidate <= now + timedelta(minutes=10):
-                    continue
+            for candidate in _day_candidates(now.date(), now):
                 key = _slot_key(candidate)
                 if key not in occupied:
                     chosen = candidate
@@ -116,10 +128,7 @@ def rebuild_schedule():
         elif bucket == "this_week":
             for offset in range(7):
                 day = now.date() + timedelta(days=offset)
-                for hour, minute in DAY_SLOTS:
-                    candidate = datetime(day.year, day.month, day.day, hour, minute, tzinfo=TZ)
-                    if candidate <= now + timedelta(minutes=10):
-                        continue
+                for candidate in _day_candidates(day, now):
                     key = _slot_key(candidate)
                     if key not in occupied:
                         chosen = candidate

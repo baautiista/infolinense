@@ -37,7 +37,7 @@ def commons_images(query):
         for p in (d.get('query',{}).get('pages',{}) or {}).values():
             ii=(p.get('imageinfo') or [{}])[0]; meta=ii.get('extmetadata') or {}
             u=ii.get('thumburl') or ii.get('url')
-            if not u: continue
+            if not u or not re.search(r'\.(jpe?g|png|webp)$',u.split('?')[0],re.I) and 'thumb' not in u: continue
             lic=(meta.get('LicenseShortName') or {}).get('value','').strip()
             author=re.sub('<[^>]+>','',(meta.get('Artist') or {}).get('value',''))
             out.append({'url':u,'source':'Wikimedia Commons','license':lic or 'Licencia no especificada','author':author,'kind':'commons','publish_safe':bool(lic)})
@@ -54,8 +54,14 @@ def search_real_photos(candidate,section):
     official=_source_is_official(candidate)
     source=source_images(candidate.get('url',''),official=official)
     safe=[x for x in source if x.get('publish_safe')]
-    q=f'La Línea de la Concepción {candidate.get("title","")[:100]}'
-    commons=commons_images(q)
+    stop={'para','como','sobre','desde','hasta','entre','tras','ante','línea','linea','concepción','concepcion','ayuntamiento','municipal','linense','linenses'}
+    words=[w for w in re.findall(r'[A-Za-zÁÉÍÓÚÑÜáéíóúñü]{5,}',candidate.get('title','')) if w.lower() not in stop][:3]
+    commons=[]
+    for q in ([' '.join(words)+' La Línea de la Concepción'] if words else [])+['La Línea de la Concepción '+section.title() if section else '','La Línea de la Concepción']:
+        if not q.strip(): continue
+        known={x['url'] for x in commons}
+        commons+=[x for x in commons_images(q) if x['url'] not in known]
+        if len(commons)>=8: break
     # Prefer photos with a documented reusable license; source images require a rights check.
     return (safe + [x for x in commons if x.get('publish_safe')] + [x for x in commons if not x.get('publish_safe')] + [x for x in source if not x.get('publish_safe')])[:16]
 

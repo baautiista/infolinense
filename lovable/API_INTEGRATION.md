@@ -15,3 +15,7 @@ API pública: `VITE_INFOLINENSE_API_URL=https://TU_BACKEND` (sin barra final). S
 `GET /api/health` es público y muestra si hay autenticación e IA configuradas. `POST /api/articles/{id}/publish` devuelve error mientras `PUBLISH_MODE=none`; oculta el botón de publicación si no está configurado. Esta publicación apunta a la web editorial, no a publicar el panel de Lovable.
 
 CORS: en Railway configura `CORS_ORIGINS` con el origen exacto del panel de Lovable, por ejemplo `https://mi-proyecto.lovable.app`. No uses `*` para la API privada.
+
+## Versión 2.4
+
+Detalle completo en `PROMPT_ACTUALIZACION_2_4.md`. Resumen: `POST|GET /api/candidates/{id}/write` (botón Redactar, 200 done / 202 working), `GET /api/schedule`, `POST /api/candidates/{id}/triage`, `POST|GET /api/articles/{id}/headlines`, `GET /api/articles/{id}/photos?q=`, `POST /api/articles/{id}/photo` con `confirm_permission`, `GET /api/articles/{id}/photo/file` (con token), `GET /api/articles/{id}/kit` (`copy_text`, `image_credit`, `photo_download_url`, `carousel_download_url`), `GET /api/ai/check`. Los errores de IA devuelven `detail` (texto para mostrar tal cual) y `error` (objeto con `provider`, `http_status`, `code`, `kind`, `provider_message`).

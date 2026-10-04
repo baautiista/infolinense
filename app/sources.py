@@ -13,7 +13,7 @@ import requests
 from bs4 import BeautifulSoup
 
 from . import db
-from .config import MAX_CANDIDATE_AGE_DAYS, OPENAI_API_KEY, OPENAI_WEB_SEARCH
+from .config import MAX_CANDIDATE_AGE_DAYS
 
 UA = 'InfoLinenseBot/1.0 (+editorial monitoring)'
 _scan_lock = threading.Lock()
@@ -235,15 +235,15 @@ def scan_all():
                 except Exception as exc:
                     errors.append(f"{source['name']}: {str(exc)[:250]}")
                     source_health(source['id'], error=str(exc))
-        if OPENAI_API_KEY and OPENAI_WEB_SEARCH:
+        from . import ai
+        if any(ai.web_enabled(p) for p in ai.provider_chain()):
             try:
-                from . import ai
                 for item in ai.discover_candidates():
                     meta = {'priority': 85 if item.get('official') else 65,
                             'official': bool(item.get('official')), 'local_scope': False}
                     cid = add_candidate(item.get('title', ''), item.get('url', ''),
                                         item.get('excerpt', ''), item.get('source_name', 'Web'),
-                                        None, '', meta, item.get('local_angle', ''))
+                                        None, str(item.get('published_at') or ''), meta, item.get('local_angle', ''))
                     if cid: added.append(cid)
             except Exception as exc: errors.append('Descubrimiento web IA: ' + str(exc)[:250])
         db.log('scan', f'Escaneo: {len(added)} nuevas; {len(errors)} errores')

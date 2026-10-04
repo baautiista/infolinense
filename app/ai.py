@@ -1,198 +1,292 @@
-import json, re, requests
+import json, re, time, requests
 from urllib.parse import urlparse
 from bs4 import BeautifulSoup
 from .config import (OPENAI_API_KEY, OPENAI_MODEL, OPENAI_WEB_SEARCH,
                     ANTHROPIC_API_KEY, ANTHROPIC_MODEL, ANTHROPIC_WORKSPACE_ID,
-                    ANTHROPIC_WEB_SEARCH, AI_PROVIDER)
+                    ANTHROPIC_WEB_SEARCH, AI_PROVIDER, AI_FALLBACK)
+
+PROVIDER_NAMES = {'anthropic': 'Claude (Anthropic)', 'openai': 'ChatGPT (OpenAI)'}
+
 
 def _configured_provider():
-    if AI_PROVIDER in ('anthropic','claude'):
+    if AI_PROVIDER in ('anthropic', 'claude'):
         return 'anthropic' if ANTHROPIC_API_KEY else ''
-    if AI_PROVIDER in ('openai','gpt'):
+    if AI_PROVIDER in ('openai', 'gpt'):
         return 'openai' if OPENAI_API_KEY else ''
     # In automatic mode, Claude takes priority when its key is present.
     if ANTHROPIC_API_KEY: return 'anthropic'
     if OPENAI_API_KEY: return 'openai'
     return ''
 
+
 ACTIVE_PROVIDER = _configured_provider()
 AI_ENABLED = bool(ACTIVE_PROVIDER)
 
+
+def provider_chain():
+    """Providers to try, in order. The second one is only a fallback."""
+    chain = [ACTIVE_PROVIDER] if ACTIVE_PROVIDER else []
+    if AI_FALLBACK:
+        for name, key in (('anthropic', ANTHROPIC_API_KEY), ('openai', OPENAI_API_KEY)):
+            if key and name not in chain:
+                chain.append(name)
+    return chain
+
+
+def web_enabled(provider):
+    return bool(ANTHROPIC_WEB_SEARCH) if provider == 'anthropic' else bool(OPENAI_WEB_SEARCH) if provider == 'openai' else False
+
+
 class AIProviderError(RuntimeError):
-    """An AI provider rejected a request; safe to surface to the authenticated editor."""
+    """An AI provider rejected a request; safe to surface to the authenticated editor.
+
+    kind: auth | quota | billing | rate_limit | overloaded | bad_request | network | empty | config | error
+    """
+
+    def __init__(self, message, provider='', status=None, code='', kind='error', retry_after=None, raw=''):
+        super().__init__(message)
+        self.provider = provider
+        self.status = status
+        self.code = code
+        self.kind = kind
+        self.retry_after = retry_after
+        self.raw = raw
+        self.fallback_errors = []
+
+    def as_dict(self):
+        out = {'message': str(self), 'provider': self.provider,
+               'provider_name': PROVIDER_NAMES.get(self.provider, self.provider or ''),
+               'http_status': self.status, 'code': self.code, 'kind': self.kind,
+               'retry_after_seconds': self.retry_after, 'provider_message': self.raw,
+               'retryable': self.kind in ('rate_limit', 'overloaded', 'network', 'empty', 'error')}
+        if self.fallback_errors:
+            out['fallback'] = [e.as_dict() for e in self.fallback_errors]
+        return out
 
 
-def ask_openai(instructions, user_text, web=False):
-    if not OPENAI_API_KEY:
-        raise AIProviderError('ChatGPT no está conectado. Falta OPENAI_API_KEY en las variables privadas de Railway.')
-    payload = {
-        'model': OPENAI_MODEL,
-        'instructions': instructions,
-        'input': user_text,
-        'max_output_tokens': 3500,
-        'store': False,
-    }
-    if web:
-        if not OPENAI_WEB_SEARCH:
-            raise AIProviderError('La búsqueda web de ChatGPT está desactivada en Railway.')
-        payload['tools'] = [{'type': 'web_search'}]
+def _hide_keys(text):
+    text = re.sub(r'sk-ant-[A-Za-z0-9_-]+', '[clave oculta]', str(text or ''))
+    return re.sub(r'sk-[A-Za-z0-9_-]+', '[clave oculta]', text)[:300]
+
+
+def _retry_after(response):
     try:
-        response = requests.post(
-            'https://api.openai.com/v1/responses',
-            headers={'Authorization': f'Bearer {OPENAI_API_KEY}', 'Content-Type': 'application/json'},
-            json=payload, timeout=120
-        )
-    except requests.RequestException as exc:
-        raise AIProviderError('No se pudo contactar con la API de ChatGPT.') from exc
-    if not response.ok:
-        try:
-            data = response.json()
-            api_error = data.get('error') or {}
-            message = str(api_error.get('message') or '')
-            error_code = str(api_error.get('code') or '').lower()
-            error_type = str(api_error.get('type') or '').lower()
-        except Exception:
-            message = ''
-            error_code = ''
-            error_type = ''
-        message = re.sub(r'sk-[A-Za-z0-9_-]+', '[clave oculta]', message)[:220]
-        if response.status_code in (401, 403):
-            detail = 'OpenAI no acepta la clave API. Revisa que OPENAI_API_KEY sea válida y tenga facturación habilitada.'
-        elif response.status_code == 429:
-            quota_codes = {
-                'insufficient_quota', 'credit_balance_exhausted',
-                'organization_spend_limit_exceeded', 'project_spend_limit_exceeded',
-                'organization_usage_limit_exceeded', 'usage_limit_exceeded',
-            }
-            rate_codes = {'rate_limit_exceeded', 'slow_down'}
-            if error_code in quota_codes or error_type == 'insufficient_quota':
-                detail = ('La API de OpenAI se quedó sin saldo o alcanzó un límite de gasto. '
-                          'Revisa Billing y Limits en OpenAI Platform; añade saldo solo si aparece agotado.')
-            elif error_code in rate_codes or error_type == 'rate_limit_error':
-                detail = ('OpenAI está recibiendo demasiadas peticiones seguidas. '
-                          'Espera un minuto y pulsa Reintentar; no hace falta añadir saldo si Billing está al día.')
-            else:
-                detail = ('OpenAI rechazó la petición por un límite. Revisa Billing y Limits; '
-                          'si están bien, espera un minuto y pulsa Reintentar.')
-        else:
-            detail = f'ChatGPT rechazó la solicitud (HTTP {response.status_code})'
-            if message:
-                detail += ': ' + message
-        raise AIProviderError(detail)
-    answer = _extract_text(response.json())
-    if not answer:
-        raise AIProviderError('ChatGPT no devolvió texto. Inténtalo de nuevo.')
-    return answer
+        value = response.headers.get('retry-after')
+        return int(float(value)) if value else None
+    except (TypeError, ValueError):
+        return None
 
 
-def _check_anthropic_response(response):
-    if response.ok:
-        return
+def _openai_error(response):
+    try:
+        api_error = (response.json() or {}).get('error') or {}
+    except Exception:
+        api_error = {}
+    message = _hide_keys(api_error.get('message') if isinstance(api_error, dict) else '')
+    code = str((api_error.get('code') if isinstance(api_error, dict) else '') or '').lower()
+    etype = str((api_error.get('type') if isinstance(api_error, dict) else '') or '').lower()
+    status = response.status_code
+    tag = code or etype
+    quota_codes = {'insufficient_quota', 'credit_balance_exhausted', 'billing_hard_limit_reached',
+                   'organization_spend_limit_exceeded', 'project_spend_limit_exceeded',
+                   'organization_usage_limit_exceeded', 'usage_limit_exceeded'}
+    if status in (401, 403):
+        kind, text = 'auth', 'OpenAI no acepta la clave API (OPENAI_API_KEY). Revisa que sea válida y esté activa.'
+    elif status == 429 and (code in quota_codes or etype == 'insufficient_quota'):
+        kind, text = 'quota', 'OpenAI dice que la cuenta API no tiene saldo o ha llegado a su límite de gasto (Billing/Limits en platform.openai.com).'
+    elif status == 429:
+        kind, text = 'rate_limit', 'OpenAI está limitando las peticiones por exceso de velocidad. No es un problema de saldo: espera un minuto y reintenta.'
+    elif status in (500, 502, 503, 504):
+        kind, text = 'overloaded', 'Los servidores de OpenAI están fallando o saturados. Reintenta en unos minutos.'
+    elif status == 404 or 'model' in message.lower():
+        kind, text = 'bad_request', f'OpenAI no reconoce el modelo configurado ({OPENAI_MODEL}). Revisa OPENAI_MODEL en Railway.'
+    else:
+        kind, text = 'bad_request', f'OpenAI rechazó la solicitud (HTTP {status}).'
+    return AIProviderError(text, 'openai', status, tag, kind, _retry_after(response), message)
+
+
+def _anthropic_error(response):
     try:
         payload = response.json()
     except Exception:
         payload = {}
     error = payload.get('error', {}) if isinstance(payload, dict) else {}
-    message = error.get('message', '') if isinstance(error, dict) else ''
-    message = re.sub(r'sk-ant-[A-Za-z0-9_-]+', '[clave oculta]', str(message))[:300]
+    message = _hide_keys(error.get('message', '') if isinstance(error, dict) else '')
+    etype = str(error.get('type', '') if isinstance(error, dict) else '')
     lower = message.lower()
     status = response.status_code
-
-    if status == 400 and any(term in lower for term in ('spend limit', 'spending limit', 'usage limit', 'budget limit', 'monthly limit')):
-        detail = 'Anthropic ha bloqueado la petición por un límite de gasto. Revisa los límites y la facturación de tu cuenta API.'
-    elif 'workspace' in lower and ('required' in lower or 'id' in lower):
-        detail = 'Anthropic pide el ID del espacio de trabajo. Añade ANTHROPIC_WORKSPACE_ID en las variables de Railway.'
+    if 'credit balance' in lower or status == 402:
+        kind, text = 'billing', 'La cuenta API de Anthropic no tiene saldo suficiente. Añade créditos en console.anthropic.com → Billing.'
+    elif any(t in lower for t in ('spend limit', 'spending limit', 'usage limit', 'budget limit', 'monthly limit')):
+        kind, text = 'quota', 'Anthropic ha bloqueado la petición por el límite de gasto de la cuenta. Revisa Limits en console.anthropic.com.'
+    elif 'workspace' in lower and ('required' in lower or ' id' in lower):
+        kind, text = 'config', 'Anthropic pide el ID del espacio de trabajo. Añade ANTHROPIC_WORKSPACE_ID en Railway.'
     elif status in (401, 403):
-        detail = 'Anthropic no acepta la clave API. Comprueba en Railway que ANTHROPIC_API_KEY sea una clave activa de Anthropic Console.'
-    elif status == 402:
-        detail = 'La cuenta API de Anthropic tiene un problema de facturación. Revisa Billing en Anthropic Console.'
+        kind, text = 'auth', 'Anthropic no acepta la clave API (ANTHROPIC_API_KEY). Comprueba que esté activa en console.anthropic.com.'
     elif status == 429:
-        detail = 'Anthropic ha limitado temporalmente las peticiones. Espera unos minutos y vuelve a intentarlo.'
+        kind, text = 'rate_limit', 'Anthropic está limitando las peticiones por exceso de velocidad. Espera un minuto y reintenta.'
+    elif status in (500, 502, 503, 504, 529):
+        kind, text = 'overloaded', 'Los servidores de Claude están saturados. Reintenta en unos minutos.'
+    elif status == 404 or 'model' in lower:
+        kind, text = 'bad_request', f'Anthropic no reconoce el modelo configurado ({ANTHROPIC_MODEL}). Revisa ANTHROPIC_MODEL en Railway.'
     else:
-        detail = f'Claude rechazó la solicitud (HTTP {status})'
-        if message:
-            detail += f': {message}'
-    raise AIProviderError(detail)
+        kind, text = 'bad_request', f'Claude rechazó la solicitud (HTTP {status}).'
+    return AIProviderError(text, 'anthropic', status, etype, kind, _retry_after(response), message)
+
 
 def _extract_text(data):
-    if isinstance(data,dict):
+    if isinstance(data, dict):
         if data.get('output_text'): return data['output_text']
-        # Anthropic Messages API returns text blocks in content.
-        blocks=data.get('content',[])
-        out=[c['text'] for c in blocks if isinstance(c,dict) and c.get('type')=='text' and c.get('text')] if isinstance(blocks,list) else []
+        blocks = data.get('content', [])
+        out = [c['text'] for c in blocks if isinstance(c, dict) and c.get('type') == 'text' and c.get('text')] if isinstance(blocks, list) else []
         if out: return '\n'.join(out)
-        out=[]
-        for item in data.get('output',[]):
-            if not isinstance(item,dict): continue
-            for c in item.get('content',[]):
-                if isinstance(c,dict) and c.get('text'): out.append(c['text'])
+        out = []
+        for item in data.get('output', []) or []:
+            if not isinstance(item, dict): continue
+            for c in item.get('content', []) or []:
+                if isinstance(c, dict) and c.get('text'): out.append(c['text'])
         return '\n'.join(out)
     return ''
-def ask(instructions,user_text,web=False):
-    if not AI_ENABLED:
-        raise RuntimeError('No hay una clave de IA configurada en Railway')
-    if ACTIVE_PROVIDER == 'anthropic':
-        payload={
-            'model':ANTHROPIC_MODEL,
-            'max_tokens':3500,
-            'system':instructions,
-            'messages':[{'role':'user','content':user_text}]
-        }
-        if web:
-            if not ANTHROPIC_WEB_SEARCH:
-                raise RuntimeError('La búsqueda web de Claude está desactivada')
-            payload['tools']=[{
-                'type':'web_search_20250305',
-                'name':'web_search',
-                'max_uses':3,
-                'user_location':{
-                    'type':'approximate',
-                    'city':'La Línea de la Concepción',
-                    'region':'Andalucía',
-                    'country':'ES',
-                    'timezone':'Europe/Madrid'
-                }
-            }]
-        headers={
-            'Authorization':f'Bearer {ANTHROPIC_API_KEY}',
-            'anthropic-version':'2023-06-01',
-            'Content-Type':'application/json'
-        }
-        if ANTHROPIC_WORKSPACE_ID:
-            headers['anthropic-workspace-id']=ANTHROPIC_WORKSPACE_ID
-        for turn in range(3):
-            r=requests.post('https://api.anthropic.com/v1/messages',
-                            headers=headers,json=payload,timeout=120)
-            _check_anthropic_response(r)
-            data=r.json()
-            answer=_extract_text(data)
-            if data.get('stop_reason')!='pause_turn':
-                if not answer: raise RuntimeError('Claude no devolvió texto')
-                return answer
-            payload['messages'].append({'role':'assistant','content':data.get('content',[])})
-        raise RuntimeError('Claude dejó la respuesta incompleta; inténtalo de nuevo')
-    if ACTIVE_PROVIDER != 'openai':
-        raise RuntimeError('Proveedor de IA no reconocido')
-    payload={'model':OPENAI_MODEL,'instructions':instructions,'input':user_text}
-    if web and OPENAI_WEB_SEARCH: payload['tools']=[{'type':'web_search'}]
-    r=requests.post('https://api.openai.com/v1/responses',headers={'Authorization':f'Bearer {OPENAI_API_KEY}','Content-Type':'application/json'},json=payload,timeout=120)
-    r.raise_for_status(); return _extract_text(r.json())
-def json_from_text(t):
-    t=t.strip(); t=re.sub(r'^```(?:json)?|```$','',t,flags=re.M).strip()
-    try: return json.loads(t)
-    except Exception:
-        m=re.search(r'\{.*\}',t,re.S)
-        if not m: raise
-        return json.loads(m.group(0))
 
-SYSTEM='''Eres el motor editorial de InfoLinense, medio centrado en La Línea de la Concepción. Redacta en español natural, cercano y periodístico, sin tono de gabinete ni copiar notas de prensa. Estructura: sección, titular útil, subtítulo y cuerpo breve de hasta 2.200 caracteres (el cuerpo es también el texto de redes). Prioriza lo que cambia para los vecinos: fechas, importes, plazos y administración competente, solo si constan en las fuentes. Da contexto local sin inventar hechos. No empieces el cuerpo con «La Línea de la Concepción». No uses emojis, exclamaciones, sensacionalismo ni fórmulas genéricas de IA. Cuando solo existe la fuente original, atribuye los hechos y deja claro en las notas qué falta por contrastar. Devuelve JSON válido sin markdown.'''
 
-def draft(candidate,source_text='',research='',quick=False):
+def ask_openai(instructions, user_text, web=False, max_tokens=4000):
     if not OPENAI_API_KEY:
-        return free_draft(candidate, source_text)
-    mode='PIEZA RÁPIDA: noticia menos relevante; no hagas investigación extensa, pero no inventes.' if quick else 'PIEZA INVESTIGADA: integra contexto y contraste disponible.'
-    prompt=f'''{mode}\nCANDIDATA: {candidate['title']}\nURL: {candidate.get('url','')}\nEXTRACTO: {candidate.get('excerpt','')}\nTEXTO FUENTE: {source_text[:12000]}\nINVESTIGACIÓN: {research[:8000]}\n\nDevuelve exactamente estas claves JSON:\nsection (una de URBANISMO, CIUDAD, GIBRALTAR, SUCESOS, CULTURA, DEPORTES, COMERCIO, MEDIO AMBIENTE, POLÍTICA, SOCIEDAD, PATRIMONIO, AGENDA),\nheadline (titular útil y directo),\nsubtitle (entradilla en una frase),\nbody (noticia completa, máximo 2200 caracteres),\nsocial_text (el mismo texto completo para redes, máximo 2200 caracteres),\ngraphic_summary (máximo 180 caracteres, 2-3 líneas para la plantilla),\nai_image_suggestion (vacío si hay una fotografía real razonable; si no, describe una idea sin generarla),\ncarousel_suitable (true solo si el tema requiere explicar varios pasos, cifras o consecuencias),\ncarousel_reason (motivo breve).'''
-    return json_from_text(ask_openai(SYSTEM,prompt,web=False))
+        raise AIProviderError('Falta OPENAI_API_KEY en Railway.', 'openai', kind='config')
+    payload = {'model': OPENAI_MODEL, 'instructions': instructions, 'input': user_text,
+               'max_output_tokens': max_tokens, 'store': False}
+    if web:
+        payload['tools'] = [{'type': 'web_search'}]
+    try:
+        response = requests.post('https://api.openai.com/v1/responses',
+                                 headers={'Authorization': f'Bearer {OPENAI_API_KEY}', 'Content-Type': 'application/json'},
+                                 json=payload, timeout=150)
+    except requests.RequestException as exc:
+        raise AIProviderError('No se pudo contactar con la API de OpenAI (red o tiempo de espera).', 'openai', kind='network') from exc
+    if not response.ok:
+        raise _openai_error(response)
+    answer = _extract_text(response.json())
+    if not answer:
+        raise AIProviderError('ChatGPT no devolvió texto. Reintenta.', 'openai', 200, kind='empty')
+    return answer
+
+
+def ask_anthropic(instructions, user_text, web=False, max_tokens=4000):
+    if not ANTHROPIC_API_KEY:
+        raise AIProviderError('Falta ANTHROPIC_API_KEY en Railway.', 'anthropic', kind='config')
+    payload = {'model': ANTHROPIC_MODEL, 'max_tokens': max_tokens, 'system': instructions,
+               'messages': [{'role': 'user', 'content': user_text}]}
+    if web:
+        payload['tools'] = [{'type': 'web_search_20250305', 'name': 'web_search', 'max_uses': 4,
+                             'user_location': {'type': 'approximate', 'city': 'La Línea de la Concepción',
+                                               'region': 'Andalucía', 'country': 'ES', 'timezone': 'Europe/Madrid'}}]
+    headers = {'x-api-key': ANTHROPIC_API_KEY, 'anthropic-version': '2023-06-01', 'Content-Type': 'application/json'}
+    if ANTHROPIC_WORKSPACE_ID:
+        headers['anthropic-workspace-id'] = ANTHROPIC_WORKSPACE_ID
+    collected = []
+    for _ in range(4):
+        try:
+            r = requests.post('https://api.anthropic.com/v1/messages', headers=headers, json=payload, timeout=150)
+        except requests.RequestException as exc:
+            raise AIProviderError('No se pudo contactar con la API de Claude (red o tiempo de espera).', 'anthropic', kind='network') from exc
+        if not r.ok:
+            raise _anthropic_error(r)
+        data = r.json()
+        text = _extract_text(data)
+        if text: collected.append(text)
+        if data.get('stop_reason') != 'pause_turn':
+            if not collected:
+                raise AIProviderError('Claude no devolvió texto. Reintenta.', 'anthropic', 200, kind='empty')
+            return '\n'.join(collected)
+        payload['messages'].append({'role': 'assistant', 'content': data.get('content', [])})
+    raise AIProviderError('Claude dejó la respuesta incompleta. Reintenta.', 'anthropic', 200, kind='empty')
+
+
+def ask_ai(instructions, user_text, web=False, web_required=False, max_tokens=4000):
+    """Call the active provider; on any provider error, try the other configured one.
+
+    web=True uses web search only where it is enabled in Railway. With web_required,
+    providers without web search are skipped.
+    Returns (text, provider, used_web).
+    """
+    chain = provider_chain()
+    if not chain:
+        raise AIProviderError('No hay ninguna clave de IA configurada en Railway (ANTHROPIC_API_KEY u OPENAI_API_KEY).', kind='config')
+    first_error = None
+    for provider in chain:
+        use_web = bool(web and web_enabled(provider))
+        if web_required and not use_web:
+            continue
+        try:
+            fn = ask_anthropic if provider == 'anthropic' else ask_openai
+            return fn(instructions, user_text, web=use_web, max_tokens=max_tokens), provider, use_web
+        except AIProviderError as exc:
+            if first_error is None:
+                first_error = exc
+            else:
+                first_error.fallback_errors.append(exc)
+    if first_error is None:
+        raise AIProviderError('Ningún proveedor de IA tiene activada la búsqueda web (ANTHROPIC_WEB_SEARCH / OPENAI_WEB_SEARCH).', kind='config')
+    raise first_error
+
+
+def ask(instructions, user_text, web=False):
+    """Backwards-compatible helper."""
+    return ask_ai(instructions, user_text, web=web)[0]
+
+
+def check_providers():
+    """Make a tiny real request to each configured provider and report what it returns."""
+    out = []
+    for provider in ('anthropic', 'openai'):
+        key = ANTHROPIC_API_KEY if provider == 'anthropic' else OPENAI_API_KEY
+        item = {'provider': provider, 'provider_name': PROVIDER_NAMES[provider], 'configured': bool(key),
+                'model': ANTHROPIC_MODEL if provider == 'anthropic' else OPENAI_MODEL,
+                'active': provider == ACTIVE_PROVIDER, 'web_search': web_enabled(provider)}
+        if key:
+            started = time.time()
+            try:
+                fn = ask_anthropic if provider == 'anthropic' else ask_openai
+                fn('Responde solo con la palabra OK.', 'Prueba de conexión', max_tokens=16 if provider == 'anthropic' else 32)
+                item.update({'ok': True, 'message': 'Responde correctamente'})
+            except AIProviderError as exc:
+                item.update({'ok': False, **{k: v for k, v in exc.as_dict().items() if k != 'provider'}})
+            item['seconds'] = round(time.time() - started, 1)
+        out.append(item)
+    return {'active_provider': ACTIVE_PROVIDER or None, 'fallback_enabled': AI_FALLBACK,
+            'order': provider_chain(), 'providers': out}
+
+
+def json_from_text(t):
+    t = (t or '').strip()
+    t = re.sub(r'^```(?:json)?|```$', '', t, flags=re.M).strip()
+    try:
+        return json.loads(t)
+    except Exception:
+        m = re.search(r'\{.*\}', t, re.S)
+        if not m:
+            raise AIProviderError('La IA no devolvió datos en el formato esperado. Reintenta.', kind='empty')
+        try:
+            return json.loads(m.group(0))
+        except Exception as exc:
+            raise AIProviderError('La IA devolvió una respuesta incompleta. Reintenta.', kind='empty') from exc
+
+
+def ask_json(instructions, prompt, web=False, web_required=False, max_tokens=4000):
+    text, provider, used_web = ask_ai(instructions, prompt, web=web, web_required=web_required, max_tokens=max_tokens)
+    return json_from_text(text), provider, used_web
+
+
+SYSTEM = '''Eres el redactor jefe de InfoLinense, medio digital de La Línea de la Concepción (Cádiz). Escribes en español claro, cercano y periodístico para vecinos de La Línea.
+Reglas que nunca rompes:
+- Solo afirmas lo que consta en las fuentes facilitadas. No inventas datos, fechas, cifras, nombres, citas ni declaraciones. Si algo no consta, lo dices.
+- Atribuyes cada hecho a su fuente (Ayuntamiento, BOP, el medio, etc.).
+- No copias frases ni el tono de la nota de prensa: nada de autobombo institucional, adjetivos de gabinete ni fórmulas como «apuesta decidida» o «en aras de».
+- Sin emojis, sin exclamaciones, sin sensacionalismo ni muletillas de IA.
+- No empieces el cuerpo con «La Línea de la Concepción».
+- Devuelves únicamente JSON válido, sin markdown.'''
+
+SECTIONS = 'URBANISMO, CIUDAD, GIBRALTAR, SUCESOS, CULTURA, DEPORTES, COMERCIO, MEDIO AMBIENTE, POLÍTICA, SOCIEDAD, PATRIMONIO, AGENDA, ECONOMÍA, EMPLEO, SANIDAD, EDUCACIÓN'
+
 
 def _source_research(candidate,source_text=''):
     excerpt = BeautifulSoup(candidate.get('excerpt') or '', 'html.parser').get_text(' ', strip=True)
@@ -202,15 +296,152 @@ def _source_research(candidate,source_text=''):
             'sources': [{'name': candidate.get('source_name') or urlparse(candidate.get('url') or '').netloc or 'Fuente original', 'url': candidate.get('url') or ''}],
             'caveats': ['Extracto de la fuente original, sin contraste independiente. Comprobar fechas, cifras y contexto antes de publicar.']}
 
-def research(candidate,source_text=''):
-    if not OPENAI_API_KEY:
-        return _source_research(candidate,source_text)
-    prompt=f'''Investiga y contrasta esta posible noticia exclusivamente en relación con La Línea de la Concepción. Busca fuentes públicas actuales, dando prioridad a fuentes oficiales y documentos. No redactes aún la noticia. Devuelve JSON con: facts (lista), context (lista), sources (lista de objetos name,url), caveats (lista).
-TEMA: {candidate['title']}
-URL INICIAL: {candidate.get('url','')}
-TEXTO INICIAL: {source_text[:9000]}'''
-    return json_from_text(ask_openai(SYSTEM,prompt,web=True))
+def research(candidate, source_text=''):
+    """Gather verifiable facts. Uses web search only where enabled; otherwise analyses the source text."""
+    if not AI_ENABLED:
+        return _source_research(candidate, source_text)
+    prompt = f'''Prepara la documentación de una posible noticia para vecinos de La Línea de la Concepción. No redactes todavía la noticia.
+Si puedes buscar en internet, contrasta el tema con fuentes públicas actuales (prioriza documentos oficiales: Ayuntamiento, BOP Cádiz, BOJA, BOE, plataformas de contratación) y añade solo fuentes que hayas consultado de verdad, con su URL. Si no puedes buscar, trabaja solo con el texto fuente.
+Devuelve JSON con estas claves:
+- facts: lista de hechos comprobados en las fuentes, cada uno con su atribución («según el BOP…»).
+- what, where, when, who_affected: una frase cada una; «No consta en las fuentes» si falta.
+- context: lista breve de contexto local comprobable.
+- missing: lista de datos importantes que no constan y habría que confirmar (plazos, importes, horarios, responsables…).
+- sources: lista de objetos {{name, url}}; incluye siempre la fuente original.
+- caveats: avisos para el editor.
+- is_press_release: true si el texto fuente es una nota de prensa institucional.
+TEMA: {candidate.get('title', '')}
+FUENTE ORIGINAL: {candidate.get('source_name', '')} · {candidate.get('url', '')}
+FECHA DE LA FUENTE: {candidate.get('published_at') or 'no consta'}
+ÁNGULO LOCAL DETECTADO: {candidate.get('local_angle') or ''}
+EXTRACTO: {candidate.get('excerpt', '')[:1500]}
+TEXTO FUENTE: {(source_text or '')[:10000]}'''
+    data, provider, used_web = ask_json(SYSTEM, prompt, web=True, max_tokens=4000)
+    if not isinstance(data, dict):
+        data = {}
+    sources = [s for s in (data.get('sources') or []) if isinstance(s, dict) and s.get('url')]
+    if candidate.get('url') and not any(s.get('url') == candidate.get('url') for s in sources):
+        sources.insert(0, {'name': candidate.get('source_name') or 'Fuente original', 'url': candidate.get('url')})
+    data['sources'] = sources
+    data['provider'] = provider
+    data['web_search'] = used_web
+    if not used_web:
+        data.setdefault('caveats', []).append('Investigación hecha solo con la fuente original (búsqueda web desactivada). Contrasta antes de publicar.')
+    return data
 
+
+def _trim_body(text, limit=2200):
+    text = re.sub(r'[ \t]+', ' ', str(text or '')).strip()
+    if len(text) <= limit:
+        return text
+    cut = text[:limit]
+    end = max(cut.rfind('. '), cut.rfind('.\n'), cut.rfind('.'))
+    return cut[:end + 1] if end > limit * 0.7 else cut.rsplit(' ', 1)[0]
+
+
+def _clean_headlines(values, current=''):
+    clean = []
+    for value in values or []:
+        title = re.sub(r'\s+', ' ', str(value)).strip().strip('"«»').rstrip('.')
+        if title and title.casefold() != str(current or '').strip().casefold() and title.casefold() not in {x.casefold() for x in clean}:
+            clean.append(title[:140])
+    return clean
+
+
+def draft(candidate, source_text='', research='', quick=False):
+    if not AI_ENABLED:
+        return free_draft(candidate, source_text)
+    prompt = f'''Redacta la noticia para InfoLinense a partir SOLO de esta documentación.
+Objetivo: que un vecino de La Línea entienda qué ha pasado, dónde, cuándo, a quién afecta y qué datos faltan.
+Estructura del cuerpo: primer párrafo con lo esencial; después detalles útiles (fechas, plazos, importes, lugares, requisitos) solo si constan; contexto local verificable; último párrafo con lo que todavía no se sabe o falta confirmar. Párrafos cortos separados por línea en blanco.
+Longitud del cuerpo: unos 2.200 caracteres con espacios (entre 1.900 y 2.200). Si la documentación no da para tanto, escribe menos antes que rellenar o inventar.
+Si la fuente es una nota de prensa, reescribe con tono informativo y neutral.
+{'Pieza breve: noticia de menor peso.' if quick else ''}
+
+CANDIDATA: {candidate.get('title', '')}
+FUENTE: {candidate.get('source_name', '')} · {candidate.get('url', '')}
+FECHA DE LA FUENTE: {candidate.get('published_at') or 'no consta'}
+EXTRACTO: {candidate.get('excerpt', '')[:1500]}
+TEXTO FUENTE: {(source_text or '')[:10000]}
+DOCUMENTACIÓN: {(research or '')[:8000]}
+
+Devuelve JSON con exactamente estas claves:
+section (una de: {SECTIONS}),
+headline (titular informativo, máximo 110 caracteres),
+subtitle (entradilla de una o dos frases, máximo 260 caracteres),
+body (cuerpo de la noticia, máximo 2.200 caracteres),
+headline_options (lista de EXACTAMENTE 7 titulares alternativos distintos entre sí y del titular principal, todos fieles a los hechos),
+missing_data (lista de datos que faltan y conviene confirmar),
+graphic_summary (máximo 180 caracteres, para la imagen),
+carousel_suitable (true solo si la noticia explica varios pasos, cifras, requisitos o consecuencias que se entienden mejor en 3-6 diapositivas),
+carousel_reason (motivo breve),
+ai_image_suggestion (qué foto real buscar; no se genera ninguna imagen).'''
+    data, provider, _ = ask_json(SYSTEM, prompt, max_tokens=4500)
+    if not isinstance(data, dict) or not data.get('headline') or not data.get('body'):
+        raise AIProviderError('La IA devolvió un borrador incompleto. Reintenta.', provider, kind='empty')
+    data['body'] = _trim_body(data.get('body'))
+    data['social_text'] = data['body']
+    data['headline_options'] = _clean_headlines(data.get('headline_options'), data.get('headline'))[:7]
+    if len(data['headline_options']) != 7:
+        try:
+            data['headline_options'] = alternate_headlines(data)
+        except AIProviderError:
+            pass
+    data['provider'] = provider
+    return data
+
+
+def alternate_headlines(article):
+    if not AI_ENABLED:
+        raise AIProviderError('Para proponer titulares hace falta una clave de IA en Railway.', kind='config')
+    prompt = f'''Propón exactamente siete titulares periodísticos distintos para esta noticia de InfoLinense. Directos, claros, fieles a los hechos del texto, útiles para vecinos de La Línea, sin sensacionalismo ni exclamaciones, máximo 110 caracteres cada uno. Varía el enfoque (dato principal, a quién afecta, dónde, cuándo, consecuencia). No repitas el titular actual ni añadas datos que no estén en el texto.
+TITULAR ACTUAL: {article.get('headline', '')}
+ENTRADILLA: {article.get('subtitle', '')}
+TEXTO: {(article.get('body') or '')[:2200]}
+Devuelve solo JSON: {{"headlines": ["...", "...", "...", "...", "...", "...", "..."]}}'''
+    for _ in range(2):
+        data, provider, _ = ask_json(SYSTEM, prompt, max_tokens=1200)
+        clean = _clean_headlines(data.get('headlines') if isinstance(data, dict) else None, article.get('headline'))
+        if len(clean) >= 7:
+            return clean[:7]
+    raise AIProviderError('La IA no devolvió siete titulares diferentes. Reintenta.', provider, kind='empty')
+
+
+def generate_carousel(article):
+    if not AI_ENABLED:
+        raise AIProviderError('Para preparar un carrusel hace falta una clave de IA en Railway.', kind='config')
+    prompt = f'''Decide si esta noticia funciona mejor como carrusel para redes de InfoLinense. Encaja solo si explica un proceso, requisitos, varias claves, cifras o consecuencias. Si no encaja, devuelve suitable=false, reason y slides=[].
+Si encaja, devuelve suitable=true y entre 3 y 6 diapositivas: la primera presenta el tema; las siguientes, un hecho distinto cada una; la última, qué debe saber o hacer el vecino. Cada diapositiva: title (máximo 70 caracteres), text (máximo 220 caracteres, frases completas y correctas) y photo_query (qué fotografía real buscar). Usa solo datos del texto. Devuelve JSON con suitable, reason y slides.
+TITULAR: {article.get('headline', '')}
+ENTRADILLA: {article.get('subtitle', '')}
+CUERPO: {(article.get('body') or '')[:2200]}
+SECCIÓN: {article.get('section', '')}'''
+    data, provider, _ = ask_json(SYSTEM, prompt, max_tokens=2500)
+    suitable = bool(data.get('suitable'))
+    slides = data.get('slides') if isinstance(data.get('slides'), list) else []
+    normalized = []
+    for slide in slides[:6]:
+        if not isinstance(slide, dict):
+            continue
+        query = re.sub(r'\s+', ' ', str(slide.get('photo_query') or slide.get('photo_suggestion') or '')).strip()[:160]
+        normalized.append({'title': re.sub(r'\s+', ' ', str(slide.get('title') or '')).strip()[:70],
+                           'text': re.sub(r'\s+', ' ', str(slide.get('text') or '')).strip()[:220],
+                           'photo_query': query, 'photo_suggestion': query})
+    normalized = [s for s in normalized if s['title'] and s['text']]
+    if suitable and len(normalized) < 3:
+        raise AIProviderError('La IA no devolvió al menos tres diapositivas válidas. Reintenta.', provider, kind='empty')
+    return {'suitable': suitable, 'reason': str(data.get('reason') or '')[:500], 'slides': normalized if suitable else [], 'provider': provider}
+
+
+def discover_candidates():
+    """Web discovery (regional, national, international with a local angle). Needs web search enabled."""
+    prompt = '''Busca noticias, documentos y anuncios públicos de las últimas 48 horas que afecten de forma concreta a La Línea de la Concepción.
+Incluye fuentes locales y comarcales (prensa, Ayuntamiento, tablón de edictos, BOP/BOJA, licitaciones, redes públicas) y noticias regionales, nacionales o internacionales SOLO si tienen una consecuencia verificable para vecinos de La Línea (vivienda, empleo, frontera con Gibraltar, ayudas, sanidad, educación, transporte, energía, clima…).
+No inventes resultados: cada uno debe tener una URL real que hayas visto. Prioriza exclusivas, edictos, licitaciones y documentos oficiales. Evita duplicados y resultados donde «línea» no sea la ciudad.
+Devuelve JSON con clave items: máximo 15 objetos con title, url, source_name, published_at (ISO o vacío), excerpt, local_angle (qué cambia en La Línea), scope (local, regional, nacional o internacional), official (boolean).'''
+    data, _, _ = ask_json(SYSTEM, prompt, web=True, web_required=True, max_tokens=4000)
+    items = data.get('items', []) if isinstance(data, dict) else []
+    return [i for i in items if isinstance(i, dict) and str(i.get('url', '')).startswith('http')]
 def free_draft(candidate, source_text=''):
     """Prepare an editable, source-attributed news draft without claiming verification."""
     def tidy(value):
@@ -278,59 +509,3 @@ def free_draft(candidate, source_text=''):
     return {'section': section, 'headline': title, 'subtitle': subtitle, 'body': body[:2200],
             'social_text': body[:2200], 'graphic_summary': subtitle, 'ai_image_suggestion': ''}
 
-def alternate_headlines(article):
-    if not OPENAI_API_KEY:
-        raise AIProviderError('Para generar titulares con ChatGPT falta OPENAI_API_KEY en Railway.')
-    prompt=f'''Propón exactamente siete titulares periodísticos distintos para InfoLinense. Deben ser directos, claros, verificables, sin sensacionalismo ni exclamaciones y con utilidad para La Línea. No repitas el titular actual.
-NOTICIA: {article.get('headline','')}
-ENTRADILLA: {article.get('subtitle','')}
-TEXTO: {(article.get('body') or '')[:2200]}
-FUENTES: {article.get('sources_json') or ''}
-Devuelve solo JSON válido con la clave headlines y una lista de exactamente siete textos.'''
-    data=json_from_text(ask_openai(SYSTEM,prompt,web=False))
-    values=data.get('headlines') if isinstance(data,dict) else None
-    clean=[]
-    for value in values or []:
-        title=re.sub(r'\s+',' ',str(value)).strip().strip('"')
-        if title and title.casefold()!=str(article.get('headline') or '').strip().casefold() and title.casefold() not in {x.casefold() for x in clean}:
-            clean.append(title[:140])
-    if len(clean)!=7:
-        raise AIProviderError('ChatGPT no devolvió siete titulares diferentes. Vuelve a intentarlo.')
-    return clean
-
-
-def generate_carousel(article):
-    if not OPENAI_API_KEY:
-        raise AIProviderError('Para crear un carrusel con ChatGPT falta OPENAI_API_KEY en Railway.')
-    prompt=f'''Analiza esta noticia para redes de InfoLinense. Crea un carrusel solo si permite explicar un proceso, varias claves, cifras o consecuencias mejor que una imagen única. Si no encaja, devuelve suitable=false, reason y slides=[].
-Cuando encaje, devuelve suitable=true y entre 3 y 6 diapositivas. La primera presenta el tema; las siguientes explican hechos distintos; la última resume qué cambia o qué debe saber el vecino. Cada diapositiva debe incluir title (máximo 70 caracteres), text (máximo 220 caracteres) y photo_query (qué fotografía real buscar, sin inventar una foto ni sugerir que se genere con IA). Basa todo únicamente en los datos facilitados y las fuentes; indica en reason cualquier limitación. Devuelve JSON válido con suitable, reason y slides.
-TITULAR: {article.get('headline','')}
-ENTRADILLA: {article.get('subtitle','')}
-CUERPO: {(article.get('body') or '')[:2200]}
-SECCIÓN: {article.get('section','')}
-FUENTES: {article.get('sources_json') or ''}
-NOTAS DE CONTRASTE: {article.get('research_notes') or ''}'''
-    data=json_from_text(ask_openai(SYSTEM,prompt,web=False))
-    suitable=bool(data.get('suitable'))
-    slides=data.get('slides') if isinstance(data.get('slides'),list) else []
-    if suitable and not 3<=len(slides)<=6:
-        raise AIProviderError('ChatGPT no devolvió entre tres y seis diapositivas válidas.')
-    normalized=[]
-    for slide in slides:
-        normalized.append({
-            'title':re.sub(r'\s+',' ',str(slide.get('title') or '')).strip()[:70],
-            'text':re.sub(r'\s+',' ',str(slide.get('text') or '')).strip()[:220],
-            'photo_query':re.sub(r'\s+',' ',str(slide.get('photo_query') or slide.get('photo_suggestion') or '')).strip()[:160],
-            'photo_suggestion':re.sub(r'\s+',' ',str(slide.get('photo_query') or slide.get('photo_suggestion') or '')).strip()[:160],
-        })
-    if suitable and any(not s['title'] or not s['text'] for s in normalized):
-        raise AIProviderError('ChatGPT devolvió una diapositiva sin titular o texto.')
-    return {'suitable':suitable,'reason':str(data.get('reason') or '')[:500],'slides':normalized}
-
-
-def discover_candidates():
-    prompt='''Busca noticias, documentos, anuncios públicos y publicaciones públicas recientes que puedan afectar de forma concreta a La Línea de la Concepción.
-Incluye fuentes locales y comarcales (prensa, Ayuntamiento, tablón de edictos, BOP/BOJA, licitaciones, redes públicas), y noticias nacionales o internacionales solo cuando puedas explicar una consecuencia verificable para vecinos de La Línea. Ejemplos de temas aplicables: vivienda y alquiler, empleo, coste de vida, ayudas, sanidad, educación, energía, transporte, clima o frontera.
-No fuerces una relación local. Para cada resultado explica en local_angle qué cambia o por qué importa aquí; debe nombrar La Línea o un efecto local comprobable. Prioriza exclusivas, edictos, licitaciones, documentos oficiales y hechos nuevos. Evita duplicados y resultados donde “línea” no sea la ciudad.
-Devuelve JSON válido con clave items y máximo 15 objetos con: title,url,source_name,excerpt,local_angle,official (boolean).'''
-    return json_from_text(ask_openai(SYSTEM,prompt,web=True)).get('items',[])

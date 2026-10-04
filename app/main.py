@@ -5,7 +5,7 @@ from zoneinfo import ZoneInfo
 from io import BytesIO
 from pathlib import Path
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Depends
-from fastapi.responses import FileResponse, RedirectResponse
+from fastapi.responses import FileResponse, RedirectResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -13,7 +13,8 @@ from . import db, sources, pipeline, publishers, photos, canva, ai, planner
 from .auth import login, require_auth
 from .config import BASE_DIR, RENDER_DIR, UPLOAD_DIR, SCAN_INTERVAL_MINUTES, AUTO_PIPELINE, OPENAI_API_KEY, ADMIN_PASSWORD, JWT_SECRET, PUBLISH_MODE, CORS_ORIGINS, PUBLIC_BASE_URL
 
-app=FastAPI(title='InfoLinense Desk',version='2.3.0')
+VERSION='2.4.0'
+app=FastAPI(title='InfoLinense Desk',version=VERSION)
 app.add_middleware(CORSMiddleware,allow_origins=CORS_ORIGINS,allow_credentials=False,allow_methods=['*'],allow_headers=['Authorization','Content-Type'])
 db.init_db()
 
@@ -27,19 +28,46 @@ class SourceIn(BaseModel):
     local_scope:bool=False
 class EditArticle(BaseModel):
     section:str|None=None; headline:str|None=None; subtitle:str|None=None; body:str|None=None; graphic_summary:str|None=None
-class PhotoChoice(BaseModel): url:str; source:str=''; license:str=''; author:str=''
+class PhotoChoice(BaseModel): url:str; source:str=''; license:str=''; author:str=''; confirm_permission:bool=False
 class TriageIn(BaseModel): priority:str; planned_at:str|None=None
 class CarouselPhoto(BaseModel): url:str; source:str=''; license:str=''; author:str=''; publish_safe:bool=False
 class CarouselDesignIn(BaseModel): photo_urls:list[str]
+
+
+
+def ai_error_text(e):
+    """Human message plus what the provider really answered."""
+    def one(err):
+        name=ai.PROVIDER_NAMES.get(err.provider,err.provider or 'IA')
+        tech=' · '.join(x for x in [f'HTTP {err.status}' if err.status else '',err.code or '',err.raw or ''] if x)
+        text=f'{name}: {err}'
+        if tech: text+=f' (respuesta del proveedor: {tech})'
+        if err.retry_after: text+=f' Reintenta en {err.retry_after} s.'
+        return text
+    text=one(e)
+    for extra in getattr(e,'fallback_errors',[]) or []:
+        text+=' — También se probó '+one(extra)
+    return text
+
+@app.exception_handler(ai.AIProviderError)
+async def ai_error_handler(request,exc):
+    status=503 if exc.kind in ('rate_limit','overloaded','network','empty','error') else 502
+    headers={'Retry-After':str(exc.retry_after)} if exc.retry_after else None
+    return JSONResponse(status_code=status,content={'detail':ai_error_text(exc),'error':exc.as_dict()},headers=headers)
 
 @app.post('/api/auth/login')
 def auth_login(body:LoginIn): return {'token':login(body.password)}
 @app.get('/api/health')
 def health():
-    return {'ok':True,'version':'2.3.0','auth_configured':bool(ADMIN_PASSWORD and JWT_SECRET),'openai_configured':bool(OPENAI_API_KEY),'claude_configured':bool(ai.ANTHROPIC_API_KEY),'ai_configured':ai.AI_ENABLED,'ai_provider':ai.ACTIVE_PROVIDER or None,'draft_provider':'openai' if OPENAI_API_KEY else 'source_draft','draft_mode':'ai' if OPENAI_API_KEY else 'source_draft','publish_mode':PUBLISH_MODE}
+    return {'ok':True,'version':VERSION,'auth_configured':bool(ADMIN_PASSWORD and JWT_SECRET),'openai_configured':bool(OPENAI_API_KEY),'claude_configured':bool(ai.ANTHROPIC_API_KEY),'ai_configured':ai.AI_ENABLED,'ai_provider':ai.ACTIVE_PROVIDER or None,'ai_fallback':[p for p in ai.provider_chain()[1:]],'draft_provider':ai.ACTIVE_PROVIDER or 'source_draft','draft_mode':'ai' if ai.AI_ENABLED else 'source_draft','web_search':{p:ai.web_enabled(p) for p in ai.provider_chain()},'publish_mode':PUBLISH_MODE,'auto_publish':False}
+
+@app.get('/api/ai/check',dependencies=[Depends(require_auth)])
+def ai_check():
+    """Real, tiny request to each configured AI provider: shows exactly what it answers."""
+    return ai.check_providers()
 @app.get('/api/capabilities',dependencies=[Depends(require_auth)])
 def capabilities():
-    return {'real_photo_only':True,'ai_image_generation':False,'max_social_chars':2200,'ai_configured':ai.AI_ENABLED,'ai_provider':ai.ACTIVE_PROVIDER or None,'draft_provider':'openai' if OPENAI_API_KEY else 'source_draft','auto_pipeline':AUTO_PIPELINE,'public_base_url':PUBLIC_BASE_URL,'canva_configured':canva.ready(),'canva_connected':canva.connected(),'canva_redirect_uri':canva.callback_url(),'primary_template':'canva' if canva.ready() and canva.connected() else 'unavailable','canva_template_url':'https://www.canva.com/brand/brand-templates/'+canva.TEMPLATE_ID if canva.TEMPLATE_ID else None}
+    return {'real_photo_only':True,'ai_image_generation':False,'max_social_chars':2200,'ai_configured':ai.AI_ENABLED,'ai_provider':ai.ACTIVE_PROVIDER or None,'draft_provider':ai.ACTIVE_PROVIDER or 'source_draft','auto_pipeline':AUTO_PIPELINE,'public_base_url':PUBLIC_BASE_URL,'canva_configured':canva.ready(),'canva_connected':canva.connected(),'canva_redirect_uri':canva.callback_url(),'primary_template':'canva' if canva.ready() and canva.connected() else 'unavailable','canva_template_url':'https://www.canva.com/brand/brand-templates/'+canva.TEMPLATE_ID if canva.TEMPLATE_ID else None}
 
 @app.get('/api/canva/connect',dependencies=[Depends(require_auth)])
 def connect_canva():
@@ -141,15 +169,15 @@ def triage_candidate(cid:int,body:TriageIn):
 @app.get('/api/candidates',dependencies=[Depends(require_auth)])
 def candidates(status:str='new'):
     base="""SELECT c.*,s.kind AS source_kind,s.official AS source_official,
-                    s.local_scope AS source_local_scope
-             FROM candidates c LEFT JOIN sources s ON s.id=c.source_id"""
+                    s.local_scope AS source_local_scope,a.id AS article_id,a.status AS article_status
+             FROM candidates c LEFT JOIN sources s ON s.id=c.source_id
+             LEFT JOIN articles a ON a.candidate_id=c.id AND a.status!='rejected'"""
     if status=='pending':
         return db.rows(base+" WHERE c.status IN ('new','researched','draft') ORDER BY c.score DESC,c.id DESC")
     return db.rows(base+' WHERE c.status=? ORDER BY c.score DESC,c.id DESC')
 @app.post('/api/candidates/{cid}/investigate',dependencies=[Depends(require_auth)])
 def investigate(cid:int):
     try: return {'ok':True,'research':pipeline.investigate_candidate(cid)}
-    except ai.AIProviderError as e: raise HTTPException(502,str(e)) from e
     except ValueError as e: raise HTTPException(400,str(e))
     except RuntimeError as e: raise HTTPException(404,str(e))
 @app.post('/api/candidates/{cid}/draft',dependencies=[Depends(require_auth)])
@@ -157,15 +185,71 @@ def draft_candidate(cid:int):
     try:
         aid=pipeline.draft_candidate(cid)
         return db.row('SELECT * FROM articles WHERE id=?',(aid,))
-    except ai.AIProviderError as e: raise HTTPException(503,str(e)) from e
     except ValueError as e: raise HTTPException(400,str(e))
     except RuntimeError as e: raise HTTPException(404,str(e))
 
 @app.get('/api/candidates/{cid}/draft',dependencies=[Depends(require_auth)])
 def get_candidate_draft(cid:int):
-    a=db.row("SELECT * FROM articles WHERE candidate_id=? AND status='draft'",(cid,))
+    a=pipeline.existing_article(cid)
     if not a: raise HTTPException(404,'Borrador no disponible')
     return a
+
+def _work_status(cid):
+    c=db.row('SELECT id,status,work_state,work_step,work_error FROM candidates WHERE id=?',(cid,))
+    if not c: raise HTTPException(404,'Noticia no encontrada')
+    a=pipeline.existing_article(cid)
+    if pipeline.is_working(cid):
+        state='working'
+    elif a:
+        state='done'
+    else:
+        state=c.get('work_state') if c.get('work_state')=='error' else 'idle'
+    error=None
+    if state=='error' and c.get('work_error'):
+        try: error=json.loads(c['work_error'])
+        except Exception: error={'message':c['work_error']}
+        if error.get('provider') is not None and error.get('message'):
+            err=ai.AIProviderError(error['message'],error.get('provider',''),error.get('http_status'),error.get('code',''),error.get('kind','error'),error.get('retry_after_seconds'),error.get('provider_message',''))
+            error['detail']=ai_error_text(err)
+        else:
+            error['detail']=error.get('message')
+    step_text={'investigating':'Investigando la noticia y sus fuentes…','drafting':'Redactando el borrador…'}
+    return {'candidate_id':cid,'state':state,'step':c.get('work_step') if state=='working' else None,
+            'step_text':step_text.get(c.get('work_step') or '','Trabajando…') if state=='working' else None,
+            'next_action':'open' if a else ('draft' if c['status']=='researched' else 'investigate_and_draft'),
+            'article_id':a['id'] if a else None,'article':a if state=='done' else None,'error':error}
+
+@app.get('/api/candidates/{cid}/write',dependencies=[Depends(require_auth)])
+def write_status(cid:int):
+    """Estado del botón Redactar: idle | working | done | error."""
+    return _work_status(cid)
+
+@app.post('/api/candidates/{cid}/write',dependencies=[Depends(require_auth)])
+def write_candidate(cid:int,wait:int=100):
+    """Botón «Redactar»: abre el borrador si existe; si no, investiga (si hace falta) y redacta.
+
+    Espera hasta `wait` segundos. Si aún trabaja devuelve 202 con state=working:
+    consulta GET /api/candidates/{id}/write cada pocos segundos.
+    """
+    if not db.row('SELECT id FROM candidates WHERE id=?',(cid,)): raise HTTPException(404,'Noticia no encontrada')
+    a=pipeline.existing_article(cid)
+    if a: return {**_work_status(cid),'action':'opened','article':a}
+    if pipeline.is_working(cid): return JSONResponse(status_code=202,content=_work_status(cid))
+    holder={}
+    def run():
+        try: holder['result']=pipeline.write_candidate(cid)
+        except Exception as e: holder['error']=e
+    t=threading.Thread(target=run,daemon=True); t.start()
+    t.join(max(0,min(int(wait),240)))
+    if t.is_alive(): return JSONResponse(status_code=202,content=_work_status(cid))
+    err=holder.get('error')
+    if isinstance(err,ai.AIProviderError): raise err
+    if isinstance(err,ValueError) and str(err)=='busy': return JSONResponse(status_code=202,content=_work_status(cid))
+    if isinstance(err,ValueError): raise HTTPException(400,str(err))
+    if isinstance(err,RuntimeError): raise HTTPException(404,str(err))
+    if err: raise HTTPException(500,'No se pudo redactar: '+str(err)[:200])
+    result=holder['result']
+    return {**_work_status(cid),'action':result['action'],'article':db.row('SELECT * FROM articles WHERE id=?',(result['article_id'],))}
 @app.post('/api/candidates/{cid}/submit',dependencies=[Depends(require_auth)])
 def submit_candidate(cid:int):
     try: return {'id':pipeline.submit_candidate(cid)}
@@ -206,19 +290,26 @@ def get_carousel(aid:int):
 def alternate_headlines(aid:int):
     a=db.row('SELECT * FROM articles WHERE id=?',(aid,))
     if not a: raise HTTPException(404,'Noticia no encontrada')
-    try: return {'headlines':ai.alternate_headlines(a)}
-    except ai.AIProviderError as e: raise HTTPException(503,str(e)) from e
+    headlines=ai.alternate_headlines(a)
+    db.exec_('UPDATE articles SET headline_options_json=? WHERE id=?',(json.dumps(headlines,ensure_ascii=False),aid))
+    return {'headlines':headlines}
+
+@app.get('/api/articles/{aid}/headlines',dependencies=[Depends(require_auth)])
+def get_headlines(aid:int):
+    a=db.row('SELECT headline,headline_options_json FROM articles WHERE id=?',(aid,))
+    if not a: raise HTTPException(404,'Noticia no encontrada')
+    try: options=json.loads(a.get('headline_options_json') or '[]')
+    except Exception: options=[]
+    return {'current':a.get('headline'),'headlines':options}
 
 @app.post('/api/articles/{aid}/carousel',dependencies=[Depends(require_auth)])
 def generate_carousel(aid:int):
     a=db.row('SELECT * FROM articles WHERE id=?',(aid,))
     if not a: raise HTTPException(404,'Noticia no encontrada')
-    try:
-        result=ai.generate_carousel(a)
-        db.exec_('UPDATE articles SET carousel_suitable=?,carousel_reason=?,carousel_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=?',
-                 (int(result['suitable']),result['reason'],json.dumps(result,ensure_ascii=False),aid))
-        return result
-    except ai.AIProviderError as e: raise HTTPException(503,str(e)) from e
+    result=ai.generate_carousel(a)
+    db.exec_('UPDATE articles SET carousel_suitable=?,carousel_reason=?,carousel_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=?',
+             (int(result['suitable']),result['reason'],json.dumps(result,ensure_ascii=False),aid))
+    return result
 
 @app.post('/api/articles/{aid}/carousel/design',dependencies=[Depends(require_auth)])
 def design_carousel(aid:int,body:CarouselDesignIn):
@@ -269,7 +360,41 @@ def kit(aid:int):
     a=article(aid)
     design=db.row('SELECT url,exported FROM canva_designs WHERE article_id=?',(aid,)) or {}
     exported=bool(design.get('exported')) and (RENDER_DIR/f'article_{aid}.png').is_file()
-    return {'id':aid,'section':a.get('section'),'headline':a.get('headline'),'text':(a.get('body') or '')[:2200],'chars':len((a.get('body') or '')[:2200]),'image_url':f'/media/render/{aid}.png' if exported else None,'status':a.get('status'),'source_url':a.get('source_url'),'image_source':a.get('image_source'),'image_license':a.get('image_license'),'ai_image_suggestion':a.get('ai_image_suggestion') or '','canva_url':design.get('url'),'canva_exported':exported}
+    body=(a.get('body') or '')[:2200]
+    copy_text='\n\n'.join(x for x in [a.get('headline') or '',a.get('subtitle') or '',body] if x.strip())
+    try: options=json.loads(a.get('headline_options_json') or '[]')
+    except Exception: options=[]
+    try: missing=json.loads(a.get('missing_data_json') or '[]')
+    except Exception: missing=[]
+    try: srcs=json.loads(a.get('sources_json') or '[]')
+    except Exception: srcs=[]
+    photo_ok=bool(a.get('image_local')) and Path(a['image_local']).is_file()
+    carousel=db.rows('SELECT slide_index,exported FROM carousel_designs WHERE article_id=? ORDER BY slide_index',(aid,))
+    return {'id':aid,'section':a.get('section'),'headline':a.get('headline'),'subtitle':a.get('subtitle'),'text':body,'chars':len(body),
+            'copy_text':copy_text,'headline_options':options,'missing_data':missing,'sources':srcs,
+            'image_url':f'/media/render/{aid}.png' if exported else None,'status':a.get('status'),'source_url':a.get('source_url'),
+            'image_source':a.get('image_source'),'image_license':a.get('image_license'),'image_author':a.get('image_author') or '',
+            'image_kind':a.get('image_kind') or '','image_credit':photo_credit(a),
+            'photo_download_url':f'/api/articles/{aid}/photo/file' if photo_ok else None,
+            'ai_image_suggestion':a.get('ai_image_suggestion') or '','canva_url':design.get('url'),'canva_exported':exported,
+            'carousel_slides':[f'/api/articles/{aid}/carousel/slide/{r["slide_index"]}' for r in carousel if r.get('exported')],
+            'carousel_download_url':f'/api/articles/{aid}/carousel/download' if carousel and all(r.get('exported') for r in carousel) else None,
+            'auto_publish':False}
+
+def photo_credit(a):
+    kind=a.get('image_kind') or ''
+    origin={'user_upload':'Foto subida por InfoLinense','commons':'Wikimedia Commons','official_source':'Foto de la fuente oficial',
+            'external_source':'Foto de la fuente','external_confirmed':'Foto de internet con permiso confirmado'}.get(kind,'')
+    parts=[x for x in [origin,a.get('image_author') or '',a.get('image_license') or '',a.get('image_source') or ''] if x]
+    return ' · '.join(dict.fromkeys(parts))
+
+@app.get('/api/articles/{aid}/photo/file',dependencies=[Depends(require_auth)])
+def photo_file(aid:int):
+    a=db.row('SELECT image_local FROM articles WHERE id=?',(aid,))
+    if not a or not a.get('image_local') or not Path(a['image_local']).is_file(): raise HTTPException(404,'No hay foto seleccionada')
+    p=Path(a['image_local'])
+    if UPLOAD_DIR.resolve() not in p.resolve().parents: raise HTTPException(404)
+    return FileResponse(p,media_type='image/jpeg',filename=f'infolinense-{aid}-foto.jpg')
 @app.put('/api/articles/{aid}',dependencies=[Depends(require_auth)])
 def edit_article(aid:int,body:EditArticle):
     original=db.row('SELECT * FROM articles WHERE id=?',(aid,))
@@ -287,9 +412,18 @@ def edit_article(aid:int,body:EditArticle):
             db.exec_("UPDATE articles SET status='review_ready' WHERE id=?",(aid,))
     return db.row('SELECT * FROM articles WHERE id=?',(aid,))
 @app.get('/api/articles/{aid}/photos',dependencies=[Depends(require_auth)])
-def article_photos(aid:int,refresh:bool=False):
+def article_photos(aid:int,refresh:bool=False,q:str=''):
     a=db.row('SELECT a.*,c.title source_title,c.url source_url,c.excerpt,c.source_id FROM articles a LEFT JOIN candidates c ON c.id=a.candidate_id WHERE a.id=?',(aid,))
     if not a: raise HTTPException(404)
+    if q.strip():
+        # Búsqueda libre en Wikimedia Commons (licencias libres documentadas).
+        try: cached=json.loads(a.get('image_candidates_json') or '[]')
+        except Exception: cached=[]
+        found=photos.commons_images(q.strip()[:120])
+        known={x.get('url') for x in cached}
+        merged=cached+[x for x in found if x.get('url') not in known]
+        db.exec_('UPDATE articles SET image_candidates_json=? WHERE id=?',(json.dumps(merged,ensure_ascii=False),aid))
+        return found
     if not refresh:
         try: cached=json.loads(a.get('image_candidates_json') or '[]')
         except Exception: cached=[]
@@ -299,9 +433,27 @@ def article_photos(aid:int,refresh:bool=False):
     db.exec_('UPDATE articles SET image_candidates_json=? WHERE id=?',(json.dumps(imgs,ensure_ascii=False),aid)); return imgs
 @app.post('/api/articles/{aid}/photo',dependencies=[Depends(require_auth)])
 def choose_photo(aid:int,p:PhotoChoice):
-    try: local=photos.download_image(p.url)
-    except Exception as e: raise HTTPException(400,'No se pudo descargar la foto: '+str(e))
-    db.exec_("UPDATE articles SET image_url=?,image_source=?,image_license=?,image_local=?,render_path=NULL,ai_image_suggestion='',status=CASE WHEN status='approved' THEN 'review_ready' ELSE status END WHERE id=?",(p.url,p.source,p.license,local,aid))
+    a=db.row('SELECT image_candidates_json FROM articles WHERE id=?',(aid,))
+    if not a: raise HTTPException(404)
+    url=p.url.strip()
+    parsed=urlparse(url)
+    if parsed.scheme not in ('http','https') or not parsed.hostname: raise HTTPException(400,'La foto debe tener una URL web')
+    try: allowed=json.loads(a.get('image_candidates_json') or '[]')
+    except Exception: allowed=[]
+    item=next((x for x in allowed if x.get('url')==url),None)
+    if not item or not item.get('publish_safe'):
+        # Foto de la fuente o de otra web: solo se puede usar si el editor confirma el permiso.
+        if not p.confirm_permission or not p.license.strip():
+            raise HTTPException(400,'Esta foto no tiene una licencia libre comprobada. Indica el permiso o la licencia y marca «Tengo permiso para usarla».')
+        new={**(item or {}),'url':url,'source':(p.source or (item or {}).get('source') or parsed.hostname)[:300],
+             'license':('Permiso confirmado por el editor: '+p.license.strip())[:220],'author':(p.author or (item or {}).get('author') or '')[:120],
+             'kind':(item or {}).get('kind') or 'external_confirmed','publish_safe':True,'confirmed_by_editor':True}
+        allowed=[x for x in allowed if x.get('url')!=url]+[new]
+        item=new
+    try: local=photos.download_image(url)
+    except Exception as e: raise HTTPException(400,'No se pudo descargar la foto: '+str(e)[:200])
+    db.exec_("UPDATE articles SET image_url=?,image_source=?,image_license=?,image_author=?,image_kind=?,image_local=?,image_candidates_json=?,render_path=NULL,ai_image_suggestion='',status=CASE WHEN status='approved' THEN 'review_ready' ELSE status END,updated_at=CURRENT_TIMESTAMP WHERE id=?",
+             (url,item.get('source') or p.source,item.get('license') or p.license,item.get('author') or p.author,item.get('kind') or '',local,json.dumps(allowed,ensure_ascii=False),aid))
     db.exec_('UPDATE canva_designs SET exported=0 WHERE article_id=?',(aid,))
     return {'ok':True}
 
@@ -323,8 +475,10 @@ async def upload_article_photo(aid:int,file:UploadFile=File(...),license:str=For
     except Exception as e: raise HTTPException(400,'No se pudo leer la fotografía: '+str(e))
     selected={'url':'upload:'+dest.stem,'source':source.strip()[:180],'license':license.strip()[:180],
               'author':author.strip()[:120],'kind':'user_upload','publish_safe':True}
-    db.exec_("UPDATE articles SET image_url=?,image_source=?,image_license=?,image_local=?,image_candidates_json=?,render_path=NULL,status=CASE WHEN status='approved' THEN 'review_ready' ELSE status END,updated_at=CURRENT_TIMESTAMP WHERE id=?",
-             (selected['url'],selected['source'],selected['license'],str(dest),json.dumps([selected]),aid))
+    try: previous=json.loads((db.row('SELECT image_candidates_json FROM articles WHERE id=?',(aid,)) or {}).get('image_candidates_json') or '[]')
+    except Exception: previous=[]
+    db.exec_("UPDATE articles SET image_url=?,image_source=?,image_license=?,image_author=?,image_kind='user_upload',image_local=?,image_candidates_json=?,render_path=NULL,status=CASE WHEN status='approved' THEN 'review_ready' ELSE status END,updated_at=CURRENT_TIMESTAMP WHERE id=?",
+             (selected['url'],selected['source'],selected['license'],selected['author'],str(dest),json.dumps(previous+[selected],ensure_ascii=False),aid))
     db.exec_('UPDATE canva_designs SET exported=0 WHERE article_id=?',(aid,))
     return {'ok':True,'photo':selected}
 @app.post('/api/articles/{aid}/render',dependencies=[Depends(require_auth)])

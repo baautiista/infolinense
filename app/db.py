@@ -83,14 +83,23 @@ def init_db():
         'planned_at':'TEXT',
         'plan_locked':'INTEGER NOT NULL DEFAULT 0',
         'plan_reason':'TEXT',
-        'local_angle':'TEXT'
+        'local_angle':'TEXT',
+        'work_state':'TEXT',
+        'work_step':'TEXT',
+        'work_error':'TEXT',
+        'work_updated_at':'TEXT'
     }.items():
         if name not in existing_candidates: c.execute(f'ALTER TABLE candidates ADD COLUMN {name} {ddl}')
     existing_articles={r[1] for r in c.execute('PRAGMA table_info(articles)')}
     for name,ddl in {
         'carousel_suitable':'INTEGER NOT NULL DEFAULT 0',
         'carousel_reason':'TEXT',
-        'carousel_json':'TEXT'
+        'carousel_json':'TEXT',
+        'headline_options_json':'TEXT',
+        'missing_data_json':'TEXT',
+        'ai_provider':'TEXT',
+        'image_kind':'TEXT',
+        'image_author':'TEXT'
     }.items():
         if name not in existing_articles: c.execute(f'ALTER TABLE articles ADD COLUMN {name} {ddl}')
     if 'content_hash' not in {r[1] for r in c.execute('PRAGMA table_info(canva_designs)')}:
@@ -101,6 +110,7 @@ def init_db():
                  status=CASE WHEN status='approved' THEN 'review_ready' ELSE status END
                  WHERE id IN (SELECT article_id FROM canva_designs WHERE content_hash IS NULL AND exported=1)''')
     c.execute('UPDATE canva_designs SET exported=0 WHERE content_hash IS NULL AND exported=1')
+    c.execute("UPDATE candidates SET work_state='error',work_error='El servidor se reinició mientras trabajaba. Pulsa Reintentar.' WHERE work_state='working'")
     from urllib.parse import quote
     def news(query):
         return 'https://news.google.com/rss/search?q='+quote(query)+'&hl=es&gl=ES&ceid=ES:es'

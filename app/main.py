@@ -9,11 +9,11 @@ from fastapi.responses import FileResponse, RedirectResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from . import db, sources, pipeline, publishers, photos, canva, ai, planner, layout
+from . import db, sources, pipeline, publishers, photos, canva, ai, planner, layout, social
 from .auth import login, require_auth
 from .config import BASE_DIR, RENDER_DIR, UPLOAD_DIR, SCAN_INTERVAL_MINUTES, AUTO_PIPELINE, OPENAI_API_KEY, ADMIN_PASSWORD, JWT_SECRET, PUBLISH_MODE, CORS_ORIGINS, PUBLIC_BASE_URL, AUTO_PUBLISH
 
-VERSION='3.0.0'
+VERSION='3.1.0'
 app=FastAPI(title='InfoLinense Desk',version=VERSION)
 app.add_middleware(CORSMiddleware,allow_origins=CORS_ORIGINS,allow_credentials=False,allow_methods=['*'],allow_headers=['Authorization','Content-Type'])
 db.init_db()
@@ -141,6 +141,15 @@ def scan():
         except Exception as e: db.log('schedule_error',str(e)[:250])
         r['auto_drafts_queued']=pipeline.queue_useful_pending()
     return r
+@app.get('/api/social',dependencies=[Depends(require_auth)])
+def social_items():
+    """Panel de redes: quejas y noticias públicas de páginas y grupos de Facebook de La Línea."""
+    return {'items':social.items(),'watched':social.watched()}
+
+@app.post('/api/social/scan',dependencies=[Depends(require_auth)])
+def social_scan():
+    return social.scan()
+
 @app.get('/api/schedule',dependencies=[Depends(require_auth)])
 def schedule():
     return planner.get_schedule()
@@ -623,6 +632,8 @@ def scheduler_loop():
             r=sources.scan_all()
             if not r.get('busy'):
                 if AUTO_PIPELINE: pipeline.auto_process(r['added'])
+                try: social.scan()
+                except Exception as e: db.log('social_error',str(e)[:250])
                 planner.rebuild_schedule()
                 pipeline.queue_useful_pending()
         except Exception as e: db.log('scheduler_error',str(e)[:250])

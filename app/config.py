@@ -19,6 +19,9 @@ ANTHROPIC_API_KEY = os.getenv('ANTHROPIC_API_KEY','').strip()
 ANTHROPIC_MODEL = os.getenv('ANTHROPIC_MODEL','claude-sonnet-5-5').strip()
 ANTHROPIC_WORKSPACE_ID = os.getenv('ANTHROPIC_WORKSPACE_ID','').strip()
 ANTHROPIC_WEB_SEARCH = os.getenv('ANTHROPIC_WEB_SEARCH','false').lower() in {'1','true','yes','on'}
+# Búsqueda de fotos en Google (opcional, más fiable): Programmable Search Engine con búsqueda de imágenes
+GOOGLE_SEARCH_API_KEY = os.getenv('GOOGLE_SEARCH_API_KEY','').strip()
+GOOGLE_SEARCH_CX = os.getenv('GOOGLE_SEARCH_CX','').strip()
 AI_PROVIDER = os.getenv('AI_PROVIDER','auto').strip().lower()
 # Si el proveedor principal falla (saldo, límite, caída), probar el otro si tiene clave.
 AI_FALLBACK = os.getenv('AI_FALLBACK','true').lower() in {'1','true','yes','on'}

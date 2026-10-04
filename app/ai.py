@@ -355,15 +355,25 @@ def _clean_headlines(values, current=''):
     return clean
 
 
+from pathlib import Path as _Path
+STYLE_FILE = _Path(__file__).with_name('estilo_redaccion.md')
+
+
+def style_guide():
+    """Guía de estilo de InfoLinense (app/estilo_redaccion.md). Se lee en cada redacción para poder editarla."""
+    try:
+        return STYLE_FILE.read_text(encoding='utf-8')
+    except OSError:
+        return SYSTEM
+
+
 def draft(candidate, source_text='', research='', quick=False):
     if not AI_ENABLED:
         return free_draft(candidate, source_text)
-    prompt = f'''Redacta la noticia para InfoLinense a partir SOLO de esta documentación.
-Objetivo: que un vecino de La Línea entienda qué ha pasado, dónde, cuándo, a quién afecta y qué datos faltan.
-Estructura del cuerpo: primer párrafo con lo esencial; después detalles útiles (fechas, plazos, importes, lugares, requisitos) solo si constan; contexto local verificable; último párrafo con lo que todavía no se sabe o falta confirmar. Párrafos cortos separados por línea en blanco.
-Longitud del cuerpo: unos 2.200 caracteres con espacios (entre 1.900 y 2.200). Si la documentación no da para tanto, escribe menos antes que rellenar o inventar.
-Si la fuente es una nota de prensa, reescribe con tono informativo y neutral.
-{'Pieza breve: noticia de menor peso.' if quick else ''}
+    prompt = f'''Redacta la noticia siguiendo al pie de la letra la guía de estilo de InfoLinense.
+Usa SOLO la información de las fuentes de abajo. Formato breve para web y redes: el texto ronda como máximo 2.200 caracteres; no lo alargues para llegar a esa cifra.
+Párrafos de 2 a 4 frases separados por una línea en blanco.
+{'Noticia de menor peso: pieza corta.' if quick else ''}
 
 CANDIDATA: {candidate.get('title', '')}
 FUENTE: {candidate.get('source_name', '')} · {candidate.get('url', '')}
@@ -372,19 +382,20 @@ EXTRACTO: {candidate.get('excerpt', '')[:1500]}
 TEXTO FUENTE: {(source_text or '')[:10000]}
 DOCUMENTACIÓN: {(research or '')[:8000]}
 
-Devuelve JSON con exactamente estas claves:
+Devuelve la entrega (SECCIÓN, TITULAR, SUBTÍTULO, TEXTO) como JSON válido, sin markdown, con exactamente estas claves:
+focus (ENFOQUE PRINCIPAL: la verdadera noticia en una frase),
 section (exactamente una de: {SECTIONS}. Guía: {SECTION_GUIDE}),
-headline (titular informativo, máximo 110 caracteres),
-subtitle (entradilla de una o dos frases, máximo 260 caracteres),
-body (cuerpo de la noticia, máximo 2.200 caracteres),
-headline_options (lista de EXACTAMENTE 7 titulares alternativos distintos entre sí y del titular principal, todos fieles a los hechos),
+headline (TITULAR: breve, directo, cuenta la noticia, máximo 110 caracteres),
+subtitle (SUBTÍTULO: aporta información nueva, nunca repite el titular, máximo 260 caracteres),
+body (TEXTO: la noticia completa, máximo aproximado 2.200 caracteres),
+headline_options (lista de EXACTAMENTE 7 titulares alternativos con los mismos criterios, distintos entre sí y del titular principal),
 missing_data (lista de datos que faltan y conviene confirmar),
 image_headline (titular corto para la imagen: máximo 70 caracteres, sin perder el dato clave),
 graphic_summary (máximo 140 caracteres, una o dos frases para la imagen),
 carousel_suitable (true solo si la noticia explica varios pasos, cifras, requisitos o consecuencias que se entienden mejor en 3-6 diapositivas),
 carousel_reason (motivo breve),
 ai_image_suggestion (qué foto real buscar; no se genera ninguna imagen).'''
-    data, provider, _ = ask_json(SYSTEM, prompt, max_tokens=4500)
+    data, provider, _ = ask_json(style_guide(), prompt, max_tokens=5000)
     if not isinstance(data, dict) or not data.get('headline') or not data.get('body'):
         raise AIProviderError('La IA devolvió un borrador incompleto. Reintenta.', provider, kind='empty')
     data['body'] = _trim_body(data.get('body'))
@@ -408,13 +419,13 @@ ai_image_suggestion (qué foto real buscar; no se genera ninguna imagen).'''
 def alternate_headlines(article):
     if not AI_ENABLED:
         raise AIProviderError('Para proponer titulares hace falta una clave de IA en Railway.', kind='config')
-    prompt = f'''Propón exactamente siete titulares periodísticos distintos para esta noticia de InfoLinense. Directos, claros, fieles a los hechos del texto, útiles para vecinos de La Línea, sin sensacionalismo ni exclamaciones, máximo 110 caracteres cada uno. Varía el enfoque (dato principal, a quién afecta, dónde, cuándo, consecuencia). No repitas el titular actual ni añadas datos que no estén en el texto.
+    prompt = f'''Propón exactamente siete titulares distintos para esta noticia siguiendo la sección TITULAR de la guía de estilo (cuentan la noticia, con cifras, lugares conocidos y consecuencias cuando existan). Directos, claros, fieles a los hechos del texto, útiles para vecinos de La Línea, sin sensacionalismo ni exclamaciones, máximo 110 caracteres cada uno. Varía el enfoque (dato principal, a quién afecta, dónde, cuándo, consecuencia). No repitas el titular actual ni añadas datos que no estén en el texto.
 TITULAR ACTUAL: {article.get('headline', '')}
 ENTRADILLA: {article.get('subtitle', '')}
 TEXTO: {(article.get('body') or '')[:2200]}
 Devuelve solo JSON: {{"headlines": ["...", "...", "...", "...", "...", "...", "..."]}}'''
     for _ in range(2):
-        data, provider, _ = ask_json(SYSTEM, prompt, max_tokens=1200)
+        data, provider, _ = ask_json(style_guide(), prompt, max_tokens=1200)
         clean = _clean_headlines(data.get('headlines') if isinstance(data, dict) else None, article.get('headline'))
         if len(clean) >= 7:
             return clean[:7]

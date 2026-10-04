@@ -1,7 +1,7 @@
 """Búsqueda de fotos para la noticia.
 
-Orden: foto de la propia noticia (og:image), fotos de otros medios que cuentan la
-misma historia, búsqueda de imágenes en internet y, por último, Wikimedia Commons.
+Orden: foto de la propia noticia (og:image) y búsqueda directa en Google Imágenes.
+Si Google no responde se usa Bing como reserva.
 """
 import hashlib
 import json
@@ -13,7 +13,7 @@ import requests
 from bs4 import BeautifulSoup
 from PIL import Image
 
-from .config import UPLOAD_DIR
+from .config import UPLOAD_DIR, GOOGLE_SEARCH_API_KEY, GOOGLE_SEARCH_CX
 from . import db
 
 UA = ('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
@@ -125,6 +125,51 @@ def same_story_images(title, exclude_url='', limit=6):
     return out[:limit]
 
 
+_GOOGLE_COOKIES = {'CONSENT': 'YES+cb.20240101-00-p0.es+FX+000',
+                   'SOCS': 'CAESHAgBEhJnd3NfMjAyNDAxMDEtMF9SQzIaAmVzIAEaBgiA_LqsBg'}
+
+
+def google_images(query, limit=16):
+    """Google Imágenes. Con GOOGLE_SEARCH_API_KEY y GOOGLE_SEARCH_CX usa la API oficial;
+    si no, lee la página de resultados de Google."""
+    out = []
+    if GOOGLE_SEARCH_API_KEY and GOOGLE_SEARCH_CX:
+        try:
+            for start in (1, 11):
+                r = requests.get('https://www.googleapis.com/customsearch/v1', timeout=20, params={
+                    'key': GOOGLE_SEARCH_API_KEY, 'cx': GOOGLE_SEARCH_CX, 'q': query, 'searchType': 'image',
+                    'num': 10, 'start': start, 'gl': 'es', 'hl': 'es', 'safe': 'active', 'imgSize': 'large'})
+                r.raise_for_status()
+                for it in r.json().get('items', []) or []:
+                    u = it.get('link') or ''
+                    if u.startswith('http') and not _JUNK.search(u):
+                        out.append(_item(u, (it.get('image') or {}).get('contextLink') or u, 'google'))
+                if len(out) >= limit:
+                    break
+            if out:
+                return _unique(out)[:limit]
+        except Exception:
+            pass
+    try:
+        r = requests.get('https://www.google.com/search', timeout=20, cookies=_GOOGLE_COOKIES,
+                         params={'q': query, 'tbm': 'isch', 'hl': 'es', 'gl': 'es', 'safe': 'active'},
+                         headers=HEADERS)
+        text = r.text.replace('\\u003d', '=').replace('\\u0026', '&')
+        # Cada resultado trae la URL original con su tamaño: ["https://...jpg",alto,ancho]
+        for m in re.finditer(r'\["(https?://[^"\]]+?)",(\d{2,5}),(\d{2,5})\]', text):
+            u = m.group(1)
+            if 'gstatic.com' in u or 'google.' in _host(u) or _JUNK.search(u):
+                continue
+            if int(m.group(2)) < 300 or int(m.group(3)) < 300:
+                continue
+            out.append(_item(u, u, 'google'))
+            if len(out) >= limit:
+                break
+    except Exception:
+        pass
+    return _unique(out)[:limit]
+
+
 def web_images(query, limit=10):
     """Búsqueda de imágenes en internet (Bing Imágenes)."""
     out = []
@@ -188,19 +233,17 @@ def search_real_photos(candidate, section=''):
     url = candidate.get('url', '')
     real = resolve_google_news(url)
     title = re.sub(r'\s+[-–|]\s+[^-–|]{3,40}$', '', candidate.get('title') or '')
-    found = page_images(real)
-    found += same_story_images(title, exclude_url=real)
-    words = keywords(title, 6)
-    query = ' '.join(words) + ' La Línea de la Concepción' if words else 'La Línea de la Concepción ' + (section or '')
-    found += web_images(query)
-    if len(found) < 6:
-        found += commons_images(' '.join(words[:3]) + ' La Línea' if words else 'La Línea de la Concepción')
+    found = page_images(real, limit=3)  # la foto de la propia noticia, primero
+    words = keywords(title, 7)
+    query = ' '.join(words) + ' La Línea' if words else 'La Línea de la Concepción ' + (section or '')
+    google = google_images(query)
+    found += google or web_images(query)
     return _unique(found)[:20]
 
 
 def search_photos(query):
-    """Búsqueda libre desde el panel."""
-    return _unique(web_images(query, limit=14) + commons_images(query, limit=6))[:20]
+    """Búsqueda libre desde el panel: Google Imágenes (Bing solo si Google no responde)."""
+    return (google_images(query, limit=20) or web_images(query, limit=20))[:20]
 
 
 def download_image(url, min_width=500, min_height=350):

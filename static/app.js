@@ -60,27 +60,30 @@ window.onhashchange = () => { const h = location.hash.slice(1); if (h && h !== c
 function currentHash() { return view === 'editor' ? `editor/${editorId}` : view }
 function go(target, fromHash) {
   const [v, id] = target.split('/');
-  view = ['news', 'agenda', 'drafts', 'settings', 'editor'].includes(v) ? v : 'news';
+  view = ['news', 'social', 'agenda', 'drafts', 'settings', 'editor'].includes(v) ? v : 'news';
   editorId = view === 'editor' ? Number(id) : null;
   if (!fromHash) location.hash = currentHash();
   document.querySelectorAll('.tabs button').forEach(b => b.classList.toggle('on', b.dataset.view === (view === 'editor' ? 'drafts' : view)));
-  $('#title').textContent = { news: 'Noticias', agenda: 'Agenda', drafts: 'Redacción', settings: 'Ajustes', editor: 'Noticia' }[view];
+  $('#title').textContent = { news: 'Noticias', social: 'Redes', agenda: 'Agenda', drafts: 'Redacción', settings: 'Ajustes', editor: 'Noticia' }[view];
   $('#backBtn').hidden = view !== 'editor';
-  $('#scanBtn').hidden = view !== 'news';
+  $('#scanBtn').hidden = !['news', 'social'].includes(view);
+  $('#scanBtn').textContent = view === 'social' ? 'Investigar redes' : 'Buscar noticias';
   render();
 }
 async function render() {
   blobUrls.forEach(URL.revokeObjectURL); blobUrls = [];
   const v = $('#view'); v.innerHTML = '<p class="empty">Cargando…</p>'; window.scrollTo(0, 0);
-  try { await ({ news, agenda, drafts, settings, editor }[view])(v) }
+  try { await ({ news, social: socialView, agenda, drafts, settings, editor }[view])(v) }
   catch (e) { if (token) v.innerHTML = `<p class="empty">${esc(e.message)}</p>` }
 }
 
 /* ---------- Noticias ---------- */
 $('#scanBtn').onclick = async () => {
-  const b = $('#scanBtn'); b.disabled = true; b.textContent = 'Buscando…';
-  try { const r = await api('/api/scan', { method: 'POST' }); toast(r.busy ? 'Ya hay una búsqueda en marcha' : `${r.added.length} noticias nuevas`); if (view === 'news') render() }
-  catch (e) { toast(e.message) } finally { b.disabled = false; b.textContent = 'Buscar noticias' }
+  const b = $('#scanBtn'), social = view === 'social'; b.disabled = true; b.textContent = social ? 'Investigando…' : 'Buscando…';
+  try {
+    const r = await api(social ? '/api/social/scan' : '/api/scan', { method: 'POST' });
+    toast(r.busy ? 'Ya hay una búsqueda en marcha' : `${r.added.length} ${social ? 'publicaciones' : 'noticias'} nuevas`); render()
+  } catch (e) { toast(e.message) } finally { b.disabled = false; b.textContent = social ? 'Investigar redes' : 'Buscar noticias' }
 };
 let newsCache = [];
 async function news(v) {
@@ -104,7 +107,7 @@ function card(n) {
   const prio = PRIO_LABEL[n.editorial_priority] ? n.editorial_priority : '';
   const sp = special(n);
   return `<article class="item" id="c-${n.id}">
-    <div class="meta"><span class="src">${esc(n.outlet || n.source_name || host(n.url))}</span><span>${ago(n.date_iso)}</span>${sp ? `<span class="flag">${sp}</span>` : ''}</div>
+    <div class="meta">${n.social_type ? `<span class="kind ${n.social_type}">${n.social_type === 'queja' ? 'Queja' : 'Noticia'}</span>` : ''}<span class="src">${esc(n.outlet || n.source_name || host(n.url))}</span><span>${ago(n.date_iso)}</span>${sp ? `<span class="flag">${sp}</span>` : ''}</div>
     <h3><a href="${safeUrl(n.url)}" target="_blank" rel="noopener noreferrer">${esc(n.title)}</a></h3>
     ${n.local_angle ? `<p class="angle">${esc(n.local_angle)}</p>` : ''}
     <div class="chips">${PRIO.map(([k, t]) => `<button class="chip ${prio === k ? 'on' : ''}" onclick="setPriority(${n.id},'${k}')">${t}</button>`).join('')}<button class="chip no" onclick="setPriority(${n.id},'no_interest')" aria-label="No interesa" title="No interesa">✕</button></div>
@@ -120,7 +123,7 @@ window.setPriority = async (id, p) => {
   try {
     await api(`/api/candidates/${id}/triage`, { method: 'POST', body: JSON.stringify({ priority: p }) });
     const n = newsCache.find(x => x.id === id);
-    if (p === 'no_interest') { newsCache = newsCache.filter(x => x.id !== id); drawNews(); toast('Descartada'); return }
+    if (p === 'no_interest') { newsCache = newsCache.filter(x => x.id !== id); const el = $(`#c-${id}`); if (el) el.remove(); toast('Descartada'); return }
     if (n) { n.editorial_priority = p; if (!n.article_id) n.work_state = 'queued'; $(`#c-${id}`).outerHTML = card(n); if (!n.article_id) poll(id) }
   } catch (e) { toast(e.message) }
 };
@@ -139,12 +142,38 @@ async function poll(id) {
       if (st.state === 'error') { if (s) s.innerHTML = `<span class="error">${esc(st.error?.detail || st.error?.message || 'No se pudo redactar')}</span><button class="btn small" onclick="writeNow(${id})">Reintentar</button>`; return }
       if (st.state === 'idle') { if (s) s.innerHTML = stateLine({}); return }
       if (s) s.innerHTML = `<span class="spin"></span><span class="muted">${esc(st.step_text || 'Redactando…')}</span>`;
-      if (!s && view !== 'news') return;
+      if (!s && !['news', 'social'].includes(view)) return;
       await wait(4000);
     }
   } catch { } finally { delete polling[id] }
 }
 function done(id, aid) { const n = newsCache.find(x => x.id === id); if (n) { n.article_id = aid; n.work_state = 'done' } const s = $(`#s-${id}`); if (s) s.innerHTML = stateLine({ article_id: aid, planned_at: n?.planned_at }) }
+
+/* ---------- Redes ---------- */
+let socialKind = 'todo', socialPage = 'Todas';
+async function socialView(v) {
+  const data = await api('/api/social');
+  newsCache = data.items;
+  const draw = () => {
+    const byKind = newsCache.filter(n => socialKind === 'todo' || n.social_type === socialKind);
+    const pages = ['Todas', ...new Set(byKind.map(n => n.outlet || n.source_name))];
+    if (!pages.includes(socialPage)) socialPage = 'Todas';
+    const items = byKind.filter(n => socialPage === 'Todas' || (n.outlet || n.source_name) === socialPage);
+    const n = k => newsCache.filter(x => k === 'todo' || x.social_type === k).length;
+    v.innerHTML = `<div class="filters"><div class="chips">${[['todo', 'Todo'], ['queja', 'Quejas'], ['noticia', 'Noticias']].map(([k, t]) => `<button class="chip ${k === socialKind ? 'on' : ''}" data-k="${k}">${t} <b>${n(k)}</b></button>`).join('')}</div>
+      <div class="chips scroll">${pages.map(p => `<button class="chip ${p === socialPage ? 'on' : ''}" data-p="${esc(p)}">${esc(p)}</button>`).join('')}</div></div>
+      ${items.length ? `<div class="list">${items.map(card).join('')}</div>` : '<p class="empty">No hay publicaciones recientes. Pulsa «Investigar redes».</p>'}
+      <section class="panel" style="margin-top:16px"><h2>Páginas y grupos vigilados</h2>
+        <p class="muted small">Solo se ve lo público: grupos cerrados no se pueden leer sin permiso de Facebook.</p>
+        <div class="sources">${data.watched.map(s => `<div class="srcrow"><label class="switch"><input type="checkbox" ${s.active ? 'checked' : ''} onchange="toggleSource(${s.id})"> ${esc(s.name)}</label><a class="small" href="${safeUrl(s.url)}" target="_blank" rel="noopener">Abrir</a></div>`).join('') || '<p class="muted small">Ninguna todavía.</p>'}</div>
+        <form id="addFb" class="stack"><input name="name" placeholder="Nombre (p. ej. Quejas La Línea)" required><input name="url" type="url" placeholder="https://www.facebook.com/groups/…" required><button class="btn small">Vigilar</button></form></section>`;
+    v.querySelectorAll('[data-k]').forEach(b => b.onclick = () => { socialKind = b.dataset.k; draw() });
+    v.querySelectorAll('[data-p]').forEach(b => b.onclick = () => { socialPage = b.dataset.p; draw() });
+    $('#addFb').onsubmit = async e => { e.preventDefault(); const d = Object.fromEntries(new FormData(e.target)); try { await api('/api/sources', { method: 'POST', body: JSON.stringify({ ...d, kind: 'social', priority: 60, local_scope: true }) }); toast('Ahora se vigila'); render() } catch (er) { toast(er.message) } };
+    items.forEach(x => { if ((x.work_state === 'queued' || x.work_state === 'working') && !x.article_id) poll(x.id) });
+  };
+  draw();
+}
 
 /* ---------- Agenda ---------- */
 async function agenda(v) {
@@ -192,6 +221,7 @@ async function editor(v) {
     </section>
     <section class="fields">
       <div class="meta"><span class="st st-${a.status}">${STATUS[a.status] || a.status}</span>${a.source_url ? `<a href="${safeUrl(a.source_url)}" target="_blank" rel="noopener noreferrer">Fuente: ${esc(a.outlet || a.source_name || host(a.source_url))}</a>` : ''}${published && a.publish_url ? `<a href="${safeUrl(a.publish_url)}" target="_blank" rel="noopener">Ver en la web</a>` : ''}</div>
+      ${a.focus ? `<p class="focus"><b>Enfoque:</b> ${esc(a.focus)}</p>` : ''}
       <label>Sección<select id="f-section">${SECTIONS.map(s => `<option ${s[0] === a.section ? 'selected' : ''}>${s[0]}</option>`).join('')}</select></label>
       <label>Titular<textarea id="f-headline" rows="2">${esc(a.headline)}</textarea></label>
       ${options.length ? `<details class="alts"><summary>7 titulares alternativos</summary>${options.map((h, i) => `<button class="alt" data-i="${i}">${esc(h)}</button>`).join('')}<button class="link" id="moreHeads">Proponer otros 7</button></details>` : `<button class="link" id="moreHeads">Proponer 7 titulares</button>`}

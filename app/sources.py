@@ -232,8 +232,9 @@ def read_source(source):
         host = (target.hostname or '').lower()
         if host not in ('facebook.com', 'www.facebook.com', 'instagram.com', 'www.instagram.com'):
             raise ValueError('Indica una página pública de Facebook o Instagram')
-        account = (target.path or '/').strip('/').split('/')[0]
-        if not account: raise ValueError('Indica el nombre de la página')
+        parts = (target.path or '/').strip('/').split('/')
+        account = '/'.join(parts[:2]) if parts[0] == 'groups' else parts[0]
+        if not account: raise ValueError('Indica el nombre de la página o grupo')
         query = f'site:{host}/{account} "La Línea de la Concepción" when:7d'
         feed = 'https://news.google.com/rss/search?q=' + quote(query) + '&hl=es&gl=ES&ceid=ES:es'
         return parse_rss({'url': feed})  # Coverage depends on public search indexing.

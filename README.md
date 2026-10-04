@@ -24,6 +24,12 @@ El backend FastAPI corre en Railway y el panel editorial de Lovable consume la m
 2. Publica el panel como aplicación privada con pantalla de contraseña. Añade **solo su origen exacto** (`https://<tu-proyecto>.lovable.app`) a `CORS_ORIGINS` en Railway. Si usas dominio propio, añádelo separado por coma. Redepliega si Railway no aplica las variables automáticamente.
 3. Accede al panel, prueba Dashboard y Revisión y comprueba **Plantillas → Canva**. Los PNG privados solo existen tras exportar desde Canva y se descargan mediante `fetch` con token; un enlace `<img src="https://backend/media/render/...">` directo devolverá 401.
 
+## Novedades 3.1
+
+- **Estilo de redacción**: la IA redacta siguiendo `app/estilo_redaccion.md` (guía de InfoLinense). Se puede editar ese archivo para afinar el estilo. Cada borrador guarda su «enfoque principal».
+- **Fotos de Google**: la foto de la propia noticia y después Google Imágenes (sin Wikimedia). Para más fiabilidad, añade `GOOGLE_SEARCH_API_KEY` y `GOOGLE_SEARCH_CX` (Programmable Search Engine con búsqueda de imágenes); sin ellas se lee la página de resultados de Google y, si falla, Bing.
+- **Panel Redes**: quejas vecinales y noticias públicas de páginas y grupos de Facebook de La Línea (indexadas por Google en los últimos 3 días y, si ChatGPT tiene búsqueda web, un barrido extra). Se clasifican en Quejas y Noticias y se pueden añadir páginas y grupos a vigilar. Los grupos cerrados no son accesibles.
+
 ## Novedades 3.0
 
 - **Redacta ChatGPT**: con `AI_PROVIDER=auto` el principal es OpenAI; Claude solo entra si ChatGPT falla.

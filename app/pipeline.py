@@ -64,8 +64,8 @@ def draft_candidate(cid):
         db.exec_('DELETE FROM articles WHERE id=?', (old['id'],))
     aid = db.exec_('''INSERT INTO articles(candidate_id,section,headline,subtitle,body,social_text,graphic_summary,research_notes,sources_json,
         image_url,image_source,image_license,image_local,image_kind,image_author,image_candidates_json,ai_image_suggestion,
-        carousel_suitable,carousel_reason,headline_options_json,missing_data_json,ai_provider,template_id,workflow,status,image_headline)
-      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''', (
+        carousel_suitable,carousel_reason,headline_options_json,missing_data_json,ai_provider,template_id,workflow,status,image_headline,focus)
+      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''', (
         cid, draft.get('section', 'CIUDAD'), draft.get('headline', ''), draft.get('subtitle', ''), body, body,
         (draft.get('graphic_summary') or '')[:240],
         json.dumps(research_data, ensure_ascii=False), json.dumps((research_data or {}).get('sources', []), ensure_ascii=False),
@@ -76,7 +76,7 @@ def draft_candidate(cid):
         str(draft.get('carousel_reason') or '')[:500],
         json.dumps(draft.get('headline_options') or [], ensure_ascii=False),
         json.dumps(draft.get('missing_data') or [], ensure_ascii=False),
-        draft.get('provider') or '', None, workflow, 'draft', draft.get('image_headline') or ''))
+        draft.get('provider') or '', None, workflow, 'draft', draft.get('image_headline') or '', str(draft.get('focus') or '')[:300]))
     db.exec_('UPDATE candidates SET status=?,section=? WHERE id=?', ('draft', draft.get('section', 'CIUDAD'), cid))
     db.log('pipeline', f'Candidata {cid} -> borrador')
     return aid

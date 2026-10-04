@@ -255,3 +255,27 @@ class WebPublish(unittest.TestCase):
         self.assertEqual(sent['json']['slug'], 'mas-de-550-toneladas-de-alga-7')
         self.assertTrue(sent['json']['image_base64'])
         self.assertEqual(sent['json']['body_html'], '<p>Uno.</p><p>Dos.</p>')
+
+
+class SocialPanel(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        db.init_db()
+
+    def test_facebook_complaints_are_found_and_classified(self):
+        from app import social
+        html = '''<div><div><a href="/url?q=https://www.facebook.com/groups/lalineavecinos/posts/123&sa=U"><h3>Vecinos de San Bernardo denuncian baches y suciedad en La Línea</h3></a>
+                  <span>Hace 5 horas · Los vecinos se quejan de que nadie arregla los baches de la calle desde hace meses en La Línea.</span></div></div>
+                  <div><div><a href="https://www.facebook.com/aytolalinea/posts/9"><h3>El Ayuntamiento de La Línea abre la piscina cubierta</h3></a><span>Horario de invierno en La Línea a partir del lunes y nuevas actividades.</span></div></div>
+                  <a href="https://otra.web/x"><h3>Otra cosa</h3></a>'''
+
+        class R:
+            text = html
+        with patch.object(social.requests, 'get', return_value=R()), patch.object(social.ai if hasattr(social, 'ai') else ai, 'provider_chain', return_value=[]):
+            result = social.scan()
+        rows = {r['url']: r for r in social.items()}
+        self.assertTrue(result['added'])
+        group_post = rows['https://www.facebook.com/groups/lalineavecinos/posts/123']
+        self.assertEqual(group_post['social_type'], 'queja')
+        self.assertEqual(rows['https://www.facebook.com/aytolalinea/posts/9']['social_type'], 'noticia')
+        self.assertNotIn('https://otra.web/x', rows)

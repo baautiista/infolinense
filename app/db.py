@@ -89,7 +89,8 @@ def init_db():
         'work_error':'TEXT',
         'work_updated_at':'TEXT',
         'outlet':'TEXT',
-        'scope':'TEXT'
+        'scope':'TEXT',
+        'social_type':'TEXT'
     }.items():
         if name not in existing_candidates: c.execute(f'ALTER TABLE candidates ADD COLUMN {name} {ddl}')
     existing_articles={r[1] for r in c.execute('PRAGMA table_info(articles)')}
@@ -102,7 +103,8 @@ def init_db():
         'ai_provider':'TEXT',
         'image_kind':'TEXT',
         'image_author':'TEXT',
-        'image_headline':'TEXT'
+        'image_headline':'TEXT',
+        'focus':'TEXT'
     }.items():
         if name not in existing_articles: c.execute(f'ALTER TABLE articles ADD COLUMN {name} {ddl}')
     if 'content_hash' not in {r[1] for r in c.execute('PRAGMA table_info(canva_designs)')}:

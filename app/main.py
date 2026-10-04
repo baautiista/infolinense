@@ -13,7 +13,7 @@ from . import db, sources, pipeline, publishers, photos, canva, ai, planner, lay
 from .auth import login, require_auth
 from .config import BASE_DIR, RENDER_DIR, UPLOAD_DIR, SCAN_INTERVAL_MINUTES, AUTO_PIPELINE, OPENAI_API_KEY, ADMIN_PASSWORD, JWT_SECRET, PUBLISH_MODE, CORS_ORIGINS, PUBLIC_BASE_URL, AUTO_PUBLISH
 
-VERSION='3.1.0'
+VERSION='3.2.0'
 app=FastAPI(title='InfoLinense Desk',version=VERSION)
 app.add_middleware(CORSMiddleware,allow_origins=CORS_ORIGINS,allow_credentials=False,allow_methods=['*'],allow_headers=['Authorization','Content-Type'])
 db.init_db()
@@ -488,6 +488,29 @@ def choose_photo(aid:int,p:PhotoChoice):
              (url,item.get('source') or p.source,item.get('license') or p.license,item.get('author') or p.author,item.get('kind') or '',local,json.dumps(allowed,ensure_ascii=False),aid))
     db.exec_('UPDATE canva_designs SET exported=0 WHERE article_id=?',(aid,))
     return {'ok':True}
+
+@app.post('/api/articles/{aid}/photo/auto',dependencies=[Depends(require_auth)])
+def auto_photo(aid:int):
+    """Busca fotos en internet y pone automáticamente la primera que se pueda usar."""
+    a=db.row('SELECT a.*,c.title source_title,c.url source_url,c.source_id FROM articles a LEFT JOIN candidates c ON c.id=a.candidate_id WHERE a.id=?',(aid,))
+    if not a: raise HTTPException(404)
+    cand={'title':a.get('headline') or a.get('source_title'),'url':a.get('source_url')}
+    imgs=photos.search_real_photos(cand,a.get('section') or '')
+    try: previous=json.loads(a.get('image_candidates_json') or '[]')
+    except Exception: previous=[]
+    known={x.get('url') for x in imgs}
+    imgs=imgs+[x for x in previous if x.get('url') not in known and not str(x.get('url','')).startswith('upload:')]
+    chosen,local=photos.first_usable(imgs)
+    db.exec_('UPDATE articles SET image_candidates_json=? WHERE id=?',(json.dumps(imgs,ensure_ascii=False),aid))
+    if not chosen: raise HTTPException(404,'No se encontró ninguna foto en internet. Prueba con otra búsqueda o sube una.')
+    db.exec_("UPDATE articles SET image_url=?,image_source=?,image_license='',image_author=?,image_kind=?,image_local=?,render_path=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=?",
+             (chosen['url'],chosen.get('source') or '',chosen.get('author') or '',chosen.get('kind') or '',local,aid))
+    db.exec_('UPDATE canva_designs SET exported=0 WHERE article_id=?',(aid,))
+    return {'ok':True,'photo':chosen,'found':len(imgs)}
+
+@app.get('/api/photos/check',dependencies=[Depends(require_auth)])
+def photos_check():
+    return {'providers':photos.providers_check()}
 
 @app.post('/api/articles/{aid}/photo/upload',dependencies=[Depends(require_auth)])
 async def upload_article_photo(aid:int,file:UploadFile=File(...),license:str=Form(''),source:str=Form('Fotografía propia'),author:str=Form('')):

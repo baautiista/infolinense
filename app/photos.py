@@ -170,6 +170,59 @@ def google_images(query, limit=16):
     return _unique(out)[:limit]
 
 
+def duckduckgo_images(query, limit=20):
+    """DuckDuckGo Imágenes (resultados de toda la web, sin clave)."""
+    out = []
+    try:
+        sess = requests.Session()
+        sess.headers.update(HEADERS)
+        page = sess.get('https://duckduckgo.com/', params={'q': query, 'iax': 'images', 'ia': 'images'}, timeout=15)
+        m = re.search(r'vqd=["\']?([\d-]+)["\'&]', page.text) or re.search(r'"vqd":"([\d-]+)"', page.text)
+        if not m:
+            return out
+        r = sess.get('https://duckduckgo.com/i.js', timeout=15, headers={'Referer': 'https://duckduckgo.com/', 'Accept': 'application/json'},
+                     params={'l': 'es-es', 'o': 'json', 'q': query, 'vqd': m.group(1), 'f': ',,,,,', 'p': '1'})
+        for it in (r.json().get('results') or []):
+            u = it.get('image') or ''
+            if not u.startswith('http') or _JUNK.search(u):
+                continue
+            if int(it.get('width') or 0) and (int(it.get('width') or 0) < 500 or int(it.get('height') or 0) < 350):
+                continue
+            out.append(_item(u, it.get('url') or u, 'internet'))
+            if len(out) >= limit:
+                break
+    except Exception:
+        pass
+    return out
+
+
+def internet_images(query, limit=20):
+    """Busca fotos en toda la web: API de Google (si hay clave), DuckDuckGo, Bing y Google."""
+    found = []
+    for provider in (lambda q: google_images(q, limit) if GOOGLE_SEARCH_API_KEY else [], duckduckgo_images, web_images,
+                     lambda q: [] if GOOGLE_SEARCH_API_KEY else google_images(q, limit)):
+        try:
+            found += provider(query)
+        except Exception:
+            pass
+        if len(_unique(found)) >= limit:
+            break
+    return _unique(found)[:limit]
+
+
+def providers_check(query='La Línea de la Concepción playa'):
+    """Cuántas fotos devuelve cada buscador desde el servidor (para Ajustes)."""
+    out = []
+    for name, fn in (('Google (API)', lambda q: google_images(q) if GOOGLE_SEARCH_API_KEY else None), ('DuckDuckGo', duckduckgo_images),
+                     ('Bing', web_images), ('Google (página)', lambda q: [] if GOOGLE_SEARCH_API_KEY else google_images(q))):
+        try:
+            res = fn(query)
+            out.append({'name': name, 'count': None if res is None else len(res)})
+        except Exception as exc:
+            out.append({'name': name, 'count': 0, 'error': str(exc)[:120]})
+    return out
+
+
 def web_images(query, limit=10):
     """Búsqueda de imágenes en internet (Bing Imágenes)."""
     out = []
@@ -236,14 +289,15 @@ def search_real_photos(candidate, section=''):
     found = page_images(real, limit=3)  # la foto de la propia noticia, primero
     words = keywords(title, 7)
     query = ' '.join(words) + ' La Línea' if words else 'La Línea de la Concepción ' + (section or '')
-    google = google_images(query)
-    found += google or web_images(query)
-    return _unique(found)[:20]
+    found += internet_images(query)
+    if len(found) < 6 and len(words) > 3:
+        found += internet_images(' '.join(words[:3]) + ' La Línea de la Concepción')  # búsqueda más amplia
+    return _unique(found)[:24]
 
 
 def search_photos(query):
-    """Búsqueda libre desde el panel: Google Imágenes (Bing solo si Google no responde)."""
-    return (google_images(query, limit=20) or web_images(query, limit=20))[:20]
+    """Búsqueda libre desde el panel (toda la web)."""
+    return internet_images(query, limit=24)
 
 
 def download_image(url, min_width=500, min_height=350):
@@ -259,7 +313,7 @@ def download_image(url, min_width=500, min_height=350):
     return str(path)
 
 
-def first_usable(candidates, limit=6):
+def first_usable(candidates, limit=12):
     """Descarga la primera foto válida (tamaño suficiente). Devuelve (item, ruta) o (None, '')."""
     for item in candidates[:limit]:
         try:

@@ -278,7 +278,7 @@ def ask_json(instructions, prompt, web=False, web_required=False, max_tokens=400
 
 SYSTEM = '''Eres el redactor jefe de InfoLinense, medio digital de La Línea de la Concepción (Cádiz). Escribes en español claro, cercano y periodístico para vecinos de La Línea.
 Reglas que nunca rompes:
-- Solo afirmas lo que consta en las fuentes facilitadas. No inventas datos, fechas, cifras, nombres, citas ni declaraciones. Si algo no consta, lo dices.
+- Solo afirmas lo que consta en las fuentes facilitadas. No inventas datos, fechas, cifras, nombres, citas ni declaraciones. Lo que no se sabe, simplemente no se menciona.
 - Atribuyes cada hecho a su fuente (Ayuntamiento, BOP, el medio, etc.).
 - No copias frases ni el tono de la nota de prensa: nada de autobombo institucional, adjetivos de gabinete ni fórmulas como «apuesta decidida» o «en aras de».
 - Sin emojis, sin exclamaciones, sin sensacionalismo ni muletillas de IA.
@@ -307,16 +307,12 @@ def research(candidate, source_text=''):
     """Gather verifiable facts. Uses web search only where enabled; otherwise analyses the source text."""
     if not AI_ENABLED:
         return _source_research(candidate, source_text)
-    prompt = f'''Prepara la documentación de una posible noticia para vecinos de La Línea de la Concepción. No redactes todavía la noticia.
-Si puedes buscar en internet, contrasta el tema con fuentes públicas actuales (prioriza documentos oficiales: Ayuntamiento, BOP Cádiz, BOJA, BOE, plataformas de contratación) y añade solo fuentes que hayas consultado de verdad, con su URL. Si no puedes buscar, trabaja solo con el texto fuente.
+    prompt = f'''Reúne los hechos de una posible noticia para vecinos de La Línea de la Concepción. No redactes todavía la noticia.
+Si puedes buscar en internet, completa el tema con información pública actual (Ayuntamiento, BOP, BOJA, BOE, contratación, prensa) y antecedentes locales que ayuden a entenderlo.
 Devuelve JSON con estas claves:
-- facts: lista de hechos comprobados en las fuentes, cada uno con su atribución («según el BOP…»).
-- what, where, when, who_affected: una frase cada una; «No consta en las fuentes» si falta.
-- context: lista breve de contexto local comprobable.
-- missing: lista de datos importantes que no constan y habría que confirmar (plazos, importes, horarios, responsables…).
-- sources: lista de objetos {{name, url}}; incluye siempre la fuente original.
-- caveats: avisos para el editor.
-- is_press_release: true si el texto fuente es una nota de prensa institucional.
+- facts: lista de hechos concretos (qué, dónde, cuándo, cuánto cuesta, cuánto tarda, empresa, a quién afecta, qué paso administrativo es). Solo lo que se sabe; no anotes lo que falta.
+- context: lista de antecedentes y contexto local útil (proyectos anteriores, calles, barrios, obras cercanas, problemas históricos).
+- sources: lista de objetos {{name, url}} consultados; incluye siempre la fuente original.
 TEMA: {candidate.get('title', '')}
 FUENTE ORIGINAL: {candidate.get('source_name', '')} · {candidate.get('url', '')}
 FECHA DE LA FUENTE: {candidate.get('published_at') or 'no consta'}
@@ -332,9 +328,39 @@ TEXTO FUENTE: {(source_text or '')[:10000]}'''
     data['sources'] = sources
     data['provider'] = provider
     data['web_search'] = used_web
-    if not used_web:
-        data.setdefault('caveats', []).append('Investigación hecha solo con la fuente original (búsqueda web desactivada). Contrasta antes de publicar.')
     return data
+
+
+def _facts_for_draft(research_json):
+    """Solo hechos y contexto: nada de avisos ni «datos que faltan», para que no acaben en el texto."""
+    try:
+        data = json.loads(research_json) if isinstance(research_json, str) else (research_json or {})
+    except Exception:
+        return str(research_json or '')[:8000]
+    if not isinstance(data, dict):
+        return ''
+    keep = {k: data.get(k) for k in ('facts', 'context', 'what', 'where', 'when', 'who_affected') if data.get(k)}
+    text = json.dumps(keep, ensure_ascii=False)
+    return re.sub(r'[^"]*(no consta|se desconoce|no se especifica|no se indica)[^"]*', '', text, flags=re.I)
+
+
+# Frases de «lo que no se sabe» o de la fuente que no deben aparecer en una noticia publicada.
+_META = re.compile(r'(no consta|no constan|se desconoce|desconocemos|no se ha (podido )?(encontrar|confirmar|precisar|detallar|especificar|concretar)|'
+                   r'no se especific|no se detall|no se indic|no se precis|no ha trascendido|no han trascendido|sin que (se|conste)|'
+                   r'(la|las) fuentes? (consultada|disponible|original)|el documento no|la documentación|según la documentación|'
+                   r'falta(n)? (por )?confirmar|queda(n)? por confirmar|está por confirmar|no se ha hecho público|no se ha informado|'
+                   r'la nota (de prensa )?no|la información disponible|no se aporta|no aporta(n)? (más )?datos|sin más detalles)', re.I)
+
+
+def clean_meta(text):
+    """Quita frases sobre datos que faltan o sobre las fuentes («no consta», «se desconoce dónde…»)."""
+    out = []
+    for para in re.split(r'\n\s*\n', str(text or '')):
+        sentences = re.split(r'(?<=[.!?])\s+', para.strip())
+        kept = [x for x in sentences if x and not _META.search(x)]
+        if kept:
+            out.append(' '.join(kept))
+    return '\n\n'.join(out).strip()
 
 
 def _trim_body(text, limit=2200):
@@ -373,6 +399,8 @@ def draft(candidate, source_text='', research='', quick=False):
     prompt = f'''Redacta la noticia siguiendo al pie de la letra la guía de estilo de InfoLinense.
 Usa SOLO la información de las fuentes de abajo. Formato breve para web y redes: el texto ronda como máximo 2.200 caracteres; no lo alargues para llegar a esa cifra.
 Párrafos de 2 a 4 frases separados por una línea en blanco.
+PROHIBIDO en titular, subtítulo y texto: hablar de lo que no se sabe o falta («no consta», «se desconoce», «no se ha encontrado», «no se especifica», «falta confirmar»), hablar de la fuente o del documento («según la documentación», «la nota no detalla») o pedir comprobaciones. Si un dato no está, no lo menciones y cuenta la noticia con lo que sí se sabe. Atribuye solo cuando lo haría un periodista («según el Ayuntamiento», «recoge el BOP»).
+Céntrate en los hechos y en lo que cambia para la ciudad, no en tecnicismos ni en las fuentes.
 {'Noticia de menor peso: pieza corta.' if quick else ''}
 
 CANDIDATA: {candidate.get('title', '')}
@@ -380,7 +408,7 @@ FUENTE: {candidate.get('source_name', '')} · {candidate.get('url', '')}
 FECHA DE LA FUENTE: {candidate.get('published_at') or 'no consta'}
 EXTRACTO: {candidate.get('excerpt', '')[:1500]}
 TEXTO FUENTE: {(source_text or '')[:10000]}
-DOCUMENTACIÓN: {(research or '')[:8000]}
+HECHOS Y CONTEXTO: {_facts_for_draft(research)[:8000]}
 
 Devuelve la entrega (SECCIÓN, TITULAR, SUBTÍTULO, TEXTO) como JSON válido, sin markdown, con exactamente estas claves:
 focus (ENFOQUE PRINCIPAL: la verdadera noticia en una frase),
@@ -389,7 +417,6 @@ headline (TITULAR: breve, directo, cuenta la noticia, máximo 110 caracteres),
 subtitle (SUBTÍTULO: aporta información nueva, nunca repite el titular, máximo 260 caracteres),
 body (TEXTO: la noticia completa, máximo aproximado 2.200 caracteres),
 headline_options (lista de EXACTAMENTE 7 titulares alternativos con los mismos criterios, distintos entre sí y del titular principal),
-missing_data (lista de datos que faltan y conviene confirmar),
 image_headline (titular corto para la imagen: máximo 70 caracteres, sin perder el dato clave),
 graphic_summary (máximo 140 caracteres, una o dos frases para la imagen),
 carousel_suitable (true solo si la noticia explica varios pasos, cifras, requisitos o consecuencias que se entienden mejor en 3-6 diapositivas),
@@ -398,7 +425,10 @@ ai_image_suggestion (qué foto real buscar; no se genera ninguna imagen).'''
     data, provider, _ = ask_json(style_guide(), prompt, max_tokens=5000)
     if not isinstance(data, dict) or not data.get('headline') or not data.get('body'):
         raise AIProviderError('La IA devolvió un borrador incompleto. Reintenta.', provider, kind='empty')
+    for key in ('headline', 'subtitle', 'body'):
+        data[key] = clean_meta(data.get(key)) or data.get(key) or ''
     data['body'] = _trim_body(data.get('body'))
+    data['missing_data'] = []
     data['social_text'] = data['body']
     data['headline_options'] = _clean_headlines(data.get('headline_options'), data.get('headline'))[:7]
     if len(data['headline_options']) != 7:

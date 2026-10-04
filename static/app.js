@@ -229,8 +229,6 @@ async function editor(v) {
       <label>Entradilla<textarea id="f-subtitle" rows="3">${esc(a.subtitle)}</textarea></label>
       <label>Texto <span class="muted" id="count"></span><textarea id="f-body" rows="16" maxlength="2200">${esc(a.body)}</textarea></label>
       <label>Resumen de la imagen<textarea id="f-graphic_summary" rows="2" maxlength="150">${esc(a.graphic_summary)}</textarea></label>
-      ${missing.length ? `<div class="note"><b>Antes de publicar confirma:</b><ul>${missing.map(m => `<li>${esc(typeof m === 'string' ? m : JSON.stringify(m))}</li>`).join('')}</ul></div>` : ''}
-      ${srcs.length ? `<p class="muted small">Fuentes: ${srcs.map(s => `<a href="${safeUrl(s.url)}" target="_blank" rel="noopener noreferrer">${esc(s.name || host(s.url))}</a>`).join(', ')}</p>` : ''}
       <details class="alts" id="carousel"><summary>${a.carousel_suitable ? 'Carrusel recomendado' : 'Carrusel'}</summary><div id="carouselBox"><p class="muted small">${esc(a.carousel_reason || '')}</p><button class="btn small" onclick="carousel()">Preparar diapositivas</button></div></details>
     </section>
   </div>
@@ -247,6 +245,7 @@ async function editor(v) {
   $('#moreHeads').onclick = async e => { e.target.textContent = 'Pensando…'; try { await saveArticle(); await api(`/api/articles/${a.id}/headlines`, { method: 'POST' }); render() } catch (er) { toast(er.message); e.target.textContent = 'Reintentar' } };
   const img = $('#preview');
   if (img) img.src = await blobUrl(kit.image_url || kit.photo_download_url);
+  else autoPhoto();
 }
 function values() { const o = {}; ['section', 'headline', 'image_headline', 'subtitle', 'body', 'graphic_summary'].forEach(k => o[k] = $(`#f-${k}`).value); return o }
 async function saveArticle(say) { await api(`/api/articles/${editorId}`, { method: 'PUT', body: JSON.stringify(values()) }); if (say) toast('Guardado') }
@@ -261,6 +260,11 @@ window.publish = async () => {
   const b = $('#pubBtn'); b.disabled = true; b.textContent = 'Publicando…';
   try { await saveArticle(); const r = await api(`/api/articles/${editorId}/publish`, { method: 'POST' }); toast(r.published ? 'Publicada en la web' : r.message || 'Aprobada'); render() }
   catch (e) { toast(e.message); b.disabled = false; b.textContent = 'Publicar' }
+};
+window.autoPhoto = async () => {
+  const frame = $('#frame'); if (frame) frame.innerHTML = '<p class="muted"><span class="spin"></span> Buscando foto en internet…</p>';
+  try { await api(`/api/articles/${editorId}/photo/auto`, { method: 'POST' }); render() }
+  catch (e) { if (frame) frame.innerHTML = `<p class="empty">${esc(e.message)}</p>` }
 };
 window.photoPanel = async (q = '', refresh = false) => {
   const box = $('#photos'); box.innerHTML = '<p class="muted"><span class="spin"></span> Buscando fotos…</p>';
@@ -294,6 +298,8 @@ async function settings(v) {
   v.innerHTML = `<section class="panel"><h2>Redacción con IA</h2>
       <p>${h.ai_configured ? `Redacta ${h.ai_provider === 'openai' ? 'ChatGPT' : 'Claude'}${h.ai_fallback?.length ? ' (con respaldo)' : ''}.` : 'No hay ninguna clave de IA en Railway.'}</p>
       <button class="btn small" id="aiCheck">Comprobar ahora</button><div id="aiOut"></div></section>
+    <section class="panel"><h2>Búsqueda de fotos</h2><p class="muted small">Comprueba qué buscadores de imágenes responden desde el servidor.</p>
+      <button class="btn small" id="photoCheck">Comprobar fotos</button><div id="photoOut"></div></section>
     <section class="panel"><h2>Canva</h2><p>${caps.canva_connected ? 'Conectado. Las imágenes usan tu plantilla de noticias.' : caps.canva_configured ? 'Falta autorizar la conexión.' : 'Faltan las credenciales de Canva en Railway.'}</p>
       ${caps.canva_configured ? `<button class="btn small" id="canvaConn">${caps.canva_connected ? 'Volver a conectar' : 'Conectar Canva'}</button>` : ''}</section>
     <section class="panel"><h2>Web</h2><p>${h.auto_publish ? '«Aprobar y publicar» envía la noticia a infolinense.com.' : 'La publicación en infolinense.com no está configurada: «Aprobar y publicar» solo aprueba.'}</p></section>
@@ -306,6 +312,11 @@ async function settings(v) {
     e.target.disabled = true; e.target.textContent = 'Comprobando…';
     try { const r = await api('/api/ai/check'); $('#aiOut').innerHTML = r.providers.filter(p => p.configured).map(p => `<p class="${p.ok ? 'ok' : 'error'}"><b>${esc(p.provider_name)}</b> ${p.active ? '(principal)' : '(respaldo)'}: ${p.ok ? 'funciona' : esc(p.message) + (p.http_status ? ` <small>(HTTP ${p.http_status} ${esc(p.code || '')})</small>` : '')}</p>`).join('') || '<p class="error">Sin claves configuradas.</p>' }
     catch (er) { $('#aiOut').innerHTML = `<p class="error">${esc(er.message)}</p>` } finally { e.target.disabled = false; e.target.textContent = 'Comprobar ahora' }
+  };
+  $('#photoCheck').onclick = async e => {
+    e.target.disabled = true; e.target.textContent = 'Comprobando…';
+    try { const r = await api('/api/photos/check'); $('#photoOut').innerHTML = r.providers.map(p => `<p class="${p.count ? 'ok' : p.count === null ? 'muted' : 'error'}"><b>${esc(p.name)}</b>: ${p.count === null ? 'sin configurar' : p.count + ' fotos'}</p>`).join('') }
+    catch (er) { $('#photoOut').innerHTML = `<p class="error">${esc(er.message)}</p>` } finally { e.target.disabled = false; e.target.textContent = 'Comprobar fotos' }
   };
   const cc = $('#canvaConn'); if (cc) cc.onclick = async () => { try { location.href = (await api('/api/canva/connect')).url } catch (e) { toast(e.message) } };
   $('#addSrc').onsubmit = async e => { e.preventDefault(); const d = Object.fromEntries(new FormData(e.target)); try { await api('/api/sources', { method: 'POST', body: JSON.stringify({ ...d, priority: 60 }) }); toast('Fuente añadida'); render() } catch (er) { toast(er.message) } };

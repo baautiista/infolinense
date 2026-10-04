@@ -279,3 +279,37 @@ class SocialPanel(unittest.TestCase):
         self.assertEqual(group_post['social_type'], 'queja')
         self.assertEqual(rows['https://www.facebook.com/aytolalinea/posts/9']['social_type'], 'noticia')
         self.assertNotIn('https://otra.web/x', rows)
+
+
+class NewsStyle(unittest.TestCase):
+    def test_draft_never_talks_about_missing_data_or_sources(self):
+        reply = dict(DRAFT, body='La piscina cubierta abre el lunes. Se desconoce dónde se venderán las entradas.\n\n'
+                                 'El horario será de 8 a 22 horas. La documentación no especifica el precio.',
+                     subtitle='Abre el lunes con horario ampliado. No consta el precio.')
+        with patch.object(ai, 'AI_ENABLED', True), patch.object(ai, 'ask_json', return_value=(reply, 'openai', False)):
+            d = ai.draft({'title': 'Piscina'}, 'texto', '{"facts":["abre el lunes"],"missing":["precio"]}')
+        text = d['headline'] + d['subtitle'] + d['body']
+        for bad in ('desconoce', 'documentación', 'No consta'):
+            self.assertNotIn(bad, text)
+        self.assertIn('8 a 22 horas', d['body'])
+        self.assertEqual(d['missing_data'], [])
+
+    def test_photos_come_from_the_whole_web(self):
+        from app import photos
+
+        class Page:
+            text = 'vqd="4-123456789"&'
+
+        class Results:
+            def json(self):
+                return {'results': [{'image': 'https://diario.es/fotos/playa-poniente.jpg', 'url': 'https://diario.es/n', 'width': 1600, 'height': 900},
+                                    {'image': 'https://x.com/logo.png', 'url': 'https://x.com', 'width': 800, 'height': 800},
+                                    {'image': 'https://y.es/mini.jpg', 'url': 'https://y.es', 'width': 120, 'height': 90}]}
+
+        class FakeSession:
+            headers = {}
+            def get(self, url, **kw):
+                return Results() if 'i.js' in url else Page()
+        with patch.object(photos.requests, 'Session', return_value=FakeSession()):
+            found = photos.duckduckgo_images('playa Poniente La Línea')
+        self.assertEqual([f['url'] for f in found], ['https://diario.es/fotos/playa-poniente.jpg'])

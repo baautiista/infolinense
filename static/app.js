@@ -324,7 +324,8 @@ async function settings(v) {
         <p>${nets.facebook && nets.facebook.connected ? `Página: ${esc(nets.facebook.name || 'conectada')}. Instagram: ${nets.instagram.connected ? '@' + esc(nets.instagram.name || 'conectado') : '<span class="error">la página no tiene una cuenta profesional de Instagram unida</span>'}` : nets.meta_login ? 'Sin conectar.' : 'Faltan META_APP_ID y META_APP_SECRET en Railway.'}</p>
         ${(nets.pages || []).length > 1 ? `<label>Página<select id="pagePick">${nets.pages.map(p => `<option value="${esc(p.id)}" ${p.name === nets.facebook.name ? 'selected' : ''}>${esc(p.name)}${p.instagram ? ' · @' + esc(p.instagram) : ''}</option>`).join('')}</select></label>` : ''}
         ${nets.meta_login ? `<div class="row wrap"><button class="btn small" id="metaConn">${nets.facebook && nets.facebook.connected ? 'Volver a conectar' : 'Conectar Facebook e Instagram'}</button>${nets.facebook && nets.facebook.connected ? '<button class="link" id="metaOff">Desconectar</button>' : ''}</div>` : ''}
-        ${nets.meta_callback ? `<p class="muted small">Dirección de retorno para la app de Meta: <code>${esc(nets.meta_callback)}</code></p>` : ''}</div>
+        ${nets.meta_callback ? `<p class="muted small">Dirección de retorno para la app de Meta: <code>${esc(nets.meta_callback)}</code></p>` : ''}
+        ${nets.meta_login ? `<details class="alts"><summary>Conectar pegando un token (si el botón falla)</summary><form id="metaTok" class="stack"><input name="token" placeholder="Pega aquí el token del Explorador de la API Graph" autocomplete="off"><button class="btn small">Conectar con este token</button></form></details>` : ''}</div>
       <div class="netrow"><b>TikTok</b>
         <p>${nets.tiktok && nets.tiktok.connected ? 'Conectado' + (nets.tiktok.name ? ': ' + esc(nets.tiktok.name) : '') + '.' : nets.tiktok_configured ? 'Sin conectar.' : 'Faltan TIKTOK_CLIENT_KEY y TIKTOK_CLIENT_SECRET en Railway.'}</p>
         ${nets.tiktok_configured ? `<div class="row wrap"><button class="btn small" id="ttConn">${nets.tiktok && nets.tiktok.connected ? 'Volver a conectar' : 'Conectar TikTok'}</button>${nets.tiktok && nets.tiktok.connected ? '<button class="link" id="ttOff">Desconectar</button>' : ''}</div>` : ''}
@@ -354,6 +355,7 @@ async function settings(v) {
   const conn = async net => { try { location.href = (await api(`/api/networks/${net}/connect`)).url } catch (e) { toast(e.message) } };
   const off = async net => { if (!confirm('¿Desconectar?')) return; try { await api(`/api/networks/${net}/disconnect`, { method: 'POST' }); render() } catch (e) { toast(e.message) } };
   if ($('#metaConn')) $('#metaConn').onclick = () => conn('meta');
+  if ($('#metaTok')) $('#metaTok').onsubmit = async e => { e.preventDefault(); const b = e.target.querySelector('button'); b.disabled = true; b.textContent = 'Conectando…'; try { const r = await api('/api/networks/meta/token', { method: 'POST', body: JSON.stringify({ token: e.target.token.value }) }); toast('Conectado: ' + r.name + (r.instagram ? ' · @' + r.instagram : '')); render() } catch (er) { toast(er.message); b.disabled = false; b.textContent = 'Conectar con este token' } };
   if ($('#ttConn')) $('#ttConn').onclick = () => conn('tiktok');
   if ($('#metaOff')) $('#metaOff').onclick = () => off('meta');
   if ($('#ttOff')) $('#ttOff').onclick = () => off('tiktok');

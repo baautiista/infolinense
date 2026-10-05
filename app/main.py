@@ -13,7 +13,7 @@ from . import db, sources, pipeline, publishers, photos, canva, ai, planner, lay
 from .auth import login, require_auth
 from .config import BASE_DIR, RENDER_DIR, UPLOAD_DIR, SCAN_INTERVAL_MINUTES, AUTO_PIPELINE, OPENAI_API_KEY, ADMIN_PASSWORD, JWT_SECRET, PUBLISH_MODE, CORS_ORIGINS, PUBLIC_BASE_URL, AUTO_PUBLISH
 
-VERSION='5.3.0'
+VERSION='5.4.0'
 app=FastAPI(title='InfoLinense Desk',version=VERSION)
 app.add_middleware(CORSMiddleware,allow_origins=CORS_ORIGINS,allow_credentials=False,allow_methods=['*'],allow_headers=['Authorization','Content-Type'])
 db.init_db()
@@ -22,6 +22,7 @@ social_publish.init_tables()
 class LoginIn(BaseModel): password:str
 class PublishIn(BaseModel): networks:list[str]|None=None
 class PageIn(BaseModel): page_id:str
+class TokenIn(BaseModel): token:str
 class SourceIn(BaseModel):
     name:str
     url:str
@@ -750,6 +751,13 @@ def tiktok_callback(request:Request):
     try: social_publish.tiktok_complete(code,params.get('state',''))
     except social_publish.SocialError as e: return _oauth_problem('TikTok',str(e),{})
     return _network_done()
+@app.post('/api/networks/meta/token',dependencies=[Depends(require_auth)])
+def meta_token(t:TokenIn):
+    """Conexión alternativa: pegar el token del Explorador de la API Graph de Meta."""
+    try: page=social_publish.meta_from_user_token(t.token)
+    except social_publish.SocialError as e: raise HTTPException(400,str(e))
+    return {'ok':True,'name':page.get('name'),'instagram':page.get('instagram_username')}
+
 @app.post('/api/networks/meta/page',dependencies=[Depends(require_auth)])
 def meta_page(p:PageIn):
     try: page=social_publish.meta_choose_page(p.page_id); return {'ok':True,'name':page.get('name'),'instagram':page.get('instagram_username')}

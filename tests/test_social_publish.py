@@ -101,6 +101,18 @@ class SocialPublishTests(unittest.TestCase):
         r = sp.publish('facebook', dict(self.article, id=78, render_path=''))
         self.assertFalse(r['ok']); self.assertIn('Canva', r['message'])
 
+    def test_pasted_user_token_connects_page(self):
+        sp.META_APP_ID, sp.META_APP_SECRET = '1', 's'
+        def fake(method, url, **kw):
+            if url.endswith('/oauth/access_token'): return Resp({'access_token': 'LONGUSER'})
+            if url.endswith('/me/accounts'): return Resp({'data': [{'id': 'P9', 'name': 'InfoLinense', 'access_token': 'PT',
+                                                                   'instagram_business_account': {'id': 'IG9', 'username': 'infolinense'}}]})
+            return Resp({'error': {'message': 'x'}}, 400)
+        with patch.object(sp.requests, 'request', side_effect=fake):
+            page = sp.meta_from_user_token('EAAB' + 'x' * 40)
+        self.assertEqual((page['id'], page['instagram_id']), ('P9', 'IG9'))
+        self.assertTrue(sp.status()['instagram']['connected'])
+
     def test_status_never_exposes_tokens(self):
         self.assertNotIn('TOK', str(sp.status()))
 

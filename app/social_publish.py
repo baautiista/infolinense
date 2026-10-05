@@ -173,6 +173,17 @@ def meta_complete(code, state):
     short = _graph('GET', '/oauth/access_token', params={
         'client_id': META_APP_ID, 'client_secret': META_APP_SECRET,
         'redirect_uri': status()['meta_callback'], 'code': code})['access_token']
+    return meta_from_user_token(short)
+
+
+def meta_from_user_token(short):
+    """A partir de un token de usuario (del inicio de sesión o pegado desde el Explorador de la API Graph)
+    obtiene tokens de página que no caducan y guarda la página y su Instagram."""
+    short = (short or '').strip()
+    if len(short) < 20:
+        raise SocialError('Ese token no parece válido. Cópialo entero desde el Explorador de la API Graph.')
+    if not (META_APP_ID and META_APP_SECRET):
+        raise SocialError('Faltan META_APP_ID y META_APP_SECRET en Railway')
     long_user = _graph('GET', '/oauth/access_token', params={
         'grant_type': 'fb_exchange_token', 'client_id': META_APP_ID, 'client_secret': META_APP_SECRET,
         'fb_exchange_token': short})['access_token']

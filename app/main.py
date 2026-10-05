@@ -805,6 +805,11 @@ app.mount('/static',StaticFiles(directory=BASE_DIR/'static'),name='static')
 @app.get('/')
 def index(): return FileResponse(BASE_DIR/'static'/'index.html')
 
+@app.get('/{prefix}/{name}')
+def prefixed_verification(prefix:str,name:str):
+    """Archivo de verificación de TikTok bajo cualquier prefijo (p. ej. /terminos/tiktokXXX.txt)."""
+    return root_verification(name)
+
 @app.get('/{name}')
 def root_verification(name:str):
     """Archivo de verificación de TikTok en la raíz (si se verificó la dirección principal)."""

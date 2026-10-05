@@ -27,6 +27,7 @@ from .config import PUBLIC_BASE_URL, RENDER_DIR
 
 META_APP_ID = os.getenv('META_APP_ID', '').strip()
 META_APP_SECRET = os.getenv('META_APP_SECRET', '').strip()
+META_CONFIG_ID = os.getenv('META_CONFIG_ID', '').strip()
 META_GRAPH_VERSION = os.getenv('META_GRAPH_VERSION', 'v21.0').strip()
 # Alternativa sin botón: token de página permanente puesto a mano en Railway
 META_PAGE_ID = os.getenv('META_PAGE_ID', '').strip()
@@ -146,9 +147,13 @@ def _check_state(network, state):
 def meta_login_url():
     if not (META_APP_ID and META_APP_SECRET and PUBLIC_BASE_URL):
         raise SocialError('Faltan META_APP_ID, META_APP_SECRET o PUBLIC_BASE_URL en Railway')
-    return 'https://www.facebook.com/%s/dialog/oauth?' % META_GRAPH_VERSION + urlencode({
-        'client_id': META_APP_ID, 'redirect_uri': status()['meta_callback'], 'state': _new_state('meta'),
-        'scope': META_SCOPES, 'response_type': 'code'})
+    params = {'client_id': META_APP_ID, 'redirect_uri': status()['meta_callback'], 'state': _new_state('meta'),
+              'response_type': 'code'}
+    if META_CONFIG_ID:  # «Inicio de sesión con Facebook para empresas»: los permisos van en la configuración
+        params['config_id'] = META_CONFIG_ID
+    else:
+        params['scope'] = META_SCOPES
+    return 'https://www.facebook.com/%s/dialog/oauth?' % META_GRAPH_VERSION + urlencode(params)
 
 
 def _graph(method, path, **kw):

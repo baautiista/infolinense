@@ -4,7 +4,7 @@ from urllib.parse import urlparse
 from zoneinfo import ZoneInfo
 from io import BytesIO
 from pathlib import Path
-from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Depends
+from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Depends, Request
 from fastapi.responses import FileResponse, RedirectResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
@@ -13,7 +13,7 @@ from . import db, sources, pipeline, publishers, photos, canva, ai, planner, lay
 from .auth import login, require_auth
 from .config import BASE_DIR, RENDER_DIR, UPLOAD_DIR, SCAN_INTERVAL_MINUTES, AUTO_PIPELINE, OPENAI_API_KEY, ADMIN_PASSWORD, JWT_SECRET, PUBLISH_MODE, CORS_ORIGINS, PUBLIC_BASE_URL, AUTO_PUBLISH
 
-VERSION='5.2.2'
+VERSION='5.3.0'
 app=FastAPI(title='InfoLinense Desk',version=VERSION)
 app.add_middleware(CORSMiddleware,allow_origins=CORS_ORIGINS,allow_credentials=False,allow_methods=['*'],allow_headers=['Authorization','Content-Type'])
 db.init_db()
@@ -718,20 +718,38 @@ def networks_connect(network:str):
 def _network_done(error=''):
     return RedirectResponse((PUBLIC_BASE_URL or '')+'/#settings'+('?error='+error if error else ''),status_code=303)
 
+def _oauth_problem(network,message,params):
+    """Página clara (no JSON) con todo lo que devolvió la red, para saber qué falta."""
+    import html as _h
+    from fastapi.responses import HTMLResponse
+    extra=''.join(f'<li><b>{_h.escape(k)}</b>: {_h.escape(str(v)[:300])}</li>' for k,v in params.items() if k not in ('code','state') and v)
+    db.log('social_error',f'{network}: {message} {dict((k,v) for k,v in params.items() if k not in ("code","state"))}'[:400])
+    return HTMLResponse(f"""<!doctype html><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1">
+<body style="font-family:system-ui;max-width:640px;margin:40px auto;padding:0 16px;color:#061e5c">
+<h1 style="font-size:1.4rem">No se pudo conectar {_h.escape(network)}</h1><p>{_h.escape(message)}</p>
+{('<p>Datos que devolvió ' + _h.escape(network) + ':</p><ul>' + extra + '</ul>') if extra else '<p>No devolvió ningún motivo. Suele pasar si se cancela el inicio de sesión o si la app no tiene permisos activos.</p>'}
+<p><a href="/#settings">Volver a Ajustes</a></p></body>""",status_code=400)
+
 @app.get('/api/networks/meta/callback')
-def meta_callback(code:str='',state:str='',error:str='',error_description:str=''):
-    if error or not code: raise HTTPException(400,'Facebook no autorizó la conexión: '+(error_description or error)[:200])
-    try: social_publish.meta_complete(code,state)
-    except social_publish.SocialError as e: raise HTTPException(400,str(e))
+def meta_callback(request:Request):
+    params=dict(request.query_params)
+    code=params.get('code','')
+    if not code or params.get('error') or params.get('error_code'):
+        msg=params.get('error_message') or params.get('error_description') or params.get('error_reason') or params.get('error') or 'Facebook no devolvió la autorización.'
+        return _oauth_problem('Facebook',msg,params)
+    try: social_publish.meta_complete(code,params.get('state',''))
+    except social_publish.SocialError as e: return _oauth_problem('Facebook',str(e),{})
     return _network_done()
 
 @app.get('/api/networks/tiktok/callback')
-def tiktok_callback(code:str='',state:str='',error:str='',error_description:str=''):
-    if error or not code: raise HTTPException(400,'TikTok no autorizó la conexión: '+(error_description or error)[:200])
-    try: social_publish.tiktok_complete(code,state)
-    except social_publish.SocialError as e: raise HTTPException(400,str(e))
+def tiktok_callback(request:Request):
+    params=dict(request.query_params)
+    code=params.get('code','')
+    if not code or params.get('error'):
+        return _oauth_problem('TikTok',params.get('error_description') or params.get('error') or 'TikTok no devolvió la autorización.',params)
+    try: social_publish.tiktok_complete(code,params.get('state',''))
+    except social_publish.SocialError as e: return _oauth_problem('TikTok',str(e),{})
     return _network_done()
-
 @app.post('/api/networks/meta/page',dependencies=[Depends(require_auth)])
 def meta_page(p:PageIn):
     try: page=social_publish.meta_choose_page(p.page_id); return {'ok':True,'name':page.get('name'),'instagram':page.get('instagram_username')}

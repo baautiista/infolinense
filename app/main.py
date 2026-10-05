@@ -13,7 +13,7 @@ from . import db, sources, pipeline, publishers, photos, canva, ai, planner, lay
 from .auth import login, require_auth
 from .config import BASE_DIR, RENDER_DIR, UPLOAD_DIR, SCAN_INTERVAL_MINUTES, AUTO_PIPELINE, OPENAI_API_KEY, ADMIN_PASSWORD, JWT_SECRET, PUBLISH_MODE, CORS_ORIGINS, PUBLIC_BASE_URL, AUTO_PUBLISH
 
-VERSION='5.0.0'
+VERSION='5.1.0'
 app=FastAPI(title='InfoLinense Desk',version=VERSION)
 app.add_middleware(CORSMiddleware,allow_origins=CORS_ORIGINS,allow_credentials=False,allow_methods=['*'],allow_headers=['Authorization','Content-Type'])
 db.init_db()
@@ -515,8 +515,12 @@ def edit_article(aid:int,body:EditArticle):
             fields.append('social_text=?'); vals.append(v)
         fields.append(f'{k}=?'); vals.append(v)
     if fields:
-        db.exec_(f"UPDATE articles SET {','.join(fields)},render_path=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=?",tuple(vals+[aid]))
-        db.exec_('UPDATE canva_designs SET exported=0 WHERE article_id=?',(aid,))
+        # La imagen de Canva solo se invalida si cambia algo que aparece en ella (titular, entradilla, sección).
+        changes=body.model_dump(exclude_none=True)
+        if 'section' in changes: changes['section']=layout.normalize_section(changes['section'])
+        image_changed=any(k in changes and (changes[k] or '')!=(original.get(k) or '') for k in ('headline','subtitle','section'))
+        db.exec_(f"UPDATE articles SET {','.join(fields)}{',render_path=NULL' if image_changed else ''},updated_at=CURRENT_TIMESTAMP WHERE id=?",tuple(vals+[aid]))
+        if image_changed: db.exec_('UPDATE canva_designs SET exported=0 WHERE article_id=?',(aid,))
         if original['status']=='approved':
             db.exec_("UPDATE articles SET status='review_ready' WHERE id=?",(aid,))
     return db.row('SELECT * FROM articles WHERE id=?',(aid,))

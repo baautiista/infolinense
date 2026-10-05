@@ -2,6 +2,7 @@
 import base64
 import hashlib
 import json
+import re
 import os
 import secrets
 import threading
@@ -19,10 +20,11 @@ CLIENT_SECRET = os.getenv('CANVA_CLIENT_SECRET', '').strip()
 TEMPLATE_ID = os.getenv('CANVA_BRAND_TEMPLATE_ID', '').strip()
 # Variantes de la plantilla según las líneas del titular: la entradilla queda fija abajo,
 # el titular crece hacia arriba y la sección se coloca justo encima.
-_DEFAULT_VARIANTS = {'EAHWTjWEEnA': {1: 'EAHXJaqiN5w', 2: 'EAHXJVlUZ2g'}}
+_DEFAULT_VARIANTS = {'EAHWTjWEEnA': {1: 'EAHXJaqiN5w', 2: 'EAHXJVlUZ2g', 4: 'EAHXJyNUgnU'}}
 TEMPLATE_BY_LINES = {
     1: os.getenv('CANVA_TEMPLATE_1_LINE', '').strip() or _DEFAULT_VARIANTS.get(TEMPLATE_ID, {}).get(1, ''),
     2: os.getenv('CANVA_TEMPLATE_2_LINES', '').strip() or _DEFAULT_VARIANTS.get(TEMPLATE_ID, {}).get(2, ''),
+    4: os.getenv('CANVA_TEMPLATE_4_LINES', '').strip() or _DEFAULT_VARIANTS.get(TEMPLATE_ID, {}).get(4, ''),
 }
 
 
@@ -163,9 +165,7 @@ def permission_status():
 
 
 def _content_hash(article):
-    fields = [article.get(k) or '' for k in ('headline', 'graphic_summary', 'subtitle', 'section', 'image_url')]
-    if article.get('image_headline'):
-        fields.append(article['image_headline'])
+    fields = [article.get(k) or '' for k in ('headline', 'subtitle', 'section', 'image_url')]
     return hashlib.sha256(json.dumps(fields, ensure_ascii=False).encode()).hexdigest()
 
 
@@ -173,13 +173,25 @@ def _page_for(article):
     return layout.family_for(article.get('section'), article.get('headline'))[1]
 
 
-def design_fields(article):
-    """Textos que van a la plantilla, ajustados para que no se solapen."""
+def design_fields(article, strict=True):
+    """Textos de la plantilla: exactamente el titular y la entradilla elegidos en Revisar.
+    Si no caben, no se cambian: se avisa para que se acorten en Revisar (strict).
+    Las diapositivas del carrusel (strict=False) sí se ajustan solas."""
     family = layout.family_for(article.get('section'), article.get('headline'))
-    headline = article.get('image_headline') or article.get('headline') or ''
-    if not layout.headline_fits(headline):
-        headline = layout.fit_headline(headline)
-    summary = layout.fit_summary(article.get('graphic_summary') or article.get('subtitle') or '')
+    headline = re.sub(r'\s+', ' ', article.get('headline') or '').strip()
+    summary = re.sub(r'\s+', ' ', article.get('subtitle') or '').strip()
+    if strict:
+        lines = len(layout.headline_lines(headline))
+        if lines > layout.HEADLINE_MAX_LINES:
+            raise ValueError('El titular ocupa %s líneas en la imagen y caben %s. Acórtalo en Revisar y vuelve a crear la imagen.'
+                             % (lines, layout.HEADLINE_MAX_LINES))
+        if len(summary) > layout.SUMMARY_MAX:
+            raise ValueError('La entradilla tiene %s caracteres y en la imagen caben %s. Acórtala en Revisar y vuelve a crear la imagen.'
+                             % (len(summary), layout.SUMMARY_MAX))
+    else:
+        if not layout.headline_fits(headline):
+            headline = layout.fit_headline(headline)
+        summary = layout.fit_summary(summary)
     return {'HEADLINE': headline, 'SUMMARY': summary, 'SECTION': family[0], 'page': family[1],
             'template': template_for(headline)}
 
@@ -235,13 +247,13 @@ def export_design(article):
     return {'url': design['url'], 'design_id': design['design_id'], 'exported': True}
 
 
-def create_design(article, store=True, title_suffix='', output_suffix=None):
+def create_design(article, store=True, title_suffix='', output_suffix=None, strict=True):
     if not ready() or not connected():
         raise ValueError('Conecta tu cuenta de Canva desde Ajustes')
     photo = Path(article.get('image_local') or '')
     if not photo.is_file():
         raise ValueError('Elige primero una foto para la noticia')
-    texts = design_fields(article)
+    texts = design_fields(article, strict)
     template_id = texts['template']
     schema = _api('GET', '/brand-templates/' + template_id + '/dataset').get('dataset', {})
     expected = {'HEADLINE': 'text', 'SUMMARY': 'text', 'SECTION': 'text', 'PHOTO': 'image'}
@@ -335,7 +347,7 @@ def create_carousel_designs(article, slides, selected_photos):
         suffix = 'carousel_%s' % index
         result = create_design(
             page, store=False, title_suffix='Carrusel %s/%s' % (index, len(slides)),
-            output_suffix=suffix
+            output_suffix=suffix, strict=False
         )
         if not result.get('exported'):
             raise ValueError(result.get('export_error') or 'Canva no exportó la diapositiva %s' % index)

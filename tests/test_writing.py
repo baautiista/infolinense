@@ -198,13 +198,30 @@ class TemplateLayout(unittest.TestCase):
         from app import layout, canva
         long = 'Más de 550 toneladas de alga asiática retiradas en Poniente en lo que va de 2026'
         self.assertEqual(len(layout.headline_lines(long)), 4)  # medido en Canva a 74 px
-        too_long = long + ' según el balance municipal presentado este lunes en el pleno'
-        fitted = canva.design_fields({'headline': too_long, 'section': 'Playas', 'subtitle': 'x' * 400})
-        self.assertTrue(layout.headline_fits(fitted['HEADLINE']))
-        self.assertEqual((fitted['SECTION'], fitted['page']), ('MEDIO AMBIENTE', 8))
-        self.assertLessEqual(len(fitted['SUMMARY']), layout.SUMMARY_MAX)
+        fields = canva.design_fields({'headline': long, 'section': 'Playas', 'subtitle': 'La retirada continúa esta semana.',
+                                      'image_headline': 'OTRO TITULAR', 'graphic_summary': 'OTRO RESUMEN'})
+        self.assertEqual(fields['HEADLINE'], long)  # exactamente el de Revisar
+        self.assertEqual(fields['SUMMARY'], 'La retirada continúa esta semana.')
+        self.assertEqual((fields['SECTION'], fields['page']), ('MEDIO AMBIENTE', 8))
         self.assertEqual(layout.family_for('Fútbol')[1], 6)
         self.assertEqual(layout.family_for('AGENDA')[3], '#061E5C')
+
+    def test_text_that_does_not_fit_is_not_changed_but_reported(self):
+        from app import canva
+        too_long = 'Más de 550 toneladas de alga asiática retiradas en Poniente en lo que va de 2026 según el balance municipal'
+        with self.assertRaises(ValueError) as e:
+            canva.design_fields({'headline': too_long, 'subtitle': 'Breve.'})
+        self.assertIn('Acórtalo en Revisar', str(e.exception))
+        with self.assertRaises(ValueError):
+            canva.design_fields({'headline': 'Titular corto', 'subtitle': 'x' * 200})
+        slide = canva.design_fields({'headline': too_long, 'subtitle': 'x' * 200}, strict=False)  # carrusel
+        self.assertLessEqual(len(slide['SUMMARY']), 165)
+
+    def test_four_line_headline_uses_four_line_template(self):
+        from app import canva
+        canva.TEMPLATE_BY_LINES = {1: 'ONE', 2: 'TWO', 4: 'FOUR'}
+        canva.TEMPLATE_ID = 'THREE'
+        self.assertEqual(canva.template_for('Más de 550 toneladas de alga asiática retiradas en Poniente en lo que va de 2026'), 'FOUR')
 
 
 class AutoDraft(unittest.TestCase):

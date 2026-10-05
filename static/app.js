@@ -223,12 +223,11 @@ async function editor(v) {
       <div class="meta"><span class="st st-${a.status}">${STATUS[a.status] || a.status}</span>${a.source_url ? `<a href="${safeUrl(a.source_url)}" target="_blank" rel="noopener noreferrer">Fuente: ${esc(a.outlet || a.source_name || host(a.source_url))}</a>` : ''}${published && a.publish_url ? `<a href="${safeUrl(a.publish_url)}" target="_blank" rel="noopener">Ver en la web</a>` : ''}</div>
       ${a.focus ? `<p class="focus"><b>Enfoque:</b> ${esc(a.focus)}</p>` : ''}
       <label>Sección<select id="f-section">${SECTIONS.map(s => `<option ${s[0] === a.section ? 'selected' : ''}>${s[0]}</option>`).join('')}</select></label>
-      <label>Titular<textarea id="f-headline" rows="2">${esc(a.headline)}</textarea></label>
+      <label>Titular <span class="muted" id="fit"></span><textarea id="f-headline" rows="2">${esc(a.headline)}</textarea></label>
       ${options.length ? `<details class="alts"><summary>7 titulares alternativos</summary>${options.map((h, i) => `<button class="alt" data-i="${i}">${esc(h)}</button>`).join('')}<button class="link" id="moreHeads">Proponer otros 7</button></details>` : `<button class="link" id="moreHeads">Proponer 7 titulares</button>`}
-      <label>Titular de la imagen <span class="muted" id="fit"></span><input id="f-image_headline" value="${esc(a.image_headline || '')}" placeholder="Vacío: se usa el titular"></label>
-      <label>Entradilla<textarea id="f-subtitle" rows="3">${esc(a.subtitle)}</textarea></label>
+      <label>Entradilla <span class="muted" id="sub"></span><textarea id="f-subtitle" rows="3">${esc(a.subtitle)}</textarea></label>
+      <p class="muted small">La imagen de Canva lleva exactamente este titular y esta entradilla.</p>
       <label>Texto <span class="muted" id="count"></span><textarea id="f-body" rows="16" maxlength="2200">${esc(a.body)}</textarea></label>
-      <label>Resumen de la imagen<textarea id="f-graphic_summary" rows="2" maxlength="150">${esc(a.graphic_summary)}</textarea></label>
       <details class="alts" id="carousel"><summary>${a.carousel_suitable ? 'Carrusel recomendado' : 'Carrusel'}</summary><div id="carouselBox"><p class="muted small">${esc(a.carousel_reason || '')}</p><button class="btn small" onclick="carousel()">Preparar diapositivas</button></div></details>
     </section>
   </div>
@@ -238,16 +237,17 @@ async function editor(v) {
     ${published ? '<span class="muted">Publicada</span>' : a.status === 'draft' ? `<button class="btn primary" onclick="reviewed()">Revisada</button>` : `<button class="btn primary" id="pubBtn" onclick="publish()">Publicar</button>`}
   </div>`;
   const f = id => $(`#f-${id}`);
-  const fit = () => { const n = lines(f('image_headline').value || f('headline').value); $('#fit').textContent = n <= 3 ? `${n} de 3 líneas` : `${n} líneas: se recortará`; $('#fit').className = n <= 3 ? 'muted' : 'error' };
+  const fit = () => { const n = lines(f('headline').value); $('#fit').textContent = n <= 4 ? `${n} de 4 líneas en la imagen` : `${n} líneas: no cabe en la imagen, acórtalo`; $('#fit').className = n <= 4 ? 'muted' : 'error' };
+  const sub = () => { const n = f('subtitle').value.trim().length; $('#sub').textContent = n <= 165 ? `${n} / 165` : `${n} / 165: no cabe en la imagen, acórtala`; $('#sub').className = n <= 165 ? 'muted' : 'error' };
   const count = () => $('#count').textContent = `${f('body').value.length} / 2.200`;
-  f('image_headline').oninput = fit; f('headline').oninput = fit; f('body').oninput = count; fit(); count();
+  f('headline').oninput = fit; f('subtitle').oninput = sub; f('body').oninput = count; fit(); sub(); count();
   v.querySelectorAll('.alt').forEach(b => b.onclick = () => { f('headline').value = options[b.dataset.i]; fit(); toast('Titular cambiado') });
   $('#moreHeads').onclick = async e => { e.target.textContent = 'Pensando…'; try { await saveArticle(); await api(`/api/articles/${a.id}/headlines`, { method: 'POST' }); render() } catch (er) { toast(er.message); e.target.textContent = 'Reintentar' } };
   const img = $('#preview');
   if (img) img.src = await blobUrl(kit.image_url || kit.photo_download_url);
   else autoPhoto();
 }
-function values() { const o = {}; ['section', 'headline', 'image_headline', 'subtitle', 'body', 'graphic_summary'].forEach(k => o[k] = $(`#f-${k}`).value); return o }
+function values() { const o = {}; ['section', 'headline', 'subtitle', 'body'].forEach(k => o[k] = $(`#f-${k}`).value); return o }
 async function saveArticle(say) { await api(`/api/articles/${editorId}`, { method: 'PUT', body: JSON.stringify(values()) }); if (say) toast('Guardado') }
 window.save = s => saveArticle(s).catch(e => toast(e.message));
 window.copyText = async () => { const o = values(); await navigator.clipboard.writeText([o.headline, o.subtitle, o.body].filter(Boolean).join('\n\n')); toast('Texto copiado') };

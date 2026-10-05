@@ -506,12 +506,10 @@ HECHOS Y CONTEXTO: {_facts_for_draft(research)[:8000]}
 Devuelve la entrega (SECCIÓN, TITULAR, SUBTÍTULO, TEXTO) como JSON válido, sin markdown, con exactamente estas claves:
 focus (ENFOQUE PRINCIPAL: la verdadera noticia en una frase),
 section (exactamente una de: {SECTIONS}. Guía: {SECTION_GUIDE}),
-headline (TITULAR: breve, directo, cuenta la noticia, máximo 110 caracteres),
-subtitle (SUBTÍTULO: aporta información nueva, nunca repite el titular, máximo 260 caracteres),
+headline (TITULAR: breve, directo, cuenta la noticia, máximo 80 caracteres porque va tal cual en la imagen),
+subtitle (SUBTÍTULO o ENTRADILLA: aporta información nueva, nunca repite el titular, máximo 160 caracteres porque va tal cual en la imagen),
 body (TEXTO: la noticia completa, entre 1.800 y 2.200 caracteres, en 5 a 8 párrafos),
 headline_options (lista de EXACTAMENTE 7 titulares alternativos con los mismos criterios, distintos entre sí y del titular principal),
-image_headline (titular corto para la imagen: entre 40 y 60 caracteres, sin perder el dato clave),
-graphic_summary (máximo 140 caracteres, una o dos frases para la imagen),
 carousel_suitable (true solo si la noticia explica varios pasos, cifras, requisitos o consecuencias que se entienden mejor en 3-6 diapositivas),
 carousel_reason (motivo breve),
 ai_image_suggestion (qué foto real buscar; no se genera ninguna imagen),
@@ -531,11 +529,9 @@ photo_query (búsqueda de imágenes en internet de 3 a 6 palabras que describa l
         except AIProviderError:
             pass
     data['section'] = layout.normalize_section(data.get('section'), data.get('headline', '') + ' ' + data.get('body', '')[:400])
-    image_headline = re.sub(r'\s+', ' ', str(data.get('image_headline') or '')).strip().rstrip('.')
-    if not image_headline or not layout.headline_fits(image_headline):
-        image_headline = data['headline'] if layout.headline_fits(data['headline']) else layout.fit_headline(image_headline or data['headline'])
-    data['image_headline'] = image_headline
-    data['graphic_summary'] = layout.fit_summary(data.get('graphic_summary') or data.get('subtitle') or '')
+    # La imagen usa exactamente el titular y la entradilla de la noticia (no textos aparte).
+    data['image_headline'] = ''
+    data['graphic_summary'] = data.get('subtitle') or ''
     data['provider'] = provider
     return data
 
@@ -552,7 +548,7 @@ def photo_query(article):
 def alternate_headlines(article):
     if not AI_ENABLED:
         raise AIProviderError('Para proponer titulares hace falta una clave de IA en Railway.', kind='config')
-    prompt = f'''Propón exactamente siete titulares distintos para esta noticia siguiendo la sección TITULAR de la guía de estilo (cuentan la noticia, con cifras, lugares conocidos y consecuencias cuando existan). Directos, claros, fieles a los hechos del texto, útiles para vecinos de La Línea, sin sensacionalismo ni exclamaciones, máximo 110 caracteres cada uno. Varía el enfoque (dato principal, a quién afecta, dónde, cuándo, consecuencia). No repitas el titular actual ni añadas datos que no estén en el texto.
+    prompt = f'''Propón exactamente siete titulares distintos para esta noticia siguiendo la sección TITULAR de la guía de estilo (cuentan la noticia, con cifras, lugares conocidos y consecuencias cuando existan). Directos, claros, fieles a los hechos del texto, útiles para vecinos de La Línea, sin sensacionalismo ni exclamaciones, máximo 80 caracteres cada uno (van tal cual en la imagen). Varía el enfoque (dato principal, a quién afecta, dónde, cuándo, consecuencia). No repitas el titular actual ni añadas datos que no estén en el texto.
 TITULAR ACTUAL: {article.get('headline', '')}
 ENTRADILLA: {article.get('subtitle', '')}
 TEXTO: {(article.get('body') or '')[:2200]}

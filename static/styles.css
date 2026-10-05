@@ -155,3 +155,11 @@ label{display:grid;gap:6px;font-weight:700;font-size:14px}
 .kind.propuesta{background:#E3ECFF;color:var(--blue)}
 .kind.asociacion{background:#E0F6EA;color:#00753A}
 .focus{background:#EEF3FF;border-radius:12px;padding:10px 14px;font-size:14px}
+
+/* Redes sociales */
+.netpick{background:var(--card,#fff);border-radius:12px;padding:10px 12px;margin-bottom:12px;gap:12px}
+.net{display:inline-block;font-size:.8rem;padding:3px 9px;border-radius:999px;border:0;text-decoration:none;margin-right:6px}
+.net.ok{background:#e3f7ea;color:#0b6b33}
+.net.bad{background:#fde8ea;color:#a3172b;cursor:pointer}
+.netrow{border-top:1px solid rgba(0,0,0,.08);padding-top:10px;margin-top:10px}
+.netrow code{word-break:break-all}

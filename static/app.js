@@ -169,23 +169,34 @@ async function reviewView(v) {
 }
 
 /* ---------- Fase 4: Publicar ---------- */
+const NET_NAMES = { web: 'Web', instagram: 'Instagram', facebook: 'Facebook', tiktok: 'TikTok' };
+function netPrefs(available) { let saved = null; try { saved = JSON.parse(localStorage.getItem('nets') || 'null') } catch (e) { } return available.filter(n => !saved || saved.includes(n)) }
+function saveNetPrefs() { try { localStorage.setItem('nets', JSON.stringify([...document.querySelectorAll('.netpick input:checked')].map(i => i.value))) } catch (e) { } }
+function netStatus(r) { const n = r.networks || {}; return Object.keys(n).map(k => n[k].status === 'published' ? (n[k].url ? `<a class="net ok" href="${safeUrl(n[k].url)}" target="_blank" rel="noopener">${NET_NAMES[k]} ✓</a>` : `<span class="net ok">${NET_NAMES[k]} ✓</span>`) : `<button class="net bad" title="${esc(n[k].message)}" onclick="retryNet(${r.id},'${k}',this)">${NET_NAMES[k]}: reintentar</button>`).join('') }
 async function publishView(v) {
-  const rows = await api('/api/to-publish');
+  const [rows, nets] = await Promise.all([api('/api/to-publish'), api('/api/networks').catch(() => ({}))]);
+  const available = ['instagram', 'facebook', 'tiktok'].filter(n => (nets[n] || {}).connected);
+  const chosen = netPrefs(available);
+  const picker = available.length ? `<div class="netpick row wrap"><span class="muted small">Publicar también en:</span>${available.map(n => `<label class="switch"><input type="checkbox" value="${n}" ${chosen.includes(n) ? 'checked' : ''} onchange="saveNetPrefs()"> ${NET_NAMES[n]}</label>`).join('')}</div>` : `<p class="muted small">Las redes sociales no están conectadas. <a href="#settings">Conéctalas en Ajustes</a>.</p>`;
   const today = new Date().toLocaleDateString('sv-SE', { timeZone: 'Europe/Madrid' });
   const isTodayRow = r => !r.planned_at || String(r.planned_at).slice(0, 10) <= today;
   const row = r => `<article class="item slot"><div class="hour">${r.planned_at ? esc(String(r.planned_at).slice(11, 16)) : '–'}</div><div class="grow">
       <div class="meta">${secBadge(r.section)}<span class="st st-${r.status}">${STATUS[r.status]}</span><span>${r.canva_exported ? 'Imagen lista' : r.has_photo ? 'Con foto' : 'Sin foto'}</span></div>
       <h3><a href="#editor/${r.id}">${esc(r.headline)}</a></h3>
-      ${r.status === 'published' ? (r.publish_url ? `<a class="link" href="${safeUrl(r.publish_url)}" target="_blank" rel="noopener">Ver en la web</a>` : '') :
+      ${r.status === 'published' ? `<div class="row wrap">${r.publish_url ? `<a class="net ok" href="${safeUrl(r.publish_url)}" target="_blank" rel="noopener">Web ✓</a>` : ''}${netStatus(r)}</div>` :
         `<div class="row wrap"><input type="datetime-local" value="${esc(String(r.planned_at || '').slice(0, 16))}" onchange="setTime(${r.candidate_id},'${r.editorial_priority || 'today'}',this.value)">
          <button class="btn small primary" onclick="publishNow(${r.id},this)">Publicar</button></div>`}</div></article>`;
   const todayRows = rows.filter(isTodayRow), later = rows.filter(r => !isTodayRow(r));
-  v.innerHTML = rows.length ? `<h2 class="day">Hoy</h2><div class="list">${todayRows.map(row).join('') || '<p class="muted">Nada para hoy.</p>'}</div>
+  v.innerHTML = rows.length ? `${picker}<h2 class="day">Hoy</h2><div class="list">${todayRows.map(row).join('') || '<p class="muted">Nada para hoy.</p>'}</div>
     ${later.length ? `<h2 class="day">Próximos días</h2><div class="list">${later.map(row).join('')}</div>` : ''}`
     : `<p class="empty">Aún no hay noticias revisadas.</p>${nextPhase('Ir a Revisar', 'review')}`;
 }
 window.setTime = async (id, p, value) => { if (!value) return; try { await api(`/api/candidates/${id}/triage`, { method: 'POST', body: JSON.stringify({ priority: p, planned_at: value + ':00' }) }); toast('Hora fijada'); render() } catch (e) { toast(e.message) } };
-window.publishNow = async (id, b) => { b.disabled = true; b.textContent = 'Publicando…'; try { const r = await api(`/api/articles/${id}/publish`, { method: 'POST' }); toast(r.published ? 'Publicada en la web' : r.message || 'Aprobada'); render(); counts() } catch (e) { toast(e.message); b.disabled = false; b.textContent = 'Publicar' } };
+function pickedNets() { const boxes = document.querySelectorAll('.netpick input'); if (boxes.length) return [...boxes].filter(i => i.checked).map(i => i.value); let saved = null; try { saved = JSON.parse(localStorage.getItem('nets') || 'null') } catch (e) { } return saved }
+function publishReport(r) { const lines = (r.results || []).filter(x => x.message).map(x => (x.ok ? '✓ ' : '✗ ') + x.message); toast(lines.join(' · ') || (r.published ? 'Publicada' : r.message || 'Aprobada')) }
+window.publishNow = async (id, b) => { b.disabled = true; b.textContent = 'Publicando…'; try { const r = await api(`/api/articles/${id}/publish`, { method: 'POST', body: JSON.stringify({ networks: pickedNets() }) }); publishReport(r); render(); counts() } catch (e) { toast(e.message); b.disabled = false; b.textContent = 'Publicar' } };
+window.retryNet = async (id, net, b) => { b.disabled = true; b.textContent = 'Publicando…'; try { const r = await api(`/api/articles/${id}/networks/${net}`, { method: 'POST' }); toast((r.ok ? '✓ ' : '✗ ') + r.message); render() } catch (e) { toast(e.message); b.disabled = false } };
+window.saveNetPrefs = saveNetPrefs;
 
 /* ---------- Editor ---------- */
 function cw(c) { const W = { ' ': .26, '.': .28, ',': .28, ':': .28, ';': .28, '-': .36, "'": .25 }; if (c in W) return W[c]; if ('iljIJ1!¡íÍ'.includes(c)) return .33; if ('tf'.includes(c)) return .40; if ('mwMW'.includes(c)) return .92; if (c !== c.toLowerCase()) return .72; if (/[0-9]/.test(c)) return .62; return .60 }
@@ -256,7 +267,7 @@ window.reviewed = async () => {
 };
 window.publish = async () => {
   const b = $('#pubBtn'); b.disabled = true; b.textContent = 'Publicando…';
-  try { await saveArticle(); const r = await api(`/api/articles/${editorId}/publish`, { method: 'POST' }); toast(r.published ? 'Publicada en la web' : r.message || 'Aprobada'); render() }
+  try { await saveArticle(); const r = await api(`/api/articles/${editorId}/publish`, { method: 'POST', body: JSON.stringify({ networks: pickedNets() }) }); publishReport(r); render() }
   catch (e) { toast(e.message); b.disabled = false; b.textContent = 'Publicar' }
 };
 window.autoPhoto = async () => {
@@ -298,7 +309,7 @@ window.carousel = async () => {
 
 /* ---------- Ajustes ---------- */
 async function settings(v) {
-  const [h, caps, srcs] = await Promise.all([api('/api/health'), api('/api/capabilities'), api('/api/sources')]);
+  const [h, caps, srcs, nets] = await Promise.all([api('/api/health'), api('/api/capabilities'), api('/api/sources'), api('/api/networks').catch(() => ({}))]);
   v.innerHTML = `<section class="panel"><h2>Redacción con IA</h2>
       <p>${h.ai_configured ? `Redacta ${{ openai: 'ChatGPT', anthropic: 'Claude', gemini: 'Gemini (gratis)' }[h.ai_provider] || h.ai_provider}.` : 'Sin IA: los borradores se preparan a partir de la fuente. Añade GEMINI_API_KEY (gratis) en Railway.'}</p>
       <p class="muted small">${h.paid_ai_allowed ? 'Las IA de pago están permitidas.' : 'Modo sin coste: ChatGPT y Claude están desactivados aunque tengan clave.'}</p>
@@ -307,6 +318,18 @@ async function settings(v) {
       <button class="btn small" id="photoCheck">Comprobar fotos</button><div id="photoOut"></div></section>
     <section class="panel"><h2>Canva</h2><p>${caps.canva_connected ? 'Conectado. Las imágenes usan tu plantilla de noticias.' : caps.canva_configured ? 'Falta autorizar la conexión.' : 'Faltan las credenciales de Canva en Railway.'}</p>
       ${caps.canva_configured ? `<button class="btn small" id="canvaConn">${caps.canva_connected ? 'Volver a conectar' : 'Conectar Canva'}</button>` : ''}</section>
+    <section class="panel"><h2>Redes sociales</h2>
+      <p class="muted small">Solo se publica cuando pulsas «Publicar». Se usa la imagen de Canva (o el carrusel, si lo has creado) y el texto de la noticia.</p>
+      <div class="netrow"><b>Facebook e Instagram</b>
+        <p>${nets.facebook && nets.facebook.connected ? `Página: ${esc(nets.facebook.name || 'conectada')}. Instagram: ${nets.instagram.connected ? '@' + esc(nets.instagram.name || 'conectado') : '<span class="error">la página no tiene una cuenta profesional de Instagram unida</span>'}` : nets.meta_login ? 'Sin conectar.' : 'Faltan META_APP_ID y META_APP_SECRET en Railway.'}</p>
+        ${(nets.pages || []).length > 1 ? `<label>Página<select id="pagePick">${nets.pages.map(p => `<option value="${esc(p.id)}" ${p.name === nets.facebook.name ? 'selected' : ''}>${esc(p.name)}${p.instagram ? ' · @' + esc(p.instagram) : ''}</option>`).join('')}</select></label>` : ''}
+        ${nets.meta_login ? `<div class="row wrap"><button class="btn small" id="metaConn">${nets.facebook && nets.facebook.connected ? 'Volver a conectar' : 'Conectar Facebook e Instagram'}</button>${nets.facebook && nets.facebook.connected ? '<button class="link" id="metaOff">Desconectar</button>' : ''}</div>` : ''}
+        ${nets.meta_callback ? `<p class="muted small">Dirección de retorno para la app de Meta: <code>${esc(nets.meta_callback)}</code></p>` : ''}</div>
+      <div class="netrow"><b>TikTok</b>
+        <p>${nets.tiktok && nets.tiktok.connected ? 'Conectado' + (nets.tiktok.name ? ': ' + esc(nets.tiktok.name) : '') + '.' : nets.tiktok_configured ? 'Sin conectar.' : 'Faltan TIKTOK_CLIENT_KEY y TIKTOK_CLIENT_SECRET en Railway.'}</p>
+        ${nets.tiktok_configured ? `<div class="row wrap"><button class="btn small" id="ttConn">${nets.tiktok && nets.tiktok.connected ? 'Volver a conectar' : 'Conectar TikTok'}</button>${nets.tiktok && nets.tiktok.connected ? '<button class="link" id="ttOff">Desconectar</button>' : ''}</div>` : ''}
+        ${nets.tiktok_callback ? `<p class="muted small">Dirección de retorno para la app de TikTok: <code>${esc(nets.tiktok_callback)}</code><br>Prefijo de URL que hay que verificar en TikTok: <code>${esc(nets.tiktok_url_prefix)}</code></p>` : ''}</div>
+      ${nets.public_url_ok === false ? '<p class="error small">Falta PUBLIC_BASE_URL (https://…) en Railway: las redes no podrían descargar la imagen.</p>' : ''}</section>
     <section class="panel"><h2>Web</h2><p>${h.auto_publish ? '«Aprobar y publicar» envía la noticia a infolinense.com.' : 'La publicación en infolinense.com no está configurada: «Aprobar y publicar» solo aprueba.'}</p></section>
     <section class="panel"><h2>Fuentes</h2>
       <div class="sources">${srcs.map(s => `<div class="srcrow"><label class="switch"><input type="checkbox" ${s.active ? 'checked' : ''} onchange="toggleSource(${s.id})"> ${esc(s.name)}</label>${s.last_error ? `<span class="error small">Error</span>` : `<span class="muted small">${s.items_added ?? 0} nuevas</span>`}</div>`).join('')}</div>
@@ -328,6 +351,13 @@ async function settings(v) {
     try { const r = await api('/api/photos/check'); $('#photoOut').innerHTML = r.providers.map(p => `<p class="${p.count ? 'ok' : p.count === null ? 'muted' : 'error'}"><b>${esc(p.name)}</b>: ${p.count === null ? 'sin configurar' : p.count + ' fotos'}</p>`).join('') }
     catch (er) { $('#photoOut').innerHTML = `<p class="error">${esc(er.message)}</p>` } finally { e.target.disabled = false; e.target.textContent = 'Comprobar fotos' }
   };
+  const conn = async net => { try { location.href = (await api(`/api/networks/${net}/connect`)).url } catch (e) { toast(e.message) } };
+  const off = async net => { if (!confirm('¿Desconectar?')) return; try { await api(`/api/networks/${net}/disconnect`, { method: 'POST' }); render() } catch (e) { toast(e.message) } };
+  if ($('#metaConn')) $('#metaConn').onclick = () => conn('meta');
+  if ($('#ttConn')) $('#ttConn').onclick = () => conn('tiktok');
+  if ($('#metaOff')) $('#metaOff').onclick = () => off('meta');
+  if ($('#ttOff')) $('#ttOff').onclick = () => off('tiktok');
+  if ($('#pagePick')) $('#pagePick').onchange = async e => { try { const r = await api('/api/networks/meta/page', { method: 'POST', body: JSON.stringify({ page_id: e.target.value }) }); toast('Página: ' + r.name); render() } catch (er) { toast(er.message) } };
   const cc = $('#canvaConn'); if (cc) cc.onclick = async () => { try { location.href = (await api('/api/canva/connect')).url } catch (e) { toast(e.message) } };
   $('#addSrc').onsubmit = async e => { e.preventDefault(); const d = Object.fromEntries(new FormData(e.target)); try { await api('/api/sources', { method: 'POST', body: JSON.stringify({ ...d, priority: 60 }) }); toast('Fuente añadida'); render() } catch (er) { toast(er.message) } };
 }

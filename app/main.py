@@ -9,16 +9,19 @@ from fastapi.responses import FileResponse, RedirectResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from . import db, sources, pipeline, publishers, photos, canva, ai, planner, layout, social
+from . import db, sources, pipeline, publishers, photos, canva, ai, planner, layout, social, social_publish
 from .auth import login, require_auth
 from .config import BASE_DIR, RENDER_DIR, UPLOAD_DIR, SCAN_INTERVAL_MINUTES, AUTO_PIPELINE, OPENAI_API_KEY, ADMIN_PASSWORD, JWT_SECRET, PUBLISH_MODE, CORS_ORIGINS, PUBLIC_BASE_URL, AUTO_PUBLISH
 
-VERSION='4.7.0'
+VERSION='5.0.0'
 app=FastAPI(title='InfoLinense Desk',version=VERSION)
 app.add_middleware(CORSMiddleware,allow_origins=CORS_ORIGINS,allow_credentials=False,allow_methods=['*'],allow_headers=['Authorization','Content-Type'])
 db.init_db()
+social_publish.init_tables()
 
 class LoginIn(BaseModel): password:str
+class PublishIn(BaseModel): networks:list[str]|None=None
+class PageIn(BaseModel): page_id:str
 class SourceIn(BaseModel):
     name:str
     url:str
@@ -261,6 +264,8 @@ def to_publish():
                       LEFT JOIN canva_designs d ON d.article_id=a.id
                       WHERE a.status IN ('review_ready','approved') OR (a.status='published' AND a.updated_at>=date('now'))""")
     for r in rows: r['has_photo']=bool(r.pop('image_local',None))
+    posts=social_publish.posts_for([r['id'] for r in rows])
+    for r in rows: r['networks']=posts.get(r['id'],{})
     rows.sort(key=lambda r:(r['status']=='published',r.get('planned_at') or '9999'))
     return rows
 
@@ -638,25 +643,93 @@ def research_more(aid:int):
     new_aid=pipeline.process_candidate(a['candidate_id'],force_research=True)
     return db.row('SELECT * FROM articles WHERE id=?',(new_aid,))
 @app.post('/api/articles/{aid}/publish',dependencies=[Depends(require_auth)])
-def publish(aid:int):
-    """«Aprobar y publicar»: aprueba la noticia y la publica en la web (Lovable) si está configurada."""
+def publish(aid:int,body:PublishIn|None=None):
+    """«Publicar»: aprueba la noticia y la publica en la web y en las redes elegidas (solo al pulsar el botón)."""
     a=db.row('SELECT a.*,c.url source_url,c.source_name,c.outlet FROM articles a LEFT JOIN candidates c ON c.id=a.candidate_id WHERE a.id=?',(aid,))
     if not a: raise HTTPException(404)
-    if a['status']=='published': return {'ok':True,'url':a.get('publish_url') or '','published':True}
-    if not (a.get('headline') or '').strip() or not (a.get('body') or '').strip(): raise HTTPException(400,'Falta el titular o el texto')
-    if not a.get('image_local') or not Path(a['image_local']).is_file(): raise HTTPException(400,'Elige una foto antes de publicar')
-    db.exec_("UPDATE articles SET status='approved',updated_at=CURRENT_TIMESTAMP WHERE id=?",(aid,))
-    db.exec_("UPDATE candidates SET status='review_ready' WHERE id=?",(a['candidate_id'],))
-    if PUBLISH_MODE=='none' or not AUTO_PUBLISH:
-        return {'ok':True,'published':False,'message':'Aprobada. La publicación en la web no está configurada en Railway.'}
+    nets=social_publish.connected_networks() if body is None or body.networks is None else [n for n in body.networks if n in social_publish.NETWORKS]
+    results=[]
+    web={'network':'web','ok':a['status']=='published','url':a.get('publish_url') or ''}
+    if a['status']!='published':
+        if not (a.get('headline') or '').strip() or not (a.get('body') or '').strip(): raise HTTPException(400,'Falta el titular o el texto')
+        if not a.get('image_local') or not Path(a['image_local']).is_file(): raise HTTPException(400,'Elige una foto antes de publicar')
+        db.exec_("UPDATE articles SET status='approved',updated_at=CURRENT_TIMESTAMP WHERE id=?",(aid,))
+        db.exec_("UPDATE candidates SET status='review_ready' WHERE id=?",(a['candidate_id'],))
+        if PUBLISH_MODE=='none' or not AUTO_PUBLISH:
+            web={'network':'web','ok':False,'skipped':True,'message':'La web no está configurada en Railway'}
+        else:
+            try:
+                url=publishers.publish(a)
+                db.exec_("UPDATE articles SET status='published',publish_url=?,updated_at=CURRENT_TIMESTAMP WHERE id=?",(url,aid))
+                db.log('publish',f'Noticia {aid} publicada en la web')
+                db.exec_("UPDATE candidates SET status='published' WHERE id=?",(a['candidate_id'],))
+                web={'network':'web','ok':True,'url':url,'message':'Publicada en la web'}
+            except Exception as e:
+                web={'network':'web','ok':False,'message':'La web no aceptó la noticia: '+str(e)[:250]}
+    results.append(web)
+    for n in nets: results.append(social_publish.publish(n,a))
+    if not web['ok'] and web.get('skipped') and any(r['ok'] for r in results[1:]):
+        db.exec_("UPDATE articles SET status='published',updated_at=CURRENT_TIMESTAMP WHERE id=?",(aid,))
+        db.exec_("UPDATE candidates SET status='published' WHERE id=?",(a['candidate_id'],))
+    published=any(r['ok'] for r in results)
+    summary='; '.join(r.get('message') or '' for r in results if r.get('message'))
+    return {'ok':True,'published':published,'url':web.get('url') or '','results':results,'message':summary or 'Aprobada'}
+
+@app.post('/api/articles/{aid}/networks/{network}',dependencies=[Depends(require_auth)])
+def publish_network(aid:int,network:str):
+    """Reintentar o publicar en una sola red."""
+    a=db.row('SELECT * FROM articles WHERE id=?',(aid,))
+    if not a: raise HTTPException(404)
+    if network not in social_publish.NETWORKS: raise HTTPException(404)
+    return social_publish.publish(network,a)
+
+@app.get('/p/{name}')
+def public_media(name:str):
+    """Imagen pública temporal para que Instagram, Facebook y TikTok la descarguen."""
+    if social_publish.TIKTOK_VERIFY_FILE and name==social_publish.TIKTOK_VERIFY_FILE:
+        from fastapi.responses import PlainTextResponse
+        return PlainTextResponse(social_publish.TIKTOK_VERIFY_CONTENT)  # verificación de la URL en TikTok
+    path=social_publish.public_file(name.removesuffix('.jpg'))
+    if not path: raise HTTPException(404)
+    return FileResponse(path,media_type='image/jpeg')
+
+@app.get('/api/networks',dependencies=[Depends(require_auth)])
+def networks_status(): return social_publish.status()
+
+@app.get('/api/networks/{network}/connect',dependencies=[Depends(require_auth)])
+def networks_connect(network:str):
     try:
-        url=publishers.publish(a)
-    except Exception as e:
-        raise HTTPException(502,'Aprobada, pero la web no aceptó la noticia: '+str(e)[:250])
-    db.exec_("UPDATE articles SET status='published',publish_url=?,updated_at=CURRENT_TIMESTAMP WHERE id=?",(url,aid))
-    db.log('publish',f'Noticia {aid} publicada en la web')
-    db.exec_("UPDATE candidates SET status='published' WHERE id=?",(a['candidate_id'],))
-    return {'ok':True,'url':url,'published':True}
+        if network=='meta': return {'url':social_publish.meta_login_url()}
+        if network=='tiktok': return {'url':social_publish.tiktok_login_url()}
+    except social_publish.SocialError as e: raise HTTPException(400,str(e))
+    raise HTTPException(404)
+
+def _network_done(error=''):
+    return RedirectResponse((PUBLIC_BASE_URL or '')+'/#settings'+('?error='+error if error else ''),status_code=303)
+
+@app.get('/api/networks/meta/callback')
+def meta_callback(code:str='',state:str='',error:str='',error_description:str=''):
+    if error or not code: raise HTTPException(400,'Facebook no autorizó la conexión: '+(error_description or error)[:200])
+    try: social_publish.meta_complete(code,state)
+    except social_publish.SocialError as e: raise HTTPException(400,str(e))
+    return _network_done()
+
+@app.get('/api/networks/tiktok/callback')
+def tiktok_callback(code:str='',state:str='',error:str='',error_description:str=''):
+    if error or not code: raise HTTPException(400,'TikTok no autorizó la conexión: '+(error_description or error)[:200])
+    try: social_publish.tiktok_complete(code,state)
+    except social_publish.SocialError as e: raise HTTPException(400,str(e))
+    return _network_done()
+
+@app.post('/api/networks/meta/page',dependencies=[Depends(require_auth)])
+def meta_page(p:PageIn):
+    try: page=social_publish.meta_choose_page(p.page_id); return {'ok':True,'name':page.get('name'),'instagram':page.get('instagram_username')}
+    except social_publish.SocialError as e: raise HTTPException(400,str(e))
+
+@app.post('/api/networks/{network}/disconnect',dependencies=[Depends(require_auth)])
+def networks_disconnect(network:str):
+    if network not in ('meta','tiktok'): raise HTTPException(404)
+    social_publish.disconnect(network); return {'ok':True}
 @app.get('/api/sources',dependencies=[Depends(require_auth)])
 def list_sources(): return db.rows('SELECT * FROM sources ORDER BY priority DESC')
 def validate_source(s):

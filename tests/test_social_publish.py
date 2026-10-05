@@ -113,6 +113,40 @@ class SocialPublishTests(unittest.TestCase):
         self.assertEqual((page['id'], page['instagram_id']), ('P9', 'IG9'))
         self.assertTrue(sp.status()['instagram']['connected'])
 
+    def test_instagram_direct_login_without_facebook_page(self):
+        db.exec_("DELETE FROM social_accounts WHERE network='meta'")
+        sp.INSTAGRAM_APP_ID, sp.INSTAGRAM_APP_SECRET = '55', 'sec'
+        url = sp.instagram_login_url()
+        self.assertIn('instagram.com/oauth/authorize', url)
+        self.assertIn('instagram_business_content_publish', url)
+        state = url.split('state=')[1].split('&')[0]
+        def fake_post(url, data=None, **kw):
+            self.assertEqual(data['grant_type'], 'authorization_code')
+            return Resp({'access_token': 'SHORT', 'user_id': 123})
+        def fake(method, url, **kw):
+            if url.endswith('/access_token'): return Resp({'access_token': 'LONGIG', 'expires_in': 5184000})
+            if url.endswith('/me'): return Resp({'user_id': '178', 'username': 'infolinense'})
+            return Resp({'error': {'message': 'x'}}, 400)
+        with patch.object(sp.requests, 'post', side_effect=fake_post), patch.object(sp.requests, 'request', side_effect=fake):
+            sp.instagram_complete('CODE#_', state)
+        st = sp.status()
+        self.assertTrue(st['instagram']['connected'] and st['instagram']['direct'])
+        self.assertFalse(st['facebook']['connected'])
+        self.assertEqual(sp.connected_networks(), ['instagram'])
+        self.assertNotIn('LONGIG', str(st))
+        hosts = []
+        def fake_pub(method, url, **kw):
+            hosts.append(url)
+            if url.endswith('/178/media'): return Resp({'id': 'C1'})
+            if url.endswith('/C1'): return Resp({'status_code': 'FINISHED'})
+            if url.endswith('/178/media_publish'): return Resp({'id': 'M1'})
+            if url.endswith('/M1'): return Resp({'permalink': 'https://instagram.com/p/y'})
+            return Resp({'error': {'message': 'inesperado'}}, 400)
+        with patch.object(sp.requests, 'request', side_effect=fake_pub):
+            r = sp.publish('instagram', dict(self.article, id=79))
+        self.assertTrue(r['ok'], r)
+        self.assertTrue(all(h.startswith('https://graph.instagram.com/') for h in hosts))
+
     def test_status_never_exposes_tokens(self):
         self.assertNotIn('TOK', str(sp.status()))
 

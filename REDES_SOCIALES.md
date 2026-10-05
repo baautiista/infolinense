@@ -6,25 +6,22 @@ Antes de nada, comprueba que en Railway existe `PUBLIC_BASE_URL` con la direcci�
 
 ---
 
-## 1. Facebook e Instagram (una sola conexión)
+## 1. Instagram (directo, sin página de Facebook)
 
-**Lo que necesitas:**
-- Una **página de Facebook** de InfoLinense de la que seas administrador.
-- La cuenta de Instagram tiene que ser **profesional** (Empresa o Creador) y estar **unida a esa página**. Esto se hace en Instagram: Configuración → Cuenta → Compartir en otras apps / Centro de cuentas.
+1. En https://developers.facebook.com abre tu app → **Añadir producto** → **Instagram** → **Configuración de la API con inicio de sesión de Instagram**.
+2. En el apartado **3. Configurar el inicio de sesión de la empresa de Instagram**, pega como URL de redireccionamiento la dirección que aparece en el panel (termina en `/api/networks/instagram/callback`).
+3. Copia el **Identificador de la app de Instagram** y la **Clave secreta de la app de Instagram** (son distintos de los de Meta) y ponlos en Railway:
+   - `INSTAGRAM_APP_ID`
+   - `INSTAGRAM_APP_SECRET`
+4. Mientras la app esté en modo desarrollo: **Roles de la app → Roles → Añadir personas → Probador de Instagram** y escribe tu usuario de Instagram. Acepta la invitación en Instagram (Configuración → Apps y sitios web → Invitaciones de probador).
+5. La cuenta de Instagram tiene que ser **profesional** (Empresa o Creador). No hace falta página de Facebook.
+6. En el panel: **Ajustes → Redes sociales → Conectar Instagram**. El acceso dura 60 días y el panel lo renueva solo.
 
-**Pasos:**
-1. Entra en https://developers.facebook.com → **Mis apps** → **Crear app** → tipo **Empresa** (Business).
-2. Dentro de la app, añade el producto **Inicio de sesión con Facebook para empresas** (o «Facebook Login»).
-3. En la configuración de ese producto, en **URI de redireccionamiento de OAuth válidos**, pega la dirección que aparece en el panel (Ajustes → Redes sociales). Termina en `/api/networks/meta/callback`.
-4. Añade también el producto **Instagram** (API de Instagram con inicio de sesión de Facebook).
-5. En **Configuración → Básica** copia el **Identificador de la app** y la **Clave secreta**.
-6. En Railway → Variables, añade:
-   - `META_APP_ID` = identificador de la app
-   - `META_APP_SECRET` = clave secreta
-7. Redespliega. En el panel, ve a **Ajustes → Redes sociales → Conectar Facebook e Instagram**. Acepta todos los permisos y marca tu página.
-8. Si administras varias páginas, elige la de InfoLinense en el desplegable.
+## Facebook (perfil personal)
 
-Mientras la app esté en «modo desarrollo» funciona para ti, porque eres el administrador de la app. No hace falta revisión de Meta para publicar en tu propia página.
+Meta no permite publicar en perfiles personales de forma automática. En cada noticia hay un botón **«Compartir en Facebook»**: la primera pulsación prepara la imagen y el texto; la segunda abre el menú «Compartir» del móvil (elige Facebook) y deja el texto copiado para pegarlo. En el ordenador descarga la imagen, copia el texto y abre Facebook.
+
+Si algún día creas una página de Facebook, se puede conectar desde Ajustes (apartado «Solo si algún día creas una página») con `META_APP_ID` y `META_APP_SECRET`.
 
 ---
 

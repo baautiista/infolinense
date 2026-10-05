@@ -13,7 +13,7 @@ from . import db, sources, pipeline, publishers, photos, canva, ai, planner, lay
 from .auth import login, require_auth
 from .config import BASE_DIR, RENDER_DIR, UPLOAD_DIR, SCAN_INTERVAL_MINUTES, AUTO_PIPELINE, OPENAI_API_KEY, ADMIN_PASSWORD, JWT_SECRET, PUBLISH_MODE, CORS_ORIGINS, PUBLIC_BASE_URL, AUTO_PUBLISH
 
-VERSION='5.4.0'
+VERSION='5.5.0'
 app=FastAPI(title='InfoLinense Desk',version=VERSION)
 app.add_middleware(CORSMiddleware,allow_origins=CORS_ORIGINS,allow_credentials=False,allow_methods=['*'],allow_headers=['Authorization','Content-Type'])
 db.init_db()
@@ -713,6 +713,7 @@ def networks_connect(network:str):
     try:
         if network=='meta': return {'url':social_publish.meta_login_url()}
         if network=='tiktok': return {'url':social_publish.tiktok_login_url()}
+        if network=='instagram': return {'url':social_publish.instagram_login_url()}
     except social_publish.SocialError as e: raise HTTPException(400,str(e))
     raise HTTPException(404)
 
@@ -751,6 +752,26 @@ def tiktok_callback(request:Request):
     try: social_publish.tiktok_complete(code,params.get('state',''))
     except social_publish.SocialError as e: return _oauth_problem('TikTok',str(e),{})
     return _network_done()
+
+@app.get('/api/networks/instagram/callback')
+def instagram_callback(request:Request):
+    params=dict(request.query_params)
+    code=params.get('code','')
+    if not code or params.get('error'):
+        return _oauth_problem('Instagram',params.get('error_description') or params.get('error_reason') or params.get('error') or 'Instagram no devolvió la autorización.',params)
+    try: social_publish.instagram_complete(code,params.get('state',''))
+    except social_publish.SocialError as e: return _oauth_problem('Instagram',str(e),{})
+    return _network_done()
+
+@app.get('/api/articles/{aid}/share',dependencies=[Depends(require_auth)])
+def share_kit(aid:int):
+    """Texto e imágenes para compartir a mano (Facebook personal): no publica nada."""
+    a=db.row('SELECT * FROM articles WHERE id=?',(aid,))
+    if not a: raise HTTPException(404)
+    try: urls=[social_publish.public_image(p) for p in social_publish.article_images(a)]
+    except social_publish.SocialError as e: raise HTTPException(400,str(e))
+    return {'text':social_publish.caption(a,5000),'images':urls,'link':a.get('publish_url') or ''}
+
 @app.post('/api/networks/meta/token',dependencies=[Depends(require_auth)])
 def meta_token(t:TokenIn):
     """Conexión alternativa: pegar el token del Explorador de la API Graph de Meta."""
@@ -765,7 +786,7 @@ def meta_page(p:PageIn):
 
 @app.post('/api/networks/{network}/disconnect',dependencies=[Depends(require_auth)])
 def networks_disconnect(network:str):
-    if network not in ('meta','tiktok'): raise HTTPException(404)
+    if network not in ('meta','tiktok','instagram'): raise HTTPException(404)
     social_publish.disconnect(network); return {'ok':True}
 @app.get('/api/sources',dependencies=[Depends(require_auth)])
 def list_sources(): return db.rows('SELECT * FROM sources ORDER BY priority DESC')

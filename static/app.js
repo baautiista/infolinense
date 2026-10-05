@@ -183,9 +183,9 @@ async function publishView(v) {
   const row = r => `<article class="item slot"><div class="hour">${r.planned_at ? esc(String(r.planned_at).slice(11, 16)) : '–'}</div><div class="grow">
       <div class="meta">${secBadge(r.section)}<span class="st st-${r.status}">${STATUS[r.status]}</span><span>${r.canva_exported ? 'Imagen lista' : r.has_photo ? 'Con foto' : 'Sin foto'}</span></div>
       <h3><a href="#editor/${r.id}">${esc(r.headline)}</a></h3>
-      ${r.status === 'published' ? `<div class="row wrap">${r.publish_url ? `<a class="net ok" href="${safeUrl(r.publish_url)}" target="_blank" rel="noopener">Web ✓</a>` : ''}${netStatus(r)}</div>` :
+      ${r.status === 'published' ? `<div class="row wrap">${r.publish_url ? `<a class="net ok" href="${safeUrl(r.publish_url)}" target="_blank" rel="noopener">Web ✓</a>` : ''}${netStatus(r)}${r.canva_exported ? `<button class="net" onclick="shareFb(${r.id},this)">Compartir en Facebook</button>` : ''}</div>` :
         `<div class="row wrap"><input type="datetime-local" value="${esc(String(r.planned_at || '').slice(0, 16))}" onchange="setTime(${r.candidate_id},'${r.editorial_priority || 'today'}',this.value)">
-         <button class="btn small primary" onclick="publishNow(${r.id},this)">Publicar</button></div>`}</div></article>`;
+         <button class="btn small primary" onclick="publishNow(${r.id},this)">Publicar</button>${r.canva_exported ? `<button class="btn small" onclick="shareFb(${r.id},this)">Compartir en Facebook</button>` : ''}</div>`}</div></article>`;
   const todayRows = rows.filter(isTodayRow), later = rows.filter(r => !isTodayRow(r));
   v.innerHTML = rows.length ? `${picker}<h2 class="day">Hoy</h2><div class="list">${todayRows.map(row).join('') || '<p class="muted">Nada para hoy.</p>'}</div>
     ${later.length ? `<h2 class="day">Próximos días</h2><div class="list">${later.map(row).join('')}</div>` : ''}`
@@ -195,6 +195,31 @@ window.setTime = async (id, p, value) => { if (!value) return; try { await api(`
 function pickedNets() { const boxes = document.querySelectorAll('.netpick input'); if (boxes.length) return [...boxes].filter(i => i.checked).map(i => i.value); let saved = null; try { saved = JSON.parse(localStorage.getItem('nets') || 'null') } catch (e) { } return saved }
 function publishReport(r) { const lines = (r.results || []).filter(x => x.message).map(x => (x.ok ? '✓ ' : '✗ ') + x.message); toast(lines.join(' · ') || (r.published ? 'Publicada' : r.message || 'Aprobada')) }
 window.publishNow = async (id, b) => { b.disabled = true; b.textContent = 'Publicando…'; try { const r = await api(`/api/articles/${id}/publish`, { method: 'POST', body: JSON.stringify({ networks: pickedNets() }) }); publishReport(r); render(); counts() } catch (e) { toast(e.message); b.disabled = false; b.textContent = 'Publicar' } };
+// Facebook personal: Meta no deja publicar en perfiles por programa, así que se comparte a mano.
+// 1.ª pulsación: prepara imagen y texto. 2.ª: abre el menú «Compartir» del móvil (o descarga la imagen y abre Facebook).
+const shareKits = {};
+window.shareFb = async (id, b) => {
+  const kit = shareKits[id];
+  if (!kit) {
+    b.disabled = true; const label = b.textContent; b.textContent = 'Preparando…';
+    try {
+      const k = await api(`/api/articles/${id}/share`);
+      const files = [];
+      for (const [i, u] of k.images.entries()) { const r = await fetch(u); if (r.ok) files.push(new File([await r.blob()], `infolinense-${id}-${i + 1}.jpg`, { type: 'image/jpeg' })) }
+      shareKits[id] = { text: k.text + (k.link ? '\n\n' + k.link : ''), files };
+      b.textContent = 'Compartir ahora'; toast('Listo: pulsa «Compartir ahora»');
+    } catch (e) { toast(e.message); b.textContent = label } finally { b.disabled = false }
+    return;
+  }
+  const copied = navigator.clipboard ? navigator.clipboard.writeText(kit.text).then(() => true, () => false) : Promise.resolve(false);
+  if (kit.files.length && navigator.canShare && navigator.canShare({ files: kit.files })) {
+    try { await navigator.share({ files: kit.files, text: kit.text }); toast((await copied) ? 'Texto copiado: si Facebook no lo pone, mantén pulsado y «Pegar»' : 'Compartido'); return }
+    catch (e) { if (e.name === 'AbortError') return }
+  }
+  for (const f of kit.files) { const a = document.createElement('a'); a.href = URL.createObjectURL(f); a.download = f.name; document.body.appendChild(a); a.click(); a.remove() }
+  window.open('https://www.facebook.com/', '_blank', 'noopener');
+  toast((await copied) ? 'Imagen descargada y texto copiado. En Facebook: «¿Qué estás pensando?» → pega el texto y añade la foto' : 'Imagen descargada. Copia el texto con el botón «Copiar»');
+};
 window.retryNet = async (id, net, b) => { b.disabled = true; b.textContent = 'Publicando…'; try { const r = await api(`/api/articles/${id}/networks/${net}`, { method: 'POST' }); toast((r.ok ? '✓ ' : '✗ ') + r.message); render() } catch (e) { toast(e.message); b.disabled = false } };
 window.saveNetPrefs = saveNetPrefs;
 
@@ -234,6 +259,7 @@ async function editor(v) {
   <div class="actions">
     <button class="btn" onclick="save(true)">Guardar</button>
     <button class="btn" onclick="copyText()">Copiar</button>
+    ${a.status !== 'draft' ? `<button class="btn" onclick="shareFb(${a.id},this)">Compartir en Facebook</button>` : ''}
     ${published ? '<span class="muted">Publicada</span>' : a.status === 'draft' ? `<button class="btn primary" onclick="reviewed()">Revisada</button>` : `<button class="btn primary" id="pubBtn" onclick="publish()">Publicar</button>`}
   </div>`;
   const f = id => $(`#f-${id}`);
@@ -320,12 +346,15 @@ async function settings(v) {
       ${caps.canva_configured ? `<button class="btn small" id="canvaConn">${caps.canva_connected ? 'Volver a conectar' : 'Conectar Canva'}</button>` : ''}</section>
     <section class="panel"><h2>Redes sociales</h2>
       <p class="muted small">Solo se publica cuando pulsas «Publicar». Se usa la imagen de Canva (o el carrusel, si lo has creado) y el texto de la noticia.</p>
-      <div class="netrow"><b>Facebook e Instagram</b>
-        <p>${nets.facebook && nets.facebook.connected ? `Página: ${esc(nets.facebook.name || 'conectada')}. Instagram: ${nets.instagram.connected ? '@' + esc(nets.instagram.name || 'conectado') : '<span class="error">la página no tiene una cuenta profesional de Instagram unida</span>'}` : nets.meta_login ? 'Sin conectar.' : 'Faltan META_APP_ID y META_APP_SECRET en Railway.'}</p>
-        ${(nets.pages || []).length > 1 ? `<label>Página<select id="pagePick">${nets.pages.map(p => `<option value="${esc(p.id)}" ${p.name === nets.facebook.name ? 'selected' : ''}>${esc(p.name)}${p.instagram ? ' · @' + esc(p.instagram) : ''}</option>`).join('')}</select></label>` : ''}
-        ${nets.meta_login ? `<div class="row wrap"><button class="btn small" id="metaConn">${nets.facebook && nets.facebook.connected ? 'Volver a conectar' : 'Conectar Facebook e Instagram'}</button>${nets.facebook && nets.facebook.connected ? '<button class="link" id="metaOff">Desconectar</button>' : ''}</div>` : ''}
-        ${nets.meta_callback ? `<p class="muted small">Dirección de retorno para la app de Meta: <code>${esc(nets.meta_callback)}</code></p>` : ''}
-        ${nets.meta_login ? `<details class="alts"><summary>Conectar pegando un token (si el botón falla)</summary><form id="metaTok" class="stack"><input name="token" placeholder="Pega aquí el token del Explorador de la API Graph" autocomplete="off"><button class="btn small">Conectar con este token</button></form></details>` : ''}</div>
+      <div class="netrow"><b>Instagram</b>
+        <p>${nets.instagram && nets.instagram.connected ? 'Conectado: @' + esc(nets.instagram.name || 'cuenta') + '. Se publica automático al pulsar «Publicar».' : nets.instagram_login ? 'Sin conectar.' : 'Faltan INSTAGRAM_APP_ID e INSTAGRAM_APP_SECRET en Railway.'}</p>
+        ${nets.instagram_login ? `<div class="row wrap"><button class="btn small" id="igConn">${nets.instagram && nets.instagram.direct ? 'Volver a conectar' : 'Conectar Instagram'}</button>${nets.instagram && nets.instagram.direct ? '<button class="link" id="igOff">Desconectar</button>' : ''}</div>` : ''}
+        ${nets.instagram_callback ? `<p class="muted small">Dirección de retorno para «Instagram → Configuración de la API con inicio de sesión de Instagram»: <code>${esc(nets.instagram_callback)}</code></p>` : ''}</div>
+      <div class="netrow"><b>Facebook</b>
+        ${nets.facebook && nets.facebook.connected ? `<p>Página: ${esc(nets.facebook.name || 'conectada')}. Se publica automático.</p><button class="link" id="metaOff">Desconectar página</button>` : '<p>Tu cuenta personal no se toca. Meta no permite publicar en perfiles personales de forma automática, así que en cada noticia tienes el botón <b>«Compartir en Facebook»</b>: deja la imagen y el texto listos y solo tienes que pulsar «Publicar» en Facebook.</p>'}
+        ${(nets.pages || []).length > 1 ? `<label>Página<select id="pagePick">${nets.pages.map(p => `<option value="${esc(p.id)}" ${p.name === nets.facebook.name ? 'selected' : ''}>${esc(p.name)}</option>`).join('')}</select></label>` : ''}
+        ${nets.meta_login && !(nets.facebook && nets.facebook.connected) ? `<details class="alts"><summary>Solo si algún día creas una página de Facebook</summary><button class="btn small" id="metaConn">Conectar página de Facebook</button>
+          <form id="metaTok" class="stack"><input name="token" placeholder="O pega el token del Explorador de la API Graph" autocomplete="off"><button class="btn small">Conectar con este token</button></form></details>` : ''}</div>
       <div class="netrow"><b>TikTok</b>
         <p>${nets.tiktok && nets.tiktok.connected ? 'Conectado' + (nets.tiktok.name ? ': ' + esc(nets.tiktok.name) : '') + '.' : nets.tiktok_configured ? 'Sin conectar.' : 'Faltan TIKTOK_CLIENT_KEY y TIKTOK_CLIENT_SECRET en Railway.'}</p>
         ${nets.tiktok_configured ? `<div class="row wrap"><button class="btn small" id="ttConn">${nets.tiktok && nets.tiktok.connected ? 'Volver a conectar' : 'Conectar TikTok'}</button>${nets.tiktok && nets.tiktok.connected ? '<button class="link" id="ttOff">Desconectar</button>' : ''}</div>` : ''}
@@ -357,6 +386,8 @@ async function settings(v) {
   if ($('#metaConn')) $('#metaConn').onclick = () => conn('meta');
   if ($('#metaTok')) $('#metaTok').onsubmit = async e => { e.preventDefault(); const b = e.target.querySelector('button'); b.disabled = true; b.textContent = 'Conectando…'; try { const r = await api('/api/networks/meta/token', { method: 'POST', body: JSON.stringify({ token: e.target.token.value }) }); toast('Conectado: ' + r.name + (r.instagram ? ' · @' + r.instagram : '')); render() } catch (er) { toast(er.message); b.disabled = false; b.textContent = 'Conectar con este token' } };
   if ($('#ttConn')) $('#ttConn').onclick = () => conn('tiktok');
+  if ($('#igConn')) $('#igConn').onclick = () => conn('instagram');
+  if ($('#igOff')) $('#igOff').onclick = () => off('instagram');
   if ($('#metaOff')) $('#metaOff').onclick = () => off('meta');
   if ($('#ttOff')) $('#ttOff').onclick = () => off('tiktok');
   if ($('#pagePick')) $('#pagePick').onchange = async e => { try { const r = await api('/api/networks/meta/page', { method: 'POST', body: JSON.stringify({ page_id: e.target.value }) }); toast('Página: ' + r.name); render() } catch (er) { toast(er.message) } };

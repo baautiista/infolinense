@@ -33,6 +33,11 @@ META_GRAPH_VERSION = os.getenv('META_GRAPH_VERSION', 'v21.0').strip()
 META_PAGE_ID = os.getenv('META_PAGE_ID', '').strip()
 META_PAGE_TOKEN = os.getenv('META_PAGE_TOKEN', '').strip()
 INSTAGRAM_USER_ID = os.getenv('INSTAGRAM_USER_ID', '').strip()
+# Instagram directo (sin página de Facebook): «API de Instagram con inicio de sesión de Instagram»
+INSTAGRAM_APP_ID = os.getenv('INSTAGRAM_APP_ID', '').strip()
+INSTAGRAM_APP_SECRET = os.getenv('INSTAGRAM_APP_SECRET', '').strip()
+IG_GRAPH = 'https://graph.instagram.com/' + os.getenv('META_GRAPH_VERSION', 'v21.0').strip()
+IG_SCOPES = 'instagram_business_basic,instagram_business_content_publish'
 TIKTOK_CLIENT_KEY = os.getenv('TIKTOK_CLIENT_KEY', '').strip()
 TIKTOK_CLIENT_SECRET = os.getenv('TIKTOK_CLIENT_SECRET', '').strip()
 TIKTOK_VERIFY_FILE = os.getenv('TIKTOK_VERIFY_FILE', '').strip()
@@ -110,8 +115,11 @@ def status():
         'meta_login': bool(META_APP_ID and META_APP_SECRET and PUBLIC_BASE_URL),
         'meta_callback': PUBLIC_BASE_URL + '/api/networks/meta/callback' if PUBLIC_BASE_URL else '',
         'facebook': {'connected': bool(meta.get('access_token')), 'name': meta.get('name') or ''},
-        'instagram': {'connected': bool(meta.get('access_token') and meta.get('instagram_id')),
-                      'name': meta.get('instagram_username') or ''},
+        'instagram': {'connected': bool((_account('instagram') or {}).get('access_token')) or bool(meta.get('access_token') and meta.get('instagram_id')),
+                      'name': (_account('instagram') or {}).get('username') or meta.get('instagram_username') or '',
+                      'direct': bool((_account('instagram') or {}).get('access_token'))},
+        'instagram_login': bool(INSTAGRAM_APP_ID and INSTAGRAM_APP_SECRET and PUBLIC_BASE_URL),
+        'instagram_callback': PUBLIC_BASE_URL + '/api/networks/instagram/callback' if PUBLIC_BASE_URL else '',
         'pages': [{'id': p['id'], 'name': p.get('name') or '', 'instagram': p.get('instagram_username') or ''}
                   for p in acc.get('pages', [])],
         'tiktok_configured': bool(TIKTOK_CLIENT_KEY and TIKTOK_CLIENT_SECRET and PUBLIC_BASE_URL),
@@ -156,9 +164,9 @@ def meta_login_url():
     return 'https://www.facebook.com/%s/dialog/oauth?' % META_GRAPH_VERSION + urlencode(params)
 
 
-def _graph(method, path, **kw):
+def _graph(method, path, base=None, **kw):
     try:
-        r = requests.request(method, GRAPH + path, timeout=60, **kw)
+        r = requests.request(method, (base or GRAPH) + path, timeout=60, **kw)
         data = r.json()
     except (requests.RequestException, ValueError) as exc:
         raise SocialError('Meta no responde: %s' % str(exc)[:150])
@@ -212,6 +220,54 @@ def meta_choose_page(page_id):
     acc['page'] = page
     _save_account('meta', acc)
     return page
+
+
+def instagram_login_url():
+    if not (INSTAGRAM_APP_ID and INSTAGRAM_APP_SECRET and PUBLIC_BASE_URL):
+        raise SocialError('Faltan INSTAGRAM_APP_ID, INSTAGRAM_APP_SECRET o PUBLIC_BASE_URL en Railway')
+    return 'https://www.instagram.com/oauth/authorize?' + urlencode({
+        'client_id': INSTAGRAM_APP_ID, 'redirect_uri': status()['instagram_callback'], 'response_type': 'code',
+        'scope': IG_SCOPES, 'state': _new_state('instagram'), 'enable_fb_login': '0', 'force_authentication': '1'})
+
+
+def instagram_complete(code, state):
+    _check_state('instagram', state)
+    code = (code or '').split('#')[0]
+    try:
+        r = requests.post('https://api.instagram.com/oauth/access_token', timeout=30, data={
+            'client_id': INSTAGRAM_APP_ID, 'client_secret': INSTAGRAM_APP_SECRET, 'grant_type': 'authorization_code',
+            'redirect_uri': status()['instagram_callback'], 'code': code})
+        data = r.json()
+    except (requests.RequestException, ValueError) as exc:
+        raise SocialError('Instagram no responde: %s' % str(exc)[:150])
+    short = data.get('access_token') or ((data.get('data') or [{}])[0] or {}).get('access_token')
+    if not short:
+        raise SocialError('Instagram: %s' % (data.get('error_message') or data.get('error_description') or data.get('error') or 'no devolvió el acceso'))
+    long = _graph('GET', '/access_token', base='https://graph.instagram.com', params={
+        'grant_type': 'ig_exchange_token', 'client_secret': INSTAGRAM_APP_SECRET, 'access_token': short})
+    me = _graph('GET', '/me', base=IG_GRAPH, params={'fields': 'user_id,username', 'access_token': long['access_token']})
+    acc = {'access_token': long['access_token'], 'expires_at': int(time.time()) + int(long.get('expires_in') or 5184000),
+           'obtained_at': int(time.time()), 'user_id': str(me.get('user_id') or me.get('id') or ''), 'username': me.get('username') or ''}
+    _save_account('instagram', acc)
+    return acc
+
+
+def _instagram_direct():
+    """Token de Instagram directo; se renueva solo antes de caducar (dura 60 días)."""
+    acc = _account('instagram')
+    if not acc or not acc.get('access_token'):
+        return None
+    now = int(time.time())
+    if acc.get('expires_at', 0) - now < 15 * 86400 and now - acc.get('obtained_at', 0) > 86400:
+        try:
+            new = _graph('GET', '/refresh_access_token', base='https://graph.instagram.com',
+                         params={'grant_type': 'ig_refresh_token', 'access_token': acc['access_token']})
+            acc.update({'access_token': new['access_token'], 'expires_at': now + int(new.get('expires_in') or 5184000),
+                        'obtained_at': now})
+            _save_account('instagram', acc)
+        except SocialError:
+            pass
+    return acc
 
 
 def tiktok_login_url():
@@ -353,10 +409,10 @@ def _facebook(article, urls):
     return post_id, 'https://www.facebook.com/' + str(post_id)
 
 
-def _ig_wait(container, token, seconds=90):
+def _ig_wait(container, token, seconds=90, base=None):
     end = time.time() + seconds
     while time.time() < end:
-        st = _graph('GET', '/' + container, params={'fields': 'status_code,status', 'access_token': token})
+        st = _graph('GET', '/' + container, base=base, params={'fields': 'status_code,status', 'access_token': token})
         code = st.get('status_code')
         if code == 'FINISHED':
             return
@@ -367,25 +423,29 @@ def _ig_wait(container, token, seconds=90):
 
 
 def _instagram(article, urls):
-    page = _meta()
-    if not (page.get('access_token') and page.get('instagram_id')):
-        raise SocialError('Instagram no está conectado (la cuenta debe ser profesional y estar unida a la página de Facebook)')
-    token, ig = page['access_token'], page['instagram_id']
+    direct = _instagram_direct()
+    if direct:  # cuenta de Instagram conectada directamente (sin página de Facebook)
+        token, ig, base = direct['access_token'], direct.get('user_id') or 'me', IG_GRAPH
+    else:
+        page = _meta()
+        if not (page.get('access_token') and page.get('instagram_id')):
+            raise SocialError('Instagram no está conectado. Conéctalo en Ajustes → Redes sociales.')
+        token, ig, base = page['access_token'], page['instagram_id'], None
     text = caption(article, 2200)
     if len(urls) == 1:
-        container = _graph('POST', '/%s/media' % ig, data={'image_url': urls[0], 'caption': text, 'access_token': token})['id']
+        container = _graph('POST', '/%s/media' % ig, base=base, data={'image_url': urls[0], 'caption': text, 'access_token': token})['id']
     else:
         children = []
         for u in urls[:10]:
-            child = _graph('POST', '/%s/media' % ig, data={'image_url': u, 'is_carousel_item': 'true', 'access_token': token})['id']
-            _ig_wait(child, token)
+            child = _graph('POST', '/%s/media' % ig, base=base, data={'image_url': u, 'is_carousel_item': 'true', 'access_token': token})['id']
+            _ig_wait(child, token, base=base)
             children.append(child)
-        container = _graph('POST', '/%s/media' % ig, data={'media_type': 'CAROUSEL', 'children': ','.join(children),
-                                                           'caption': text, 'access_token': token})['id']
-    _ig_wait(container, token)
-    media = _graph('POST', '/%s/media_publish' % ig, data={'creation_id': container, 'access_token': token})['id']
+        container = _graph('POST', '/%s/media' % ig, base=base, data={'media_type': 'CAROUSEL', 'children': ','.join(children),
+                                                                      'caption': text, 'access_token': token})['id']
+    _ig_wait(container, token, base=base)
+    media = _graph('POST', '/%s/media_publish' % ig, base=base, data={'creation_id': container, 'access_token': token})['id']
     try:
-        link = _graph('GET', '/' + media, params={'fields': 'permalink', 'access_token': token}).get('permalink') or ''
+        link = _graph('GET', '/' + media, base=base, params={'fields': 'permalink', 'access_token': token}).get('permalink') or ''
     except SocialError:
         link = ''
     return media, link

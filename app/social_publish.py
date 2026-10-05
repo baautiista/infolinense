@@ -117,6 +117,8 @@ def status():
         'tiktok_callback': PUBLIC_BASE_URL + '/api/networks/tiktok/callback' if PUBLIC_BASE_URL else '',
         'tiktok': {'connected': bool(tiktok.get('refresh_token')), 'name': tiktok.get('name') or ''},
         'tiktok_url_prefix': PUBLIC_BASE_URL + '/p/' if PUBLIC_BASE_URL else '',
+        'privacy_url': PUBLIC_BASE_URL + '/privacidad' if PUBLIC_BASE_URL else '',
+        'terms_url': PUBLIC_BASE_URL + '/terminos' if PUBLIC_BASE_URL else '',
     }
 
 

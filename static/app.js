@@ -328,7 +328,7 @@ async function settings(v) {
       <div class="netrow"><b>TikTok</b>
         <p>${nets.tiktok && nets.tiktok.connected ? 'Conectado' + (nets.tiktok.name ? ': ' + esc(nets.tiktok.name) : '') + '.' : nets.tiktok_configured ? 'Sin conectar.' : 'Faltan TIKTOK_CLIENT_KEY y TIKTOK_CLIENT_SECRET en Railway.'}</p>
         ${nets.tiktok_configured ? `<div class="row wrap"><button class="btn small" id="ttConn">${nets.tiktok && nets.tiktok.connected ? 'Volver a conectar' : 'Conectar TikTok'}</button>${nets.tiktok && nets.tiktok.connected ? '<button class="link" id="ttOff">Desconectar</button>' : ''}</div>` : ''}
-        ${nets.tiktok_callback ? `<p class="muted small">Dirección de retorno para la app de TikTok: <code>${esc(nets.tiktok_callback)}</code><br>Prefijo de URL que hay que verificar en TikTok: <code>${esc(nets.tiktok_url_prefix)}</code></p>` : ''}</div>
+        ${nets.tiktok_callback ? `<p class="muted small">Dirección de retorno para la app de TikTok: <code>${esc(nets.tiktok_callback)}</code><br>Prefijo de URL que hay que verificar en TikTok: <code>${esc(nets.tiktok_url_prefix)}</code><br>Condiciones de uso: <code>${esc(nets.terms_url)}</code><br>Política de privacidad: <code>${esc(nets.privacy_url)}</code></p>` : ''}</div>
       ${nets.public_url_ok === false ? '<p class="error small">Falta PUBLIC_BASE_URL (https://…) en Railway: las redes no podrían descargar la imagen.</p>' : ''}</section>
     <section class="panel"><h2>Web</h2><p>${h.auto_publish ? '«Aprobar y publicar» envía la noticia a infolinense.com.' : 'La publicación en infolinense.com no está configurada: «Aprobar y publicar» solo aprueba.'}</p></section>
     <section class="panel"><h2>Fuentes</h2>

@@ -43,7 +43,7 @@ GRAPH = 'https://graph.facebook.com/' + META_GRAPH_VERSION
 TIKTOK_API = 'https://open.tiktokapis.com/v2'
 META_SCOPES = ','.join(['pages_show_list', 'pages_read_engagement', 'pages_manage_posts', 'business_management',
                         'instagram_basic', 'instagram_content_publish'])
-TIKTOK_SCOPES = 'user.info.basic,video.publish'
+TIKTOK_SCOPES = os.getenv('TIKTOK_SCOPES', 'user.info.basic,video.publish').replace(' ', '')
 NETWORKS = ('instagram', 'facebook', 'tiktok')
 NAMES = {'instagram': 'Instagram', 'facebook': 'Facebook', 'tiktok': 'TikTok'}
 

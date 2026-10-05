@@ -133,8 +133,9 @@ def _add(item, sid, outlet, kind=None):
         return None  # ventas, publicidad o noticias de medios compartidas
     if not sources.exact_locality(text) and 'linea' not in outlet.lower() and 'línea' not in outlet.lower():
         return None
+    date = sources.parse_es_date(item.get('snippet', '')) or sources.parse_es_date(item.get('title', ''))
     cid = sources.add_candidate(item['title'], item['url'], item.get('snippet', ''), SOURCE_NAME, sid,
-                                datetime.now(timezone.utc).isoformat(timespec='seconds'),
+                                date,  # fecha leída de la publicación; vacía si no se conoce
                                 {'priority': 60, 'official': 0, 'local_scope': 1}, outlet=outlet)
     if cid:
         db.exec_('UPDATE candidates SET social_type=? WHERE id=?', (kind, cid))
@@ -199,10 +200,11 @@ def items():
     limit = datetime.now(timezone.utc) - timedelta(days=4)
     out = []
     for r in rows:
-        d = sources.publication_datetime(r.get('published_at')) or sources.publication_datetime((r.get('created_at') or '').replace(' ', 'T') + '+00:00')
+        real = sources.publication_datetime(r.get('published_at'))
+        d = real or sources.publication_datetime((r.get('created_at') or '').replace(' ', 'T') + '+00:00')
         if d and d < limit:
             continue
-        r['date_iso'] = d.isoformat() if d else None
+        r['date_iso'] = real.isoformat() if real else None
         kind = r.get('social_type') if r.get('social_type') in ('queja', 'propuesta', 'asociacion') else kind_of((r.get('title') or '') + ' ' + (r.get('excerpt') or ''))
         if not kind:
             continue  # ventas, publicidad o noticias compartidas: no se muestran

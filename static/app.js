@@ -26,6 +26,9 @@ function toast(t) { const el = $('#toast'); el.textContent = t; el.hidden = fals
 function ago(iso) {
   if (!iso) return '';
   const d = new Date(iso), now = new Date(), min = Math.round((now - d) / 60000);
+  if (/T09:00:00(\.000)?(\+00:00|Z)$/.test(iso)) {  // solo se conoce el día (edictos, licitaciones, boletines)
+    return isToday(iso) ? 'hoy' : d.toLocaleDateString('es-ES', { timeZone: 'Europe/Madrid', day: 'numeric', month: 'short', year: d.getFullYear() !== now.getFullYear() ? 'numeric' : undefined });
+  }
   if (min < 60) return `hace ${Math.max(1, min)} min`;
   if (min < 600) return `hace ${Math.round(min / 60)} h`;
   const day = d.toLocaleDateString('es-ES', { timeZone: 'Europe/Madrid' }) === now.toLocaleDateString('es-ES', { timeZone: 'Europe/Madrid' }) ? 'hoy'
@@ -121,7 +124,7 @@ function special(n) { const t = `${n.title} ${n.excerpt || ''} ${n.source_name |
 function focusCard(n) {
   const sp = special(n);
   return `<article class="focuscard" id="fc">
-    <div class="meta">${n.social_type ? `<span class="kind ${n.social_type}">${KIND[n.social_type] || ''}</span>` : ''}${sp ? `<span class="flag">${sp}</span>` : ''}<span class="src">${esc(n.outlet || n.source_name || host(n.url))}</span><span>${ago(n.date_iso)}</span></div>
+    <div class="meta">${n.social_type ? `<span class="kind ${n.social_type}">${KIND[n.social_type] || ''}</span>` : ''}${sp ? `<span class="flag">${sp}</span>` : ''}<span class="src">${esc(n.outlet || n.source_name || host(n.url))}</span><span>${n.date_iso ? ago(n.date_iso) : 'fecha no indicada'}</span></div>
     <h2>${esc(n.title)}</h2>
     ${n.local_angle ? `<p class="angle">${esc(n.local_angle)}</p>` : n.excerpt && n.excerpt !== n.title ? `<p class="angle">${esc(n.excerpt.slice(0, 260))}</p>` : ''}
     <a class="link" href="${safeUrl(n.url)}" target="_blank" rel="noopener noreferrer">Ver la fuente</a>

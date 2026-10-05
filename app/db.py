@@ -163,6 +163,13 @@ def init_db():
         c.execute("UPDATE candidates SET status='archived',editorial_priority='undecided',planned_at=NULL,plan_locked=0,work_state=NULL "
                   "WHERE status!='published'")
         c.execute("INSERT INTO settings(key,value) VALUES('fresh_start_35',datetime('now'))")
+    # Empezar de cero de nuevo (4.2): se borran las noticias encontradas (no las publicadas) para releer todas las fuentes.
+    if not c.execute("SELECT 1 FROM settings WHERE key='fresh_start_42'").fetchone():
+        c.execute("DELETE FROM articles WHERE status!='published'")
+        c.execute("DELETE FROM candidates WHERE id NOT IN (SELECT candidate_id FROM articles WHERE candidate_id IS NOT NULL)")
+        c.execute("UPDATE sources SET last_checked_at=NULL,last_error=NULL,items_seen=0,items_added=0")
+        c.execute("DELETE FROM canva_designs WHERE article_id NOT IN (SELECT id FROM articles)")
+        c.execute("INSERT INTO settings(key,value) VALUES('fresh_start_42',datetime('now'))")
     c.commit(); c.close()
 
 def rows(sql,args=()):

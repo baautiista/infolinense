@@ -24,6 +24,13 @@ El backend FastAPI corre en Railway y el panel editorial de Lovable consume la m
 2. Publica el panel como aplicación privada con pantalla de contraseña. Añade **solo su origen exacto** (`https://<tu-proyecto>.lovable.app`) a `CORS_ORIGINS` en Railway. Si usas dominio propio, añádelo separado por coma. Redepliega si Railway no aplica las variables automáticamente.
 3. Accede al panel, prueba Dashboard y Revisión y comprueba **Plantillas → Canva**. Los PNG privados solo existen tras exportar desde Canva y se descargan mediante `fetch` con token; un enlace `<img src="https://backend/media/render/...">` directo devolverá 401.
 
+## Novedades 4.2
+
+- **Empezar de cero**: al desplegar se borran una vez las noticias encontradas (no las publicadas) y se releen todas las fuentes.
+- **Fechas reales**: solo entra lo que tiene fecha de publicación comprobable (RSS, metadatos de la página, fecha del edicto, de la licitación o del boletín). Nunca se muestra la hora en que la encontró el sistema como si fuera la de publicación. Las fechas de solo día se muestran como día.
+- **Licitaciones**: lector de Gobierto basado en los enlaces /licitaciones/N con fecha, importe y plazo; se mantienen las que siguen abiertas.
+- **Edictos**: lector del tablón con la primera fecha de cada fila; BOP con la fecha del boletín.
+
 ## Novedades 4.1 — sin coste
 
 - **Modo sin coste por defecto** (`AI_ALLOW_PAID=false`): no se llama nunca a ChatGPT ni a Claude, aunque sus claves sigan en Railway.

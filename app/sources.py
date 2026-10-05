@@ -15,7 +15,7 @@ from bs4 import BeautifulSoup
 from . import db
 from .config import MAX_CANDIDATE_AGE_DAYS
 
-UA = 'InfoLinenseBot/1.0 (+editorial monitoring)'
+UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36'
 _scan_lock = threading.Lock()
 # La Línea de la Concepción (la ciudad), no «la línea 1 del metro», «línea de alta velocidad», etc.
 _CITY = re.compile(r'(La\s+L[ií]nea\s+de\s+la\s+Concepci[oó]n|\blinens[ea]s?\b|\bLa\s+L[ií]nea\b)', re.I)
@@ -28,6 +28,34 @@ _UNRELATED = re.compile(r'\bl[ií]neas?\s+(?:\d+|[a-z]\d*\b|de\s+metro|del\s+met
                         r'de\s+flotaci[oó]n|del\s+horizonte|de\s+producci[oó]n|de\s+negocio|de\s+investigaci[oó]n|de\s+trabajo|'
                         r'argumental|sucesoria|de\s+banda|de\s+cercan[ií]as|de\s+costa|blanca|caliente|directa|de\s+fondo)', re.I)
 _LOCAL = _CITY
+
+_MONTHS = {'ene': 1, 'feb': 2, 'mar': 3, 'abr': 4, 'may': 5, 'jun': 6, 'jul': 7, 'ago': 8, 'sep': 9, 'set': 9, 'oct': 10, 'nov': 11, 'dic': 12}
+
+
+def parse_es_date(text, now=None):
+    """Fecha en un texto en español: 05/10/2026, 5 oct 2026, 5 de octubre de 2026, «hace 3 horas», «ayer». ISO o ''."""
+    now = now or datetime.now(timezone.utc)
+    t = (text or '').lower()
+    m = re.search(r'\b(\d{1,2})[/.-](\d{1,2})[/.-](\d{4})\b', t)
+    if m:
+        try: return datetime(int(m.group(3)), int(m.group(2)), int(m.group(1)), 9, tzinfo=timezone.utc).isoformat()
+        except ValueError: pass
+    m = re.search(r'\b(\d{1,2})\s+(?:de\s+)?(ene|feb|mar|abr|may|jun|jul|ago|sep|set|oct|nov|dic)[a-z]*\.?(?:\s+(?:de\s+)?(\d{4}))?', t)
+    if m:
+        year = int(m.group(3) or now.year)
+        try:
+            d = datetime(year, _MONTHS[m.group(2)], int(m.group(1)), 9, tzinfo=timezone.utc)
+            if not m.group(3) and d > now + timedelta(days=1): d = d.replace(year=year - 1)
+            return d.isoformat()
+        except ValueError: pass
+    m = re.search(r'hace\s+(\d+)\s*(min|minuto|h\b|hora|d\b|d[ií]a|sem)', t)
+    if m:
+        n, unit = int(m.group(1)), m.group(2)
+        delta = timedelta(minutes=n) if unit.startswith('min') else timedelta(hours=n) if unit.startswith('h') else timedelta(weeks=n) if unit.startswith('sem') else timedelta(days=n)
+        return (now - delta).isoformat(timespec='minutes')
+    if re.search(r'\bayer\b', t): return (now - timedelta(days=1)).isoformat(timespec='minutes')
+    return ''
+
 
 def clean(value):
     value = html.unescape(value or '')
@@ -128,7 +156,10 @@ def parse_bop(source):
     results = []
     for link in bulletins:
         page = fetch(link); page.raise_for_status()
-        for a in BeautifulSoup(page.text, 'html.parser').select('a[href]'):
+        bsoup = BeautifulSoup(page.text, 'html.parser')
+        head = ' '.join(x.get_text(' ', strip=True) for x in bsoup.select('title, h1, h2')[:4])
+        bulletin_date = parse_es_date(head) or parse_es_date(bsoup.get_text(' ', strip=True)[:1500])
+        for a in bsoup.select('a[href]'):
             title = clean(a.get_text(' ', strip=True))
             match = re.match(r'^(\d{2,3}\.\d{3})\s*\.?\s*-', title)
             if not match or not exact_locality(title): continue
@@ -136,31 +167,41 @@ def parse_bop(source):
             base, fragment = urldefrag(doc)
             permalink = base + '#' + (fragment + '&' if fragment else '') + 'anuncio=' + match.group(1).replace('.', '')
             results.append({'title': title[:260], 'url': permalink,
-                            'excerpt': title, 'published_at': ''})
+                            'excerpt': title, 'published_at': bulletin_date})
     return results
 
 def parse_procurement(source):
-    """Municipal tenders with their original publication timestamp and detail link."""
-    r = fetch(source['url']); r.raise_for_status()
+    """Licitaciones del Ayuntamiento en Gobierto: cada enlace /licitaciones/N con su fecha, importe y cierre."""
+    r = fetch(source['url'], timeout=30); r.raise_for_status()
     soup = BeautifulSoup(r.text, 'html.parser')
-    results = []
-    for row in soup.select('tr[data-item-type="SearchTender"]'):
-        a = row.select_one('td[data-toggle-column-id="tender"] a[href]')
-        if not a: continue
-        date = row.select_one('td[data-toggle-column-id="call_for_tenders_published_at"]')
-        try:
-            published = datetime.fromtimestamp(int(date.get('data-sort-value')), timezone.utc).isoformat()
-        except (AttributeError, TypeError, ValueError):
-            continue  # Cannot assert that an undated tender is newly published.
-        if not recent_enough(published, WINDOW_DAYS['Licitaciones y edictos']): continue
-        def field(name):
-            cell = row.select_one(f'td[data-toggle-column-id="{name}"]')
-            return clean(cell.get_text(' ', strip=True)) if cell else ''
-        details = ' · '.join(filter(None, [field('document_number'),field('initial_amount_no_taxes'),
-                                           field('process_type'), field('submission_date')]))
-        results.append({'title': clean(a.get_text(' ', strip=True)),
-                        'url': urljoin(source['url'], a.get('href', '')),
-                        'excerpt': details, 'published_at': published})
+    results, seen = [], set()
+    now = datetime.now(timezone.utc)
+    for a in soup.find_all('a', href=re.compile(r'/licitaciones/\d+')):
+        url = urljoin(source['url'], a['href'].split('?')[0])
+        title = clean(a.get_text(' ', strip=True))
+        if url in seen or len(title) < 12: continue
+        row = a.find_parent('tr') or a.find_parent(['li', 'article']) or a.parent
+        text = clean(row.get_text(' ', strip=True)) if row else title
+        published = ''
+        cell = row.select_one('td[data-toggle-column-id="call_for_tenders_published_at"]') if row else None
+        if cell is not None and str(cell.get('data-sort-value', '')).isdigit():
+            published = datetime.fromtimestamp(int(cell['data-sort-value']), timezone.utc).isoformat()
+        dates = [publication_datetime(parse_es_date(m.group(0))) for m in re.finditer(
+            r'\b\d{1,2}[/.-]\d{1,2}[/.-]\d{4}\b|\b\d{1,2}\s+(?:de\s+)?(?:ene|feb|mar|abr|may|jun|jul|ago|sep|oct|nov|dic)[a-z]*\.?\s+(?:de\s+)?\d{4}', text.lower())]
+        dates = [d for d in dates if d]
+        if not published and dates:
+            published = min(dates).isoformat()  # la fecha más antigua de la fila es la de publicación
+        closing = max(dates) if len(dates) > 1 else None
+        if not published: continue  # sin fecha no se puede asegurar que sea actual
+        still_open = closing is not None and closing >= now
+        if not still_open and not recent_enough(published, WINDOW_DAYS['Licitaciones y edictos']): continue
+        amount = re.search(r'\d[\d.,]*\s*(?:M\s*)?€', text)
+        excerpt = ' · '.join(x for x in [('Importe: ' + amount.group(0)) if amount else '',
+                                         ('Plazo hasta ' + closing.strftime('%d/%m/%Y')) if closing else ''] if x)
+        seen.add(url)
+        results.append({'title': 'Licitación: ' + title[:240], 'url': url, 'excerpt': excerpt or text[:400], 'published_at': published})
+    if not results and 'licitaciones/' not in r.text:
+        raise ValueError('La página de licitaciones no mostró ninguna licitación (puede haber cambiado de formato)')
     return results
 
 def _dmy(value):
@@ -182,7 +223,7 @@ def parse_edictos(source):
         for c in cells:
             text = clean(c.get_text(' ', strip=True))
             if len(text) > len(title) and not re.fullmatch(r'[\d/ :]+', text): title = text
-        published = _dmy(cells[0].get_text(' ', strip=True))
+        published = _dmy(row.get_text(' ', strip=True))  # la primera fecha de la fila es la de publicación
         if not title or not link or not published: continue
         href = re.sub(r';jsessionid=[^?]+', '', link['href'])
         if not recent_enough(published, WINDOW_DAYS['Licitaciones y edictos']): continue
@@ -243,8 +284,8 @@ def is_duplicate(title, url):
         if difflib.SequenceMatcher(None, normalized, prior).ratio() > 0.90: return True
     return False
 
-_DATE_META = ('article:published_time', 'og:published_time', 'datePublished', 'pubdate', 'date', 'DC.date.issued',
-              'article:modified_time', 'publish-date', 'sailthru.date')
+_DATE_META = ('article:published_time', 'og:published_time', 'datePublished', 'pubdate', 'publish-date',
+              'DC.date.issued', 'dc.date', 'sailthru.date', 'parsely-pub-date')
 
 
 def page_date(url):
@@ -259,7 +300,8 @@ def page_date(url):
                 return tag['content'].strip()
         m = re.search(r'"datePublished"\s*:\s*"([^"]+)"', r.text)
         if m and publication_datetime(m.group(1)): return m.group(1)
-        t = soup.find('time', attrs={'datetime': True})
+        art = soup.find('article')
+        t = art.find('time', attrs={'datetime': True}) if art else None  # solo dentro de la noticia, no la fecha de la cabecera
         if t and publication_datetime(t['datetime']): return t['datetime']
     except Exception:
         pass
@@ -365,14 +407,16 @@ def scan_all():
                     items = job.result(); count = 0
                     items = [i for i in items if not db.row('SELECT 1 FROM candidates WHERE url=?', (i['url'],))]
                     # Solo noticias actuales: si la lista no trae fecha, se lee de la propia página.
-                    undated = [i for i in items if not i.get('published_at') and source['kind'] in ('html', 'rss', 'social')][:40]
+                    undated = [i for i in items if not i.get('published_at') and source['kind'] not in ('procurement', 'edictos')][:40]
                     if undated:
                         with ThreadPoolExecutor(max_workers=8) as dates:
                             for item, date in zip(undated, dates.map(lambda i: page_date(i['url']), undated)):
                                 item['published_at'] = date
                     for item in items:
-                        if not item.get('published_at') and source['kind'] in ('html', 'rss', 'social') and not source.get('local_scope'):
-                            continue  # sin fecha comprobable: no se puede asegurar que sea actual
+                        if not publication_datetime(item.get('published_at')):
+                            continue  # sin fecha comprobable no entra: así nunca se muestra una fecha inventada
+                        if publication_datetime(item['published_at']) > datetime.now(timezone.utc) + timedelta(hours=6):
+                            continue  # fecha futura: dato erróneo de la fuente
                         cid = add_candidate(item['title'], item['url'], item.get('excerpt', ''),
                                             source['name'], source['id'], item.get('published_at', ''), source,
                                             outlet=item.get('outlet', ''), image=item.get('image', ''))

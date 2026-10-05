@@ -395,3 +395,29 @@ class FreeMode(unittest.TestCase):
             with self.assertRaises(ai.AIProviderError) as ctx:
                 ai.ask_gemini('s', 'u')
         self.assertIn('límite gratuito', str(ctx.exception))
+
+
+class Tenders(unittest.TestCase):
+    def test_gobierto_rows_read_from_text_and_open_tenders_kept(self):
+        from app import sources
+        old = (datetime.now() - timedelta(days=60)).strftime('%d/%m/%Y')
+        close = (datetime.now() + timedelta(days=10)).strftime('%d/%m/%Y')
+        new = datetime.now().strftime('%d/%m/%Y')
+        html = f'''<table><tr><td>2026/1</td><td><a href="/licitaciones/5230345">Exhibición drones luminosos Museo Cruz Herrera</a></td>
+                  <td>14.876,04 €</td><td>{new}</td><td>{close}</td></tr>
+                  <tr><td>2026/2</td><td><a href="/licitaciones/5210447">Obra de rehabilitación del Complejo Educativo Ballesteros</a></td>
+                  <td>6,06M €</td><td>{old}</td><td>{close}</td></tr>
+                  <tr><td>2025/9</td><td><a href="/licitaciones/1">Contrato antiguo ya cerrado del servicio</a></td>
+                  <td>1.000 €</td><td>{old}</td><td>{old}</td></tr></table>'''
+
+        class R:
+            text = html
+            def raise_for_status(self): pass
+        with patch.object(sources, 'fetch', return_value=R()):
+            items = sources.parse_procurement({'url': 'https://contratos.gobierto.es/adjudicadores/x'})
+        urls = [i['url'] for i in items]
+        self.assertIn('https://contratos.gobierto.es/licitaciones/5230345', urls)
+        self.assertIn('https://contratos.gobierto.es/licitaciones/5210447', urls)  # antigua pero aún abierta
+        self.assertNotIn('https://contratos.gobierto.es/licitaciones/1', urls)
+        self.assertIn('Importe', items[0]['excerpt'])
+        self.assertTrue(items[0]['published_at'].startswith(datetime.now().strftime('%Y-%m-%d')))

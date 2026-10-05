@@ -13,7 +13,7 @@ from . import db, sources, pipeline, publishers, photos, canva, ai, planner, lay
 from .auth import login, require_auth
 from .config import BASE_DIR, RENDER_DIR, UPLOAD_DIR, SCAN_INTERVAL_MINUTES, AUTO_PIPELINE, OPENAI_API_KEY, ADMIN_PASSWORD, JWT_SECRET, PUBLISH_MODE, CORS_ORIGINS, PUBLIC_BASE_URL, AUTO_PUBLISH
 
-VERSION='4.1.0'
+VERSION='4.2.0'
 app=FastAPI(title='InfoLinense Desk',version=VERSION)
 app.add_middleware(CORSMiddleware,allow_origins=CORS_ORIGINS,allow_credentials=False,allow_methods=['*'],allow_headers=['Authorization','Content-Type'])
 db.init_db()
@@ -196,8 +196,9 @@ def candidates(status:str='new'):
     for r in rows:
         r['group']=sources.source_group(r)
         if r['group']=='Redes sociales' and status=='pending': continue  # están en la pestaña Redes
-        d=sources.publication_datetime(r.get('published_at')) or sources.publication_datetime((r.get('created_at') or '').replace(' ','T')+'+00:00')
+        d=sources.publication_datetime(r.get('published_at'))  # solo la fecha real de publicación, nunca la de descubrimiento
         r['date_iso']=d.isoformat() if d else None
+        if not d: d=sources.publication_datetime((r.get('created_at') or '').replace(' ','T')+'+00:00')
         keep=r.get('article_id') or (r.get('editorial_priority') or 'undecided') not in ('undecided','')
         days=sources.WINDOW_DAYS.get(r['group'],sources.MAX_CANDIDATE_AGE_DAYS)
         if not keep and d and d<now-timedelta(days=days): continue  # antigua: no se muestra

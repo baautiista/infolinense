@@ -67,8 +67,8 @@ def _cw(c):
 
 HEADLINE_FONT = 74
 HEADLINE_BOX = 870      # 894 px de caja con margen de seguridad
-HEADLINE_MAX_LINES = 4  # 4 × 77 px caben entre el titular (801) y el resumen (1134)
-SUMMARY_MAX = 150       # 2 líneas cómodas a 29 px en 1035 px
+HEADLINE_MAX_LINES = 3  # 3 × 73 px: el titular (801) acaba ~1021, justo antes del resumen (1048)
+SUMMARY_MAX = 170       # hasta 3 líneas a 29 px en una caja de 970 px con márgenes
 
 
 def headline_lines(text, font=HEADLINE_FONT, box=HEADLINE_BOX):
@@ -89,7 +89,7 @@ def headline_fits(text):
 
 
 def fit_headline(text):
-    """Recorta por palabras hasta que quepa en 4 líneas (último recurso)."""
+    """Recorta por palabras hasta que quepa en 3 líneas (último recurso)."""
     text = re.sub(r'\s+', ' ', str(text or '')).strip()
     if headline_fits(text):
         return text

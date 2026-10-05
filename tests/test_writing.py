@@ -486,3 +486,31 @@ class TemplateAndPhotoSearchTests(unittest.TestCase):
         items = [{'url': 'https://a.com/x.jpg', 'source': 'https://a.com/', 'kind': 'google'},
                  {'url': 'https://b.com/algas-playa.jpg', 'source': 'https://b.com/levante', 'kind': 'google'}]
         self.assertEqual(photos.rank(items, 'algas asiáticas playa La Línea')[0]['url'], 'https://b.com/algas-playa.jpg')
+
+
+class MultiProviderPhotoTests(unittest.TestCase):
+    def test_bing_parser(self):
+        from app import photos
+        html = ('<a class="iusc" m="{&quot;purl&quot;:&quot;https://www.europasur.es/patinetes.html&quot;,'
+                '&quot;murl&quot;:&quot;https://www.europasur.es/fotos/patinete.jpg&quot;}" href="#">')
+        self.assertEqual(photos._parse_bing(html)[0]['url'], 'https://www.europasur.es/fotos/patinete.jpg')
+
+    def test_yahoo_parser(self):
+        from app import photos
+        html = '<a href="/images/view;_ylt=1?imgurl=www.diario.es%2Ffoto%2Fpatinete.jpg&amp;rurl=x">'
+        self.assertEqual(photos._parse_yahoo(html)[0]['url'], 'https://www.diario.es/foto/patinete.jpg')
+
+    def test_one_provider_is_enough(self):
+        from app import photos
+        old = photos.PROVIDERS
+        def broken(q): raise RuntimeError('bloqueado')
+        photos.PROVIDERS = (('A', broken), ('B', lambda q: []),
+                            ('C', lambda q: [photos._item('https://x.es/patinete-%d.jpg' % i, 'https://x.es', 'web') for i in range(9)]))
+        try:
+            self.assertEqual(len(photos.internet_images('patinete')), 9)
+        finally:
+            photos.PROVIDERS = old
+
+    def test_search_broadens_when_empty(self):
+        from app import photos
+        self.assertEqual(photos._variants('patinetes retirados La Línea')[:2], ['patinetes retirados La Línea', 'patinetes retirados'])

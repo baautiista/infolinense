@@ -268,51 +268,187 @@ def duckduckgo_images(query, limit=20):
     return out
 
 
-def internet_images(query, limit=20):
-    """Busca fotos en toda la web como en Google Imágenes: Google primero; DuckDuckGo y Bing de reserva."""
-    found = []
-    for provider in (google_images, duckduckgo_images, web_images):
+def _parse_bing(text, limit=30):
+    """Resultados de Bing Imágenes: cada foto lleva m='{"purl":página,"murl":foto}'."""
+    import html as _html
+    out = []
+    for raw in re.findall(r'\sm="([^"]+)"', text) + re.findall(r"\sm='([^']+)'", text):
         try:
-            found += [x for x in provider(query) if not _bad_host(x['url']) and not _bad_host(x.get('source', ''))]
+            meta = json.loads(_html.unescape(raw))
+        except ValueError:
+            continue
+        u, page = meta.get('murl') or '', meta.get('purl') or ''
+        if u.startswith('http') and not _JUNK.search(u) and not _bad_host(u):
+            out.append(_item(u, page or u, 'web'))
+        if len(out) >= limit:
+            break
+    if not out:  # por si cambia el formato: buscar "murl" en el texto
+        flat = _html.unescape(text).replace('\\/', '/')
+        for u in re.findall(r'"murl":"(https?://[^"]+)"', flat)[:limit]:
+            if not _JUNK.search(u) and not _bad_host(u):
+                out.append(_item(u, u, 'web'))
+    return _unique(out)
+
+
+def web_images(query, limit=30):
+    """Bing Imágenes (dos formatos de página, el segundo más ligero)."""
+    out = []
+    for url in ('https://www.bing.com/images/async?q=%s&first=0&count=35&mmasync=1&setlang=es&cc=es' % quote_plus(query),
+                'https://www.bing.com/images/search?q=%s&form=HDRSC2&first=1&setlang=es&cc=es' % quote_plus(query)):
+        try:
+            r = requests.get(url, headers=HEADERS, timeout=15, cookies={'SRCHHPGUSR': 'ADLT=STRICT'})
+            out += _parse_bing(r.text, limit)
         except Exception:
             pass
-        if len(_unique(found)) >= limit:
+        if len(out) >= 8:
             break
-    return rank(_unique(found), query)[:limit]
+    return _unique(out)[:limit]
 
 
-def providers_check(query='La Línea de la Concepción playa'):
-    """Cuántas fotos devuelve cada buscador desde el servidor (para Ajustes)."""
+def _parse_yahoo(text, limit=30):
+    import html as _html
+    from urllib.parse import unquote
     out = []
-    for name, fn in (('Google Imágenes', google_images), ('DuckDuckGo', duckduckgo_images), ('Bing', web_images)):
-        try:
-            res = fn(query)
-            out.append({'name': name, 'count': None if res is None else len(res)})
-        except Exception as exc:
-            out.append({'name': name, 'count': 0, 'error': str(exc)[:120]})
+    flat = _html.unescape(text).replace('\\/', '/')
+    for u in re.findall(r'"iurl":"(https?://[^"]+)"', flat):
+        out.append(_item(u, u, 'web'))
+    for raw in re.findall(r'imgurl=([^&"\s]+)', flat):
+        u = unquote(raw)
+        if not u.startswith('http'):
+            u = 'https://' + u
+        out.append(_item(u, u, 'web'))
+    return [x for x in _unique(out) if not _JUNK.search(x['url']) and not _bad_host(x['url'])][:limit]
+
+
+def yahoo_images(query, limit=30):
+    try:
+        r = requests.get('https://images.search.yahoo.com/search/images', params={'p': query, 'ei': 'UTF-8'},
+                         headers=HEADERS, timeout=15)
+        return _parse_yahoo(r.text, limit)
+    except Exception:
+        return []
+
+
+def openverse_images(query, limit=20):
+    """Openverse: buscador abierto de fotos (Flickr y otros), funciona sin clave desde servidores."""
+    out = []
+    try:
+        r = requests.get('https://api.openverse.org/v1/images/', timeout=15, headers=HEADERS,
+                         params={'q': query, 'page_size': limit, 'mature': 'false'})
+        for it in (r.json().get('results') or []):
+            u = it.get('url') or ''
+            if not u.startswith('http') or (it.get('width') and int(it.get('width') or 0) < 500):
+                continue
+            item = _item(u, it.get('foreign_landing_url') or u, 'internet')
+            item['author'] = (it.get('creator') or '')[:120]
+            out.append(item)
+    except Exception:
+        pass
     return out
 
 
-def web_images(query, limit=10):
-    """Búsqueda de imágenes en internet (Bing Imágenes)."""
+def news_images(query, limit=10):
+    """Fotos de noticias publicadas sobre el tema (Bing News y Google News): la foto principal de cada noticia."""
+    pages = []
+    try:
+        r = requests.get('https://www.bing.com/news/search', params={'q': query, 'format': 'rss', 'setlang': 'es', 'cc': 'es'},
+                         headers=HEADERS, timeout=15)
+        pages += [l for l in re.findall(r'<link>(https?://[^<]+)</link>', r.text) if 'bing.com' not in _host(l)]
+        for raw in re.findall(r'<link>(https?://www\.bing\.com/news/apiclick[^<]+)</link>', r.text):
+            from urllib.parse import parse_qs, unquote
+            real = (parse_qs(urlparse(raw.replace('&amp;', '&')).query).get('url') or [''])[0]
+            if real:
+                pages.append(unquote(real))
+    except Exception:
+        pass
+    try:
+        feed = 'https://news.google.com/rss/search?q=' + quote(query) + '&hl=es&gl=ES&ceid=ES:es'
+        r = requests.get(feed, headers=HEADERS, timeout=15)
+        pages += [resolve_google_news(l) for l in re.findall(r'<link>(https://news\.google\.com/rss/articles/[^<]+)</link>', r.text)[:4]]
+    except Exception:
+        pass
+    pages = [p for p in dict.fromkeys(pages) if p.startswith('http') and 'news.google.com' not in p and not _bad_host(p)][:limit]
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(max_workers=6) as pool:
+        found = [x for x in pool.map(_og_image, pages) if x]
+    return [dict(x, kind='news') for x in found]
+
+
+def local_images(query, limit=12):
+    """Fotos de noticias que el panel ya ha recogido de los medios de La Línea (no depende de ningún buscador)."""
+    words = [w for w in keywords(query, 5) if len(w) >= 4]
+    if not words:
+        return []
     out = []
     try:
-        r = requests.get('https://www.bing.com/images/search?q=' + quote_plus(query) + '&form=HDRSC2&first=1&setlang=es',
-                         headers=HEADERS, timeout=20)
-        soup = BeautifulSoup(r.text, 'html.parser')
-        for a in soup.select('a.iusc')[:limit * 2]:
-            try:
-                meta = json.loads(a.get('m') or '{}')
-            except ValueError:
-                continue
-            u, page = meta.get('murl'), meta.get('purl')
-            if u and u.startswith('http') and not _JUNK.search(u):
-                out.append(_item(u, page or u, 'web'))
+        conds = ' OR '.join(['title LIKE ?'] * len(words))
+        rows = db.rows('SELECT title,url,image_hint FROM candidates WHERE image_hint IS NOT NULL AND image_hint!="" AND (' + conds +
+                       ') ORDER BY id DESC LIMIT 60', tuple('%' + w + '%' for w in words))
+        folded = [_fold(w) for w in words]
+        rows.sort(key=lambda r: -sum(1 for w in folded if w in _fold(r.get('title'))))
+        for r in rows:
+            out.append(_item(full_size(r['image_hint']), r.get('url') or r['image_hint'], 'news'))
             if len(out) >= limit:
                 break
     except Exception:
         pass
     return out
+
+
+PROVIDERS = (('Google Imágenes', google_images), ('Bing Imágenes', web_images), ('DuckDuckGo', duckduckgo_images),
+             ('Yahoo Imágenes', yahoo_images), ('Noticias', news_images), ('Openverse', openverse_images),
+             ('Fotos guardadas', local_images))
+
+
+def _run_all(query, timeout=40):
+    """Lanza todos los buscadores a la vez y junta los resultados (Google primero)."""
+    from concurrent.futures import ThreadPoolExecutor, wait
+    results = {}
+    pool = ThreadPoolExecutor(max_workers=len(PROVIDERS))
+    futures = {pool.submit(fn, query): name for name, fn in PROVIDERS}
+    done, _ = wait(futures, timeout=timeout)
+    pool.shutdown(wait=False, cancel_futures=True)  # no esperar a un buscador lento
+    for f in done:
+        try:
+            results[futures[f]] = f.result() or []
+        except Exception:
+            results[futures[f]] = []
+    merged = []
+    for name, _ in PROVIDERS:
+        merged += [x for x in results.get(name, []) if not _bad_host(x['url'])]
+    return _unique(merged), results
+
+
+def _variants(query):
+    """Si una búsqueda no da nada, se prueba de forma más amplia, como haría una persona."""
+    q = re.sub(r'\s+', ' ', query or '').strip()
+    out = [q]
+    plain = re.sub(r'\b(La L[ií]nea( de la Concepci[oó]n)?|Ayuntamiento)\b', '', q, flags=re.I).strip()
+    if plain and plain.lower() != q.lower():
+        out.append(plain)
+    words = keywords(plain or q, 3)
+    if words and ' '.join(words).lower() not in [x.lower() for x in out]:
+        out.append(' '.join(words))
+    if words:
+        out.append(words[0])
+    return list(dict.fromkeys(x for x in out if x))
+
+
+def internet_images(query, limit=24):
+    """Busca fotos en toda la web con varios buscadores a la vez; si no hay resultados, amplía la búsqueda."""
+    found = []
+    for q in _variants(query):
+        merged, _ = _run_all(q)
+        found = _unique(found + rank(merged, query))
+        if len(found) >= 8:
+            break
+    return found[:limit]
+
+
+def providers_check(query='patinete eléctrico La Línea'):
+    """Cuántas fotos devuelve cada buscador desde el servidor (para Ajustes)."""
+    _, results = _run_all(query)
+    return [{'name': name, 'count': len(results.get(name, []))} for name, _ in PROVIDERS]
 
 
 def commons_images(query, limit=8):

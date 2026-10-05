@@ -455,3 +455,34 @@ class SourceText(unittest.TestCase):
         self.assertIn('Párrafo 5', text)
         self.assertNotIn('newsletter', text)
         self.assertNotIn('Menú', text)
+
+
+class TemplateAndPhotoSearchTests(unittest.TestCase):
+    def test_template_variant_by_headline_lines(self):
+        from app import canva
+        canva.TEMPLATE_BY_LINES = {1: 'ONE', 2: 'TWO'}
+        canva.TEMPLATE_ID = 'THREE'
+        self.assertEqual(canva.template_for('Corte de agua'), 'ONE')
+        self.assertEqual(canva.template_for('La Línea licita la mejora del alumbrado'), 'TWO')
+        self.assertEqual(canva.template_for('19 patinetes retirados por la nueva normativa en La Línea'), 'THREE')
+
+    def test_google_full_results_keep_order_and_skip_stock(self):
+        from app import photos
+        html = ('x["https://www.europasur.es/2026/foto-linea.jpg",800,1200] '
+                '["https://www.shutterstock.com/img.jpg",900,1200] '
+                '["https://encrypted-tbn0.gstatic.com/images?q=1",200,300] '
+                '["https://andaluciainformacion.es/playa.jpg",700,1000]')
+        urls = [x['url'] for x in photos._google_full_html(html, 10)]
+        self.assertEqual(urls, ['https://www.europasur.es/2026/foto-linea.jpg', 'https://andaluciainformacion.es/playa.jpg'])
+
+    def test_google_basic_page_links(self):
+        from app import photos
+        html = ('<a href="/url?esrc=s&amp;q=&amp;rct=j&amp;sa=U&amp;url=https://www.europasur.es/noticia.html&amp;ved=1">'
+                '<a href="/url?q=https://www.pinterest.com/pin/1&amp;sa=U"><a href="/url?q=https://lalinea.es/obra&amp;sa=U">')
+        self.assertEqual(photos._google_basic_pages(html), ['https://www.europasur.es/noticia.html', 'https://lalinea.es/obra'])
+
+    def test_rank_puts_matching_photos_first(self):
+        from app import photos
+        items = [{'url': 'https://a.com/x.jpg', 'source': 'https://a.com/', 'kind': 'google'},
+                 {'url': 'https://b.com/algas-playa.jpg', 'source': 'https://b.com/levante', 'kind': 'google'}]
+        self.assertEqual(photos.rank(items, 'algas asiáticas playa La Línea')[0]['url'], 'https://b.com/algas-playa.jpg')

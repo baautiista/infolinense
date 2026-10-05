@@ -17,6 +17,18 @@ from .config import PUBLIC_BASE_URL, RENDER_DIR
 CLIENT_ID = os.getenv('CANVA_CLIENT_ID', '').strip()
 CLIENT_SECRET = os.getenv('CANVA_CLIENT_SECRET', '').strip()
 TEMPLATE_ID = os.getenv('CANVA_BRAND_TEMPLATE_ID', '').strip()
+# Variantes de la plantilla según las líneas del titular: la entradilla queda fija abajo,
+# el titular crece hacia arriba y la sección se coloca justo encima.
+_DEFAULT_VARIANTS = {'EAHWTjWEEnA': {1: 'EAHXJaqiN5w', 2: 'EAHXJVlUZ2g'}}
+TEMPLATE_BY_LINES = {
+    1: os.getenv('CANVA_TEMPLATE_1_LINE', '').strip() or _DEFAULT_VARIANTS.get(TEMPLATE_ID, {}).get(1, ''),
+    2: os.getenv('CANVA_TEMPLATE_2_LINES', '').strip() or _DEFAULT_VARIANTS.get(TEMPLATE_ID, {}).get(2, ''),
+}
+
+
+def template_for(headline):
+    lines = len(layout.headline_lines(headline))
+    return TEMPLATE_BY_LINES.get(lines) or TEMPLATE_ID
 API = 'https://api.canva.com/rest/v1'
 SCOPES = 'asset:read asset:write brandtemplate:content:read design:content:read design:content:write design:meta:read'
 _lock = threading.RLock()
@@ -168,7 +180,8 @@ def design_fields(article):
     if not layout.headline_fits(headline):
         headline = layout.fit_headline(headline)
     summary = layout.fit_summary(article.get('graphic_summary') or article.get('subtitle') or '')
-    return {'HEADLINE': headline, 'SUMMARY': summary, 'SECTION': family[0], 'page': family[1]}
+    return {'HEADLINE': headline, 'SUMMARY': summary, 'SECTION': family[0], 'page': family[1],
+            'template': template_for(headline)}
 
 
 def _export_png(article, design_id, output_suffix=None, mark_main=True, page=None):
@@ -228,7 +241,9 @@ def create_design(article, store=True, title_suffix='', output_suffix=None):
     photo = Path(article.get('image_local') or '')
     if not photo.is_file():
         raise ValueError('Elige primero una foto para la noticia')
-    schema = _api('GET', '/brand-templates/' + TEMPLATE_ID + '/dataset').get('dataset', {})
+    texts = design_fields(article)
+    template_id = texts['template']
+    schema = _api('GET', '/brand-templates/' + template_id + '/dataset').get('dataset', {})
     expected = {'HEADLINE': 'text', 'SUMMARY': 'text', 'SECTION': 'text', 'PHOTO': 'image'}
     if any(schema.get(key, {}).get('type') != kind for key, kind in expected.items()):
         raise ValueError('Han cambiado los campos de la plantilla de Canva')
@@ -244,7 +259,6 @@ def create_design(article, store=True, title_suffix='', output_suffix=None):
     asset = done.get('asset') or (done.get('result') or {}).get('asset') or {}
     if not asset.get('id'):
         raise ValueError('Canva no devolvió la fotografía cargada')
-    texts = design_fields(article)
     fields = {
         'HEADLINE': {'type': 'text', 'text': texts['HEADLINE']},
         'SUMMARY': {'type': 'text', 'text': texts['SUMMARY']},
@@ -255,7 +269,7 @@ def create_design(article, store=True, title_suffix='', output_suffix=None):
     if title_suffix:
         name += ' · ' + str(title_suffix)[:40]
     job = _api('POST', '/autofills', json={'type': 'create_from_brand_template',
-                    'brand_template_id': TEMPLATE_ID,
+                    'brand_template_id': template_id,
                     'title': name, 'data': fields})
     done = _wait('/autofills/' + job['job']['id'], job)
     design = _design_from_job(done)

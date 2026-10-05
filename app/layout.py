@@ -67,7 +67,7 @@ def _cw(c):
 
 HEADLINE_FONT = 74
 HEADLINE_BOX = 870      # 894 px de caja con margen de seguridad
-HEADLINE_MAX_LINES = 3  # 3 × 73 px: el titular (801) acaba ~1021, justo antes del resumen (1048)
+HEADLINE_MAX_LINES = 3  # el titular crece hacia arriba desde la entradilla; hay plantilla para 1, 2 y 3 líneas
 SUMMARY_MAX = 170       # hasta 3 líneas a 29 px en una caja de 970 px con márgenes
 
 

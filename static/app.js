@@ -193,7 +193,7 @@ function lines(t) { let n = 0, cur = ''; for (const w of String(t || '').split(/
 
 async function editor(v) {
   const [a, kit] = await Promise.all([api(`/api/articles/${editorId}`), api(`/api/articles/${editorId}/kit`)]);
-  cache.article = a;
+  cache.article = a; cache.kit = kit;
   const options = jparse(a.headline_options_json, []), missing = jparse(a.missing_data_json, []), srcs = jparse(a.sources_json, []);
   const published = a.status === 'published';
   v.innerHTML = `<div class="editor">
@@ -227,7 +227,7 @@ async function editor(v) {
     ${published ? '<span class="muted">Publicada</span>' : a.status === 'draft' ? `<button class="btn primary" onclick="reviewed()">Revisada</button>` : `<button class="btn primary" id="pubBtn" onclick="publish()">Publicar</button>`}
   </div>`;
   const f = id => $(`#f-${id}`);
-  const fit = () => { const n = lines(f('image_headline').value || f('headline').value); $('#fit').textContent = n <= 4 ? `${n} de 4 líneas` : `${n} líneas: se recortará`; $('#fit').className = n <= 4 ? 'muted' : 'error' };
+  const fit = () => { const n = lines(f('image_headline').value || f('headline').value); $('#fit').textContent = n <= 3 ? `${n} de 3 líneas` : `${n} líneas: se recortará`; $('#fit').className = n <= 3 ? 'muted' : 'error' };
   const count = () => $('#count').textContent = `${f('body').value.length} / 2.200`;
   f('image_headline').oninput = fit; f('headline').oninput = fit; f('body').oninput = count; fit(); count();
   v.querySelectorAll('.alt').forEach(b => b.onclick = () => { f('headline').value = options[b.dataset.i]; fit(); toast('Titular cambiado') });
@@ -269,10 +269,16 @@ window.photoPanel = async (q = '', refresh = false) => {
   try {
     const imgs = await api(`/api/articles/${editorId}/photos${q ? '?q=' + encodeURIComponent(q) : refresh ? '?refresh=true' : ''}`);
     cache.photos = imgs;
-    box.innerHTML = `<form class="row" id="pq"><input name="q" placeholder="Buscar otra foto" value="${esc(q)}"><button class="btn small">Buscar</button></form>
+    const query = q || cache.article.photo_query || (cache.kit || {}).photo_query || '';
+    const gUrl = 'https://www.google.com/search?tbm=isch&hl=es&q=' + encodeURIComponent(query);
+    box.innerHTML = `<form class="row" id="pq"><input name="q" placeholder="Escribe como en Google Imágenes" value="${esc(query)}"><button class="btn small">Buscar</button></form>
+      <p class="muted small">¿No te gusta ninguna? <a href="${gUrl}" target="_blank" rel="noopener" id="gLink">Abrir en Google Imágenes</a>, pulsa la foto, «Copiar dirección de la imagen» y pégala aquí:</p>
+      <form class="row" id="pu"><input name="u" type="url" placeholder="Pega aquí el enlace de la foto" inputmode="url"><button class="btn small">Usar</button></form>
       <div class="gallery">${imgs.map((im, i) => `<button class="pic" data-i="${i}"><img src="${safeUrl(im.url)}" loading="lazy" referrerpolicy="no-referrer" alt="" onerror="this.parentElement.remove()"><span>${esc(im.source_name || host(im.source))}</span></button>`).join('') || '<p class="muted">Sin resultados.</p>'}</div>
       <div class="row wrap"><button class="link" type="button" id="again">Buscar de nuevo en la noticia</button><label class="link upload">Subir foto<input type="file" accept="image/jpeg,image/png,image/webp" hidden id="up"></label></div>`;
     $('#pq').onsubmit = e => { e.preventDefault(); photoPanel(e.target.q.value) };
+    $('#pq').q.oninput = e => { $('#gLink').href = 'https://www.google.com/search?tbm=isch&hl=es&q=' + encodeURIComponent(e.target.value) };
+    $('#pu').onsubmit = async e => { e.preventDefault(); const u = e.target.u.value.trim(); if (!u) return; try { await saveArticle(); await api(`/api/articles/${editorId}/photo`, { method: 'POST', body: JSON.stringify({ url: u, source: u }) }); toast('Foto cambiada'); render() } catch (er) { toast(er.message) } };
     $('#again').onclick = () => photoPanel('', true);
     box.querySelectorAll('.pic').forEach(b => b.onclick = async () => { try { await saveArticle(); await api(`/api/articles/${editorId}/photo`, { method: 'POST', body: JSON.stringify(cache.photos[b.dataset.i]) }); toast('Foto cambiada'); render() } catch (e) { toast(e.message) } });
     $('#up').onchange = async e => { const fd = new FormData(); fd.append('file', e.target.files[0]); try { await saveArticle(); await api(`/api/articles/${editorId}/photo/upload`, { method: 'POST', body: fd }); toast('Foto subida'); render() } catch (er) { toast(er.message) } };

@@ -1,7 +1,7 @@
 """Búsqueda de fotos para la noticia.
 
-Orden: foto de la propia noticia (og:image) y búsqueda directa en Google Imágenes.
-Si Google no responde se usa Bing como reserva.
+Orden: foto de la propia noticia (og:image) y búsqueda en Google Imágenes, como la haría una persona.
+Si Google no responde se usan DuckDuckGo y Bing como reserva.
 """
 import hashlib
 import json
@@ -120,11 +120,71 @@ def same_story_images(title, exclude_url='', limit=6):
 
 _GOOGLE_COOKIES = {'CONSENT': 'YES+cb.20240101-00-p0.es+FX+000',
                    'SOCS': 'CAESHAgBEhJnd3NfMjAyNDAxMDEtMF9SQzIaAmVzIAEaBgiA_LqsBg'}
+# Navegador antiguo: Google devuelve la versión sencilla (sin JavaScript) de Google Imágenes.
+_BASIC_UA = 'Mozilla/5.0 (Windows NT 6.1; WOW64; rv:40.0) Gecko/20100101 Firefox/40.1'
+# Bancos de imágenes con marca de agua y webs cuyas fotos no se pueden descargar.
+_BAD_HOSTS = ('shutterstock.', 'istockphoto.', 'gettyimages.', 'alamy.', 'dreamstime.', '123rf.', 'depositphotos.',
+              'freepik.', 'adobe.com', 'stock.adobe', 'pinterest.', 'pinimg.', 'fbsbx.', 'facebook.', 'instagram.',
+              'tiktok.', 'twitter.', 'twimg.', 'lookaside.', 'youtube.', 'ytimg.')
+
+
+def _bad_host(url):
+    h = _host(url)
+    return h == 'x.com' or any(b in h for b in _BAD_HOSTS)
+
+
+def _google_full_html(text, limit):
+    """Versión completa de Google Imágenes: cada resultado trae ["URL original", alto, ancho]."""
+    out = []
+    text = text.replace('\\u003d', '=').replace('\\u0026', '&').replace('\\/', '/')
+    for m in re.finditer(r'\["(https?://[^"\]]+?)",(\d{2,5}),(\d{2,5})\]', text):
+        u = m.group(1)
+        if 'gstatic.com' in u or 'google.' in _host(u) or _JUNK.search(u) or _bad_host(u):
+            continue
+        if int(m.group(2)) < 300 or int(m.group(3)) < 300:
+            continue
+        out.append(_item(u, u, 'google'))
+        if len(out) >= limit:
+            break
+    for m in re.finditer(r'"ou":"(https?://[^"]+)"', text):  # formato antiguo
+        u = m.group(1)
+        if not (_JUNK.search(u) or _bad_host(u)):
+            out.append(_item(u, u, 'google'))
+    return _unique(out)[:limit]
+
+
+def _google_basic_pages(text, limit=10):
+    """Versión sencilla de Google Imágenes: enlaces a las páginas donde está cada foto, en el orden de Google."""
+    from urllib.parse import parse_qs
+    pages = []
+    for href in re.findall(r'href="(/url\?[^"]+)"', text):
+        qs = parse_qs(urlparse(href.replace('&amp;', '&')).query)
+        u = (qs.get('url') or qs.get('q') or [''])[0]
+        if u.startswith('http') and 'google.' not in _host(u) and not _bad_host(u) and u not in pages:
+            pages.append(u)
+        if len(pages) >= limit:
+            break
+    return pages
+
+
+def _og_image(page):
+    try:
+        r = requests.get(page, headers=HEADERS, timeout=10)
+        soup = BeautifulSoup(r.text[:400000], 'html.parser')
+        for attrs in ({'property': 'og:image'}, {'property': 'og:image:url'}, {'name': 'twitter:image'}):
+            tag = soup.find('meta', attrs=attrs)
+            if tag and tag.get('content'):
+                u = full_size(urljoin(r.url, tag['content']))
+                if u.startswith('http') and not _JUNK.search(u):
+                    return _item(u, r.url, 'google')
+    except Exception:
+        pass
+    return None
 
 
 def google_images(query, limit=16):
-    """Google Imágenes. Con GOOGLE_SEARCH_API_KEY y GOOGLE_SEARCH_CX usa la API oficial;
-    si no, lee la página de resultados de Google."""
+    """Busca exactamente como en Google Imágenes y respeta el orden de Google.
+    Con GOOGLE_SEARCH_API_KEY y GOOGLE_SEARCH_CX usa la API oficial; si no, lee la página de resultados."""
     out = []
     if GOOGLE_SEARCH_API_KEY and GOOGLE_SEARCH_CX:
         try:
@@ -135,7 +195,7 @@ def google_images(query, limit=16):
                 r.raise_for_status()
                 for it in r.json().get('items', []) or []:
                     u = it.get('link') or ''
-                    if u.startswith('http') and not _JUNK.search(u):
+                    if u.startswith('http') and not _JUNK.search(u) and not _bad_host(u):
                         out.append(_item(u, (it.get('image') or {}).get('contextLink') or u, 'google'))
                 if len(out) >= limit:
                     break
@@ -143,24 +203,43 @@ def google_images(query, limit=16):
                 return _unique(out)[:limit]
         except Exception:
             pass
-    try:
+    params = {'q': query, 'tbm': 'isch', 'hl': 'es', 'gl': 'es', 'safe': 'active'}
+    try:  # 1) versión completa (trae la URL original de cada foto)
         r = requests.get('https://www.google.com/search', timeout=20, cookies=_GOOGLE_COOKIES,
-                         params={'q': query, 'tbm': 'isch', 'hl': 'es', 'gl': 'es', 'safe': 'active'},
-                         headers=HEADERS)
-        text = r.text.replace('\\u003d', '=').replace('\\u0026', '&')
-        # Cada resultado trae la URL original con su tamaño: ["https://...jpg",alto,ancho]
-        for m in re.finditer(r'\["(https?://[^"\]]+?)",(\d{2,5}),(\d{2,5})\]', text):
-            u = m.group(1)
-            if 'gstatic.com' in u or 'google.' in _host(u) or _JUNK.search(u):
-                continue
-            if int(m.group(2)) < 300 or int(m.group(3)) < 300:
-                continue
-            out.append(_item(u, u, 'google'))
-            if len(out) >= limit:
-                break
+                         params={**params, 'udm': '2'}, headers=HEADERS)
+        out = _google_full_html(r.text, limit)
     except Exception:
         pass
+    if len(out) < 4:
+        try:  # 2) versión sencilla: se abre cada página del resultado y se coge su foto principal
+            r = requests.get('https://www.google.com/search', timeout=20, cookies=_GOOGLE_COOKIES, params=params,
+                             headers={'User-Agent': _BASIC_UA, 'Accept-Language': 'es-ES,es;q=0.9'})
+            pages = _google_basic_pages(r.text, 10)
+            from concurrent.futures import ThreadPoolExecutor
+            with ThreadPoolExecutor(max_workers=6) as pool:
+                out += [x for x in pool.map(_og_image, pages) if x]
+        except Exception:
+            pass
     return _unique(out)[:limit]
+
+
+def _fold(text):
+    import unicodedata
+    return ''.join(c for c in unicodedata.normalize('NFD', (text or '').lower()) if unicodedata.category(c) != 'Mn')
+
+
+def rank(items, query):
+    """Ordena como un buscador: primero las que tienen las palabras de la búsqueda en la foto o en su página.
+    Dentro del mismo nivel se respeta el orden original (el de Google)."""
+    words = [_fold(w) for w in keywords(query, 8)]
+    def score(pair):
+        index, item = pair
+        hay = _fold(item.get('url', '') + ' ' + item.get('source', ''))
+        hits = sum(1 for w in words if w and w in hay)
+        local = 1 if any(k in hay for k in ('linea', 'campo-de-gibraltar', 'campogibraltar', 'europasur', 'lalinea')) else 0
+        source = 3 if item.get('kind') == 'source' else 0
+        return (-(source + hits + local), index)
+    return [item for _, item in sorted(enumerate(items), key=score)]
 
 
 def duckduckgo_images(query, limit=20):
@@ -190,24 +269,22 @@ def duckduckgo_images(query, limit=20):
 
 
 def internet_images(query, limit=20):
-    """Busca fotos en toda la web: API de Google (si hay clave), DuckDuckGo, Bing y Google."""
+    """Busca fotos en toda la web como en Google Imágenes: Google primero; DuckDuckGo y Bing de reserva."""
     found = []
-    for provider in (lambda q: google_images(q, limit) if GOOGLE_SEARCH_API_KEY else [], duckduckgo_images, web_images,
-                     lambda q: [] if GOOGLE_SEARCH_API_KEY else google_images(q, limit)):
+    for provider in (google_images, duckduckgo_images, web_images):
         try:
-            found += provider(query)
+            found += [x for x in provider(query) if not _bad_host(x['url']) and not _bad_host(x.get('source', ''))]
         except Exception:
             pass
         if len(_unique(found)) >= limit:
             break
-    return _unique(found)[:limit]
+    return rank(_unique(found), query)[:limit]
 
 
 def providers_check(query='La Línea de la Concepción playa'):
     """Cuántas fotos devuelve cada buscador desde el servidor (para Ajustes)."""
     out = []
-    for name, fn in (('Google (API)', lambda q: google_images(q) if GOOGLE_SEARCH_API_KEY else None), ('DuckDuckGo', duckduckgo_images),
-                     ('Bing', web_images), ('Google (página)', lambda q: [] if GOOGLE_SEARCH_API_KEY else google_images(q))):
+    for name, fn in (('Google Imágenes', google_images), ('DuckDuckGo', duckduckgo_images), ('Bing', web_images)):
         try:
             res = fn(query)
             out.append({'name': name, 'count': None if res is None else len(res)})

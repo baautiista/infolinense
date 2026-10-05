@@ -13,7 +13,7 @@ from . import db, sources, pipeline, publishers, photos, canva, ai, planner, lay
 from .auth import login, require_auth
 from .config import BASE_DIR, RENDER_DIR, UPLOAD_DIR, SCAN_INTERVAL_MINUTES, AUTO_PIPELINE, OPENAI_API_KEY, ADMIN_PASSWORD, JWT_SECRET, PUBLISH_MODE, CORS_ORIGINS, PUBLIC_BASE_URL, AUTO_PUBLISH
 
-VERSION='4.5.0'
+VERSION='4.6.0'
 app=FastAPI(title='InfoLinense Desk',version=VERSION)
 app.add_middleware(CORSMiddleware,allow_origins=CORS_ORIGINS,allow_credentials=False,allow_methods=['*'],allow_headers=['Authorization','Content-Type'])
 db.init_db()
@@ -477,6 +477,7 @@ def kit(aid:int):
             'image_url':f'/media/render/{aid}.png' if exported else None,'status':a.get('status'),'source_url':a.get('source_url'),
             'image_source':a.get('image_source'),'image_license':a.get('image_license'),'image_author':a.get('image_author') or '',
             'image_kind':a.get('image_kind') or '','image_credit':photo_credit(a),
+            'photo_query':a.get('photo_query') or photos.photo_query_for(a.get('headline') or '',a.get('section') or ''),
             'photo_download_url':f'/api/articles/{aid}/photo/file' if photo_ok else None,
             'ai_image_suggestion':a.get('ai_image_suggestion') or '','canva_url':design.get('url'),'canva_exported':exported,
             'carousel_slides':[f'/api/articles/{aid}/carousel/slide/{r["slide_index"]}' for r in carousel if r.get('exported')],

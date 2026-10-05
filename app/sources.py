@@ -104,7 +104,8 @@ def parse_rss(source):
             media = next((m for m in (it.find('{http://search.yahoo.com/mrss/}content'), it.find('{http://search.yahoo.com/mrss/}thumbnail'),
                                        it.find('enclosure')) if m is not None), None)
             image = media.attrib.get('url', '') if media is not None and 'image' in media.attrib.get('type', 'image') else ''
-            items.append({'title': title, 'url': link, 'excerpt': clean(it.findtext('description')),
+            full = clean(it.findtext('{http://purl.org/rss/1.0/modules/content/}encoded') or '')
+            items.append({'title': title, 'url': link, 'excerpt': full if len(full) > len(clean(it.findtext('description'))) else clean(it.findtext('description')),
                           'published_at': clean(it.findtext('pubDate')) or clean(it.findtext('{http://purl.org/dc/elements/1.1/}date')),
                           'outlet': outlet, 'image': image or best_image(raw, link)})
     if not items:
@@ -342,7 +343,7 @@ def similar_to_published(title):
 
 def add_candidate(title, url, excerpt, source_name, source_id=None, published_at='', source_meta=None, local_angle='', outlet='', image=''):
     source_meta = source_meta or {'priority': 60, 'official': 0, 'local_scope': 0}
-    title, excerpt = clean(title)[:260], clean(excerpt)[:1000]
+    title, excerpt = clean(title)[:260], clean(excerpt)[:4000]
     local_angle = clean(local_angle)[:800]
     tender = source_meta.get('kind') in ('procurement', 'bop', 'edictos') or bool(re.search(r'licitaci|adjudica|edicto|contrataci', title, re.I))
     window = WINDOW_DAYS['Licitaciones y edictos'] if tender else None
@@ -463,9 +464,16 @@ def archive_stale():
     return n
 
 
+_BOILER = re.compile(r'(cookies?|suscr[ií]bete|newsletter|todos los derechos|aviso legal|pol[ií]tica de privacidad|comparte|compartir|'
+                     r'te puede interesar|lee tambi[eé]n|m[aá]s noticias|publicidad|s[ií]guenos|whatsapp|telegram)', re.I)
+
+
 def fetch_article_text(url):
-    """Texto de la noticia o del documento (los edictos y licitaciones suelen ser PDF)."""
+    """Texto completo de la noticia (o del PDF del edicto/licitación), sin menús ni pies de página."""
     try:
+        if 'news.google.com' in (url or ''):
+            from .photos import resolve_google_news
+            url = resolve_google_news(url)  # Google News solo es un enlace intermedio: se lee la noticia original
         r = fetch(url, timeout=30); r.raise_for_status()
         if 'pdf' in (r.headers.get('content-type') or '').lower() or r.content[:4] == b'%PDF':
             from io import BytesIO
@@ -473,7 +481,17 @@ def fetch_article_text(url):
             reader = PdfReader(BytesIO(r.content))
             return clean(' '.join((page.extract_text() or '') for page in reader.pages[:8]))[:18000]
         soup = BeautifulSoup(r.text, 'html.parser')
-        for node in soup(['script', 'style', 'nav', 'footer', 'header', 'aside']): node.decompose()
+        for node in soup(['script', 'style', 'nav', 'footer', 'header', 'aside', 'form', 'figure', 'noscript']): node.decompose()
+        # El bloque con más párrafos largos es el cuerpo de la noticia.
+        best, best_len = None, 0
+        for box in soup.select('article, main, [itemprop=articleBody], .entry-content, .post-content, .article-body, .noticia, .content, body'):
+            paras = [clean(p.get_text(' ', strip=True)) for p in box.find_all('p')]
+            size = sum(len(p) for p in paras if len(p) > 60)
+            if size > best_len:
+                best, best_len = paras, size
+        if best and best_len > 300:
+            body = [p for p in best if len(p) > 40 and not _BOILER.search(p[:80])]
+            return '\n\n'.join(dict.fromkeys(body))[:18000]
         article = soup.find('article') or soup.find('main') or soup.body
         return clean(article.get_text(' ', strip=True) if article else soup.get_text(' ', strip=True))[:18000]
     except Exception: return ''

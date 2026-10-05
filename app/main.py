@@ -13,7 +13,7 @@ from . import db, sources, pipeline, publishers, photos, canva, ai, planner, lay
 from .auth import login, require_auth
 from .config import BASE_DIR, RENDER_DIR, UPLOAD_DIR, SCAN_INTERVAL_MINUTES, AUTO_PIPELINE, OPENAI_API_KEY, ADMIN_PASSWORD, JWT_SECRET, PUBLISH_MODE, CORS_ORIGINS, PUBLIC_BASE_URL, AUTO_PUBLISH
 
-VERSION='4.3.0'
+VERSION='4.4.0'
 app=FastAPI(title='InfoLinense Desk',version=VERSION)
 app.add_middleware(CORSMiddleware,allow_origins=CORS_ORIGINS,allow_credentials=False,allow_methods=['*'],allow_headers=['Authorization','Content-Type'])
 db.init_db()
@@ -519,7 +519,7 @@ def article_photos(aid:int,refresh:bool=False,q:str=''):
     a=db.row('SELECT a.*,c.title source_title,c.url source_url,c.excerpt,c.source_id FROM articles a LEFT JOIN candidates c ON c.id=a.candidate_id WHERE a.id=?',(aid,))
     if not a: raise HTTPException(404)
     if q.strip():
-        # Búsqueda libre en Wikimedia Commons (licencias libres documentadas).
+        # Búsqueda libre de fotos en internet.
         try: cached=json.loads(a.get('image_candidates_json') or '[]')
         except Exception: cached=[]
         found=photos.search_photos(q.strip()[:120])

@@ -489,7 +489,8 @@ def draft(candidate, source_text='', research='', quick=False):
     if not AI_ENABLED:
         return free_draft(candidate, source_text)
     prompt = f'''Redacta la noticia siguiendo al pie de la letra la guía de estilo de InfoLinense.
-Usa SOLO la información de las fuentes de abajo. Formato breve para web y redes: el texto ronda como máximo 2.200 caracteres; no lo alargues para llegar a esa cifra.
+Usa SOLO la información de las fuentes de abajo, pero aprovecha TODO el TEXTO FUENTE, no solo el titular: incorpora todos los datos útiles que contiene (cifras, fechas, plazos, lugares, nombres de calles y barrios, empresas, requisitos, antecedentes, declaraciones relevantes).
+Extensión del TEXTO: entre 1.800 y 2.200 caracteres con espacios. Solo si el texto fuente es muy corto (menos de 600 caracteres) puede quedar más breve, sin inventar ni rellenar.
 Párrafos de 2 a 4 frases separados por una línea en blanco.
 PROHIBIDO en titular, subtítulo y texto: hablar de lo que no se sabe o falta («no consta», «se desconoce», «no se ha encontrado», «no se especifica», «falta confirmar»), hablar de la fuente o del documento («según la documentación», «la nota no detalla») o pedir comprobaciones. Si un dato no está, no lo menciones y cuenta la noticia con lo que sí se sabe. Atribuye solo cuando lo haría un periodista («según el Ayuntamiento», «recoge el BOP»).
 Céntrate en los hechos y en lo que cambia para la ciudad, no en tecnicismos ni en las fuentes.
@@ -499,7 +500,7 @@ CANDIDATA: {candidate.get('title', '')}
 FUENTE: {candidate.get('source_name', '')} · {candidate.get('url', '')}
 FECHA DE LA FUENTE: {candidate.get('published_at') or 'no consta'}
 EXTRACTO: {candidate.get('excerpt', '')[:1500]}
-TEXTO FUENTE: {(source_text or '')[:10000]}
+TEXTO FUENTE (léelo entero): {(source_text or '')[:12000]}
 HECHOS Y CONTEXTO: {_facts_for_draft(research)[:8000]}
 
 Devuelve la entrega (SECCIÓN, TITULAR, SUBTÍTULO, TEXTO) como JSON válido, sin markdown, con exactamente estas claves:
@@ -507,7 +508,7 @@ focus (ENFOQUE PRINCIPAL: la verdadera noticia en una frase),
 section (exactamente una de: {SECTIONS}. Guía: {SECTION_GUIDE}),
 headline (TITULAR: breve, directo, cuenta la noticia, máximo 110 caracteres),
 subtitle (SUBTÍTULO: aporta información nueva, nunca repite el titular, máximo 260 caracteres),
-body (TEXTO: la noticia completa, máximo aproximado 2.200 caracteres),
+body (TEXTO: la noticia completa, entre 1.800 y 2.200 caracteres, en 5 a 8 párrafos),
 headline_options (lista de EXACTAMENTE 7 titulares alternativos con los mismos criterios, distintos entre sí y del titular principal),
 image_headline (titular corto para la imagen: máximo 70 caracteres, sin perder el dato clave),
 graphic_summary (máximo 140 caracteres, una o dos frases para la imagen),

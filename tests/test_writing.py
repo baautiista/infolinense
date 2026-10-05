@@ -437,3 +437,21 @@ class Tenders(unittest.TestCase):
         self.assertNotIn('https://contratos.gobierto.es/licitaciones/1', urls)
         self.assertIn('Importe', items[0]['excerpt'])
         self.assertTrue(items[0]['published_at'].startswith(datetime.now().strftime('%Y-%m-%d')))
+
+
+class SourceText(unittest.TestCase):
+    def test_full_article_text_is_read_not_just_the_headline(self):
+        from app import sources
+        body = ''.join(f'<p>Párrafo {i} con datos concretos de la obra en la calle Real, con 120.000 euros y seis meses de plazo.</p>' for i in range(6))
+        html = f'<html><body><header><p>Menú principal de la web con muchas cosas</p></header><article><h1>T</h1>{body}<p>Suscríbete a nuestra newsletter para recibir noticias cada día</p></article><footer><p>Aviso legal y política de privacidad de la web</p></footer></body></html>'
+
+        class R:
+            headers = {'content-type': 'text/html'}
+            content = html.encode()
+            text = html
+            def raise_for_status(self): pass
+        with patch.object(sources, 'fetch', return_value=R()):
+            text = sources.fetch_article_text('https://www.europasur.es/lalinea/noticia.html')
+        self.assertIn('Párrafo 5', text)
+        self.assertNotIn('newsletter', text)
+        self.assertNotIn('Menú', text)

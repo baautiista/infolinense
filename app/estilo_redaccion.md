@@ -265,7 +265,7 @@ Una obra adjudicada NO significa que esté terminada ni necesariamente iniciada.
 
 EXTENSIÓN
 
-Para web/redes de InfoLinense, intenta que el cuerpo principal ronde un máximo aproximado de 2.200 caracteres cuando se solicite formato breve.
+Para web/redes de InfoLinense, el cuerpo principal debe tener entre 1.800 y 2.200 caracteres, aprovechando todos los datos del texto de la fuente.
 
 No alargues una noticia simplemente para alcanzar una longitud.
 

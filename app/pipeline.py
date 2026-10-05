@@ -27,6 +27,8 @@ def investigate_candidate(cid):
     if not c: raise RuntimeError('Candidata no existe')
     if c['status'] not in ('new', 'needs_config'): raise ValueError('La noticia ya ha avanzado desde el radar')
     src_text = sources.fetch_article_text(c.get('url', ''))
+    if len(src_text or '') < 300 and len(c.get('excerpt') or '') > len(src_text or ''):
+        src_text = c.get('excerpt') or src_text  # si la página no se deja leer, al menos el resumen completo de la fuente
     try:
         research_data = ai.research(c, src_text)
     except ai.AIProviderError as e:

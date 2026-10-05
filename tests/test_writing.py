@@ -382,7 +382,7 @@ class FreeMode(unittest.TestCase):
             return Resp(200, {'candidates': [{'content': {'parts': [{'text': '{"ok": 1}'}]}}]})
         with patch.object(ai, 'AI_ALLOW_PAID', False), patch.object(ai, 'ACTIVE_PROVIDER', 'gemini'), patch.object(ai, 'GEMINI_API_KEY', 'g'), \
              patch.object(ai, 'OPENAI_API_KEY', 'sk'), patch.object(ai, 'ANTHROPIC_API_KEY', 'sk-ant'), patch.object(ai, 'AI_FALLBACK', True), \
-             patch.object(ai.requests, 'post', side_effect=fake_post):
+             patch.object(ai.requests, 'post', side_effect=fake_post), patch.object(ai.time, 'sleep'):
             self.assertEqual(ai.provider_chain(), ['gemini'])
             data, provider, _ = ai.ask_json('s', 'u')
         self.assertEqual(provider, 'gemini')
@@ -391,10 +391,26 @@ class FreeMode(unittest.TestCase):
     def test_gemini_daily_limit_is_explained(self):
         def fake_post(url, params=None, json=None, headers=None, timeout=None):
             return Resp(429, {'error': {'status': 'RESOURCE_EXHAUSTED', 'message': 'Quota exceeded'}})
-        with patch.object(ai, 'GEMINI_API_KEY', 'g'), patch.object(ai.requests, 'post', side_effect=fake_post):
+        with patch.object(ai, 'GEMINI_API_KEY', 'g'), patch.object(ai.requests, 'post', side_effect=fake_post), patch.object(ai.time, 'sleep'):
             with self.assertRaises(ai.AIProviderError) as ctx:
                 ai.ask_gemini('s', 'u')
         self.assertIn('límite gratuito', str(ctx.exception))
+
+    def test_model_without_free_quota_falls_back_to_next(self):
+        used = []
+
+        def fake_post(url, params=None, json=None, headers=None, timeout=None):
+            used.append(url.split('/models/')[1].split(':')[0])
+            if len(used) == 1:
+                return Resp(429, {'error': {'status': 'RESOURCE_EXHAUSTED', 'message': 'Quota exceeded for metric generate_content_free_tier_requests, limit: 0'}})
+            return Resp(200, {'candidates': [{'content': {'parts': [{'text': 'hola'}]}}]})
+        ai._gemini_bad_models.clear()
+        with patch.object(ai, 'GEMINI_API_KEY', 'g'), patch.object(ai, 'GEMINI_MODEL', 'modelo-sin-cupo'), \
+             patch.object(ai, 'GEMINI_FALLBACK_MODELS', ['modelo-gratis']), patch.object(ai.requests, 'post', side_effect=fake_post), \
+             patch.object(ai.time, 'sleep'):
+            self.assertEqual(ai.ask_gemini('s', 'u'), 'hola')
+        self.assertEqual(used, ['modelo-sin-cupo', 'modelo-gratis'])
+        ai._gemini_bad_models.clear()
 
 
 class Tenders(unittest.TestCase):

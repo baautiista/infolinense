@@ -4,7 +4,8 @@ from bs4 import BeautifulSoup
 from .config import (OPENAI_API_KEY, OPENAI_MODEL, OPENAI_WEB_SEARCH,
                     ANTHROPIC_API_KEY, ANTHROPIC_MODEL, ANTHROPIC_WORKSPACE_ID,
                     ANTHROPIC_WEB_SEARCH, AI_PROVIDER, AI_FALLBACK,
-                    AI_ALLOW_PAID, GEMINI_API_KEY, GEMINI_MODEL)
+                    AI_ALLOW_PAID, GEMINI_API_KEY, GEMINI_MODEL, GEMINI_FALLBACK_MODELS, GEMINI_MIN_INTERVAL)
+import threading as _threading
 
 PROVIDER_NAMES = {'anthropic': 'Claude (Anthropic)', 'openai': 'ChatGPT (OpenAI)', 'gemini': 'Gemini (Google, gratis)'}
 PAID = ('openai', 'anthropic')
@@ -177,40 +178,84 @@ def ask_openai(instructions, user_text, web=False, max_tokens=4000):
     return answer
 
 
+_gemini_lock = _threading.Lock()
+_gemini_last = [0.0]
+_gemini_bad_models = set()
+
+
+def _gemini_retry_seconds(err):
+    for d in (err.get('details') or []) if isinstance(err, dict) else []:
+        delay = str((d or {}).get('retryDelay') or '')
+        m = re.match(r'(\d+(?:\.\d+)?)s', delay)
+        if m:
+            return float(m.group(1))
+    return None
+
+
 def ask_gemini(instructions, user_text, web=False, max_tokens=4000):
-    """Google Gemini (nivel gratuito). Sin búsqueda web para no salir del plan gratis."""
+    """Google Gemini (nivel gratuito). Una petición cada GEMINI_MIN_INTERVAL segundos como máximo;
+    si un modelo no tiene cupo gratuito se prueba el siguiente; si es un límite por minuto, espera y repite."""
     if not GEMINI_API_KEY:
         raise AIProviderError('Falta GEMINI_API_KEY en Railway.', 'gemini', kind='config')
-    url = 'https://generativelanguage.googleapis.com/v1beta/models/%s:generateContent' % GEMINI_MODEL
     payload = {'systemInstruction': {'parts': [{'text': instructions}]},
                'contents': [{'role': 'user', 'parts': [{'text': user_text}]}],
                'generationConfig': {'maxOutputTokens': max(2048, max_tokens * 2), 'temperature': 0.6}}
-    try:
-        r = requests.post(url, params={'key': GEMINI_API_KEY}, json=payload, timeout=150)
-    except requests.RequestException as exc:
-        raise AIProviderError('No se pudo contactar con Gemini (red o tiempo de espera).', 'gemini', kind='network') from exc
-    if not r.ok:
-        try: err = (r.json() or {}).get('error') or {}
-        except Exception: err = {}
-        msg = _hide_keys(err.get('message', '')) if isinstance(err, dict) else ''
-        status = r.status_code
-        if status == 429:
-            kind, text = 'rate_limit', 'Se ha alcanzado el límite gratuito de Gemini por ahora. Se reintentará solo más tarde (o pulsa Reintentar dentro de un rato).'
-        elif status in (401, 403) or 'api key' in msg.lower():
-            kind, text = 'auth', 'Google no acepta la clave GEMINI_API_KEY. Créala de nuevo en aistudio.google.com.'
-        elif status == 404:
-            kind, text = 'bad_request', f'Google no reconoce el modelo {GEMINI_MODEL}. Revisa GEMINI_MODEL en Railway.'
-        elif status >= 500:
-            kind, text = 'overloaded', 'Los servidores de Gemini están saturados. Reintenta en unos minutos.'
-        else:
-            kind, text = 'bad_request', f'Gemini rechazó la solicitud (HTTP {status}).'
-        raise AIProviderError(text, 'gemini', status, str(err.get('status', '') if isinstance(err, dict) else ''), kind, _retry_after(r), msg)
-    data = r.json()
-    parts = ((data.get('candidates') or [{}])[0].get('content') or {}).get('parts') or []
-    text = '\n'.join(p.get('text', '') for p in parts if isinstance(p, dict) and not p.get('thought'))
-    if not text.strip():
-        raise AIProviderError('Gemini no devolvió texto. Reintenta.', 'gemini', 200, kind='empty')
-    return text
+    models = [m for m in dict.fromkeys([GEMINI_MODEL] + list(GEMINI_FALLBACK_MODELS)) if m not in _gemini_bad_models] or [GEMINI_MODEL]
+    last_error = None
+    with _gemini_lock:  # una petición cada vez, espaciadas
+        for model in models:
+            for attempt in range(2):
+                wait = GEMINI_MIN_INTERVAL - (time.time() - _gemini_last[0])
+                if wait > 0:
+                    time.sleep(wait)
+                url = 'https://generativelanguage.googleapis.com/v1beta/models/%s:generateContent' % model
+                try:
+                    r = requests.post(url, params={'key': GEMINI_API_KEY}, json=payload, timeout=150)
+                except requests.RequestException as exc:
+                    raise AIProviderError('No se pudo contactar con Gemini (red o tiempo de espera).', 'gemini', kind='network') from exc
+                finally:
+                    _gemini_last[0] = time.time()
+                if r.ok:
+                    data = r.json()
+                    parts = ((data.get('candidates') or [{}])[0].get('content') or {}).get('parts') or []
+                    text = '\n'.join(p.get('text', '') for p in parts if isinstance(p, dict) and not p.get('thought'))
+                    if not text.strip():
+                        raise AIProviderError('Gemini no devolvió texto. Reintenta.', 'gemini', 200, kind='empty')
+                    return text
+                try: err = (r.json() or {}).get('error') or {}
+                except Exception: err = {}
+                msg = _hide_keys(err.get('message', '')) if isinstance(err, dict) else ''
+                status = r.status_code
+                if status == 404 or (status == 429 and re.search(r'limit:\s*0\b', msg)):
+                    _gemini_bad_models.add(model)  # sin cupo gratuito o inexistente: siguiente modelo
+                    last_error = (status, err, msg, model)
+                    break
+                if status == 429:
+                    delay = _gemini_retry_seconds(err)
+                    per_day = bool(re.search(r'per\s*day|PerDay|daily', msg, re.I))
+                    if attempt == 0 and not per_day and (delay is None or delay <= 65):
+                        time.sleep(delay or 30)  # límite por minuto: esperar y repetir
+                        continue
+                    last_error = (status, err, msg, model)
+                    break  # probar otro modelo (cada uno tiene su propio cupo)
+                if status in (401, 403) or 'api key' in msg.lower():
+                    raise AIProviderError('Google no acepta la clave GEMINI_API_KEY. Créala de nuevo en aistudio.google.com.', 'gemini', status, '', 'auth', None, msg)
+                if status >= 500:
+                    last_error = (status, err, msg, model)
+                    if attempt == 0:
+                        time.sleep(10)
+                        continue
+                    break
+                raise AIProviderError(f'Gemini rechazó la solicitud (HTTP {status}).', 'gemini', status, '', 'bad_request', None, msg)
+    status, err, msg, model = last_error or (429, {}, '', GEMINI_MODEL)
+    if status == 404:
+        raise AIProviderError('Google no reconoce los modelos de Gemini configurados. Revisa GEMINI_MODEL en Railway.', 'gemini', 404, '', 'bad_request', None, msg)
+    if status >= 500:
+        raise AIProviderError('Los servidores de Gemini están saturados. Reintenta en unos minutos.', 'gemini', status, '', 'overloaded', None, msg)
+    daily = bool(re.search(r'per\s*day|PerDay|daily', msg, re.I))
+    text = ('Se ha gastado el cupo gratuito de Gemini de hoy. Las noticias pendientes se redactarán solas cuando se renueve (mañana).'
+            if daily else 'Gemini pide esperar un poco (límite gratuito por minuto). Se reintentará solo en unos minutos.')
+    raise AIProviderError(text, 'gemini', 429, 'daily' if daily else 'per_minute', 'rate_limit', _gemini_retry_seconds(err), msg)
 
 
 def ask_anthropic(instructions, user_text, web=False, max_tokens=4000):
@@ -479,7 +524,7 @@ photo_query (búsqueda de imágenes en internet de 3 a 6 palabras que describa l
     data['missing_data'] = []
     data['social_text'] = data['body']
     data['headline_options'] = _clean_headlines(data.get('headline_options'), data.get('headline'))[:7]
-    if len(data['headline_options']) != 7:
+    if len(data['headline_options']) != 7 and provider != 'gemini':  # en el plan gratis no se gasta otra petición
         try:
             data['headline_options'] = alternate_headlines(data)
         except AIProviderError:

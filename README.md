@@ -24,6 +24,10 @@ El backend FastAPI corre en Railway y el panel editorial de Lovable consume la m
 2. Publica el panel como aplicación privada con pantalla de contraseña. Añade **solo su origen exacto** (`https://<tu-proyecto>.lovable.app`) a `CORS_ORIGINS` en Railway. Si usas dominio propio, añádelo separado por coma. Redepliega si Railway no aplica las variables automáticamente.
 3. Accede al panel, prueba Dashboard y Revisión y comprueba **Plantillas → Canva**. Los PNG privados solo existen tras exportar desde Canva y se descargan mediante `fetch` con token; un enlace `<img src="https://backend/media/render/...">` directo devolverá 401.
 
+## Novedades 4.3
+
+- **Gemini gratis sin atascos**: modelo Flash-Lite por defecto (más cupo gratuito), peticiones espaciadas (`GEMINI_MIN_INTERVAL`, 13 s), cambio automático de modelo si uno no tiene cupo, espera y reintento ante el límite por minuto y pausa de una hora si se agota el cupo diario. Una sola petición por noticia.
+
 ## Novedades 4.2
 
 - **Empezar de cero**: al desplegar se borran una vez las noticias encontradas (no las publicadas) y se releen todas las fuentes.

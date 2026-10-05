@@ -26,7 +26,11 @@ GOOGLE_SEARCH_CX = os.getenv('GOOGLE_SEARCH_CX','').strip()
 AI_ALLOW_PAID = os.getenv('AI_ALLOW_PAID','false').lower() in {'1','true','yes','on'}
 # IA gratuita: Google Gemini (nivel gratuito de Google AI Studio, sin tarjeta)
 GEMINI_API_KEY = os.getenv('GEMINI_API_KEY','').strip()
-GEMINI_MODEL = os.getenv('GEMINI_MODEL','gemini-flash-latest').strip()
+GEMINI_MODEL = os.getenv('GEMINI_MODEL','gemini-flash-lite-latest').strip()
+# Si un modelo no tiene cupo gratuito se prueba el siguiente
+GEMINI_FALLBACK_MODELS = [m.strip() for m in os.getenv('GEMINI_FALLBACK_MODELS','gemini-2.5-flash-lite,gemini-flash-latest,gemini-2.5-flash').split(',') if m.strip()]
+# Segundos mínimos entre peticiones a Gemini (el plan gratis limita las peticiones por minuto)
+GEMINI_MIN_INTERVAL = float(os.getenv('GEMINI_MIN_INTERVAL','13'))
 AI_PROVIDER = os.getenv('AI_PROVIDER','auto').strip().lower()
 # Si el proveedor principal falla (saldo, límite, caída), probar el otro si tiene clave.
 AI_FALLBACK = os.getenv('AI_FALLBACK','true').lower() in {'1','true','yes','on'}

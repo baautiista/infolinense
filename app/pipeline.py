@@ -133,6 +133,7 @@ _auto_q = _queue.PriorityQueue()
 _auto_pending = set()
 _auto_guard = threading.Lock()
 _auto_thread = None
+_paused_until = [0.0]
 _PRIO = {'urgent': 0, 'today': 1, 'this_week': 2, 'future': 3}
 USEFUL = tuple(_PRIO)
 
@@ -148,6 +149,8 @@ def queue_auto_write(cid, priority=None):
     with _auto_guard:
         if cid in _auto_pending or is_working(cid):
             return False
+        if _dt.now().timestamp() < _paused_until[0]:
+            return False  # cupo diario gratuito agotado: se reintentará en la siguiente búsqueda
         _auto_pending.add(cid)
         _set_work(cid, 'queued', 'queued')
         _auto_q.put((_PRIO[priority or c['editorial_priority']], _dt.now().timestamp(), cid))
@@ -169,6 +172,14 @@ def _auto_worker():
                 try:
                     write_candidate(cid)
                     db.log('auto_draft', f'Candidata {cid} redactada automáticamente')
+                except ai.AIProviderError as e:
+                    if e.kind == 'rate_limit' and e.code != 'daily':
+                        # Límite por minuto del plan gratis: vuelve a la cola dentro de un rato, sin marcar error.
+                        _set_work(cid, 'queued', 'queued')
+                        threading.Timer(90, lambda c=cid: queue_auto_write(c)).start()
+                    elif e.kind == 'rate_limit':
+                        _paused_until[0] = _dt.now().timestamp() + 3600  # cupo diario agotado: se deja de intentar una hora
+                    db.log('auto_draft_error', f'{cid}: {str(e)[:200]}')
                 except ValueError as e:
                     if str(e) != 'busy':
                         db.log('auto_draft_error', f'{cid}: {str(e)[:200]}')

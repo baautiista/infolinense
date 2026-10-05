@@ -13,7 +13,7 @@ from . import db, sources, pipeline, publishers, photos, canva, ai, planner, lay
 from .auth import login, require_auth
 from .config import BASE_DIR, RENDER_DIR, UPLOAD_DIR, SCAN_INTERVAL_MINUTES, AUTO_PIPELINE, OPENAI_API_KEY, ADMIN_PASSWORD, JWT_SECRET, PUBLISH_MODE, CORS_ORIGINS, PUBLIC_BASE_URL, AUTO_PUBLISH
 
-VERSION='5.2.1'
+VERSION='5.2.2'
 app=FastAPI(title='InfoLinense Desk',version=VERSION)
 app.add_middleware(CORSMiddleware,allow_origins=CORS_ORIGINS,allow_credentials=False,allow_methods=['*'],allow_headers=['Authorization','Content-Type'])
 db.init_db()
@@ -698,6 +698,8 @@ def public_media(name:str):
     if social_publish.TIKTOK_VERIFY_FILE and name==social_publish.TIKTOK_VERIFY_FILE:
         from fastapi.responses import PlainTextResponse
         return PlainTextResponse(social_publish.TIKTOK_VERIFY_CONTENT)  # verificación de la URL en TikTok
+    if name.startswith('tiktok') and name.endswith('.txt') and (BASE_DIR/'static'/'verify'/name).is_file():
+        return FileResponse(BASE_DIR/'static'/'verify'/name,media_type='text/plain')
     path=social_publish.public_file(name.removesuffix('.jpg'))
     if not path: raise HTTPException(404)
     return FileResponse(path,media_type='image/jpeg')
@@ -809,6 +811,9 @@ def root_verification(name:str):
     if social_publish.TIKTOK_VERIFY_FILE and name==social_publish.TIKTOK_VERIFY_FILE:
         from fastapi.responses import PlainTextResponse
         return PlainTextResponse(social_publish.TIKTOK_VERIFY_CONTENT)
+    f=BASE_DIR/'static'/'verify'/name  # archivos de verificación guardados en el proyecto
+    if name.startswith('tiktok') and name.endswith('.txt') and '/' not in name and f.is_file():
+        return FileResponse(f,media_type='text/plain')
     raise HTTPException(404)
 
 def scheduler_loop():

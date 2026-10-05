@@ -291,7 +291,8 @@ window.carousel = async () => {
 async function settings(v) {
   const [h, caps, srcs] = await Promise.all([api('/api/health'), api('/api/capabilities'), api('/api/sources')]);
   v.innerHTML = `<section class="panel"><h2>Redacción con IA</h2>
-      <p>${h.ai_configured ? `Redacta ${h.ai_provider === 'openai' ? 'ChatGPT' : 'Claude'}${h.ai_fallback?.length ? ' (con respaldo)' : ''}.` : 'No hay ninguna clave de IA en Railway.'}</p>
+      <p>${h.ai_configured ? `Redacta ${{ openai: 'ChatGPT', anthropic: 'Claude', gemini: 'Gemini (gratis)' }[h.ai_provider] || h.ai_provider}.` : 'Sin IA: los borradores se preparan a partir de la fuente. Añade GEMINI_API_KEY (gratis) en Railway.'}</p>
+      <p class="muted small">${h.paid_ai_allowed ? 'Las IA de pago están permitidas.' : 'Modo sin coste: ChatGPT y Claude están desactivados aunque tengan clave.'}</p>
       <button class="btn small" id="aiCheck">Comprobar ahora</button><div id="aiOut"></div></section>
     <section class="panel"><h2>Búsqueda de fotos</h2><p class="muted small">Comprueba qué buscadores de imágenes responden desde el servidor.</p>
       <button class="btn small" id="photoCheck">Comprobar fotos</button><div id="photoOut"></div></section>
@@ -310,7 +311,7 @@ async function settings(v) {
   $('#addFb').onsubmit = async e => { e.preventDefault(); const d = Object.fromEntries(new FormData(e.target)); try { await api('/api/sources', { method: 'POST', body: JSON.stringify({ ...d, kind: 'social', priority: 60, local_scope: true }) }); toast('Ahora se vigila'); render() } catch (er) { toast(er.message) } };
   $('#aiCheck').onclick = async e => {
     e.target.disabled = true; e.target.textContent = 'Comprobando…';
-    try { const r = await api('/api/ai/check'); $('#aiOut').innerHTML = r.providers.filter(p => p.configured).map(p => `<p class="${p.ok ? 'ok' : 'error'}"><b>${esc(p.provider_name)}</b> ${p.active ? '(principal)' : '(respaldo)'}: ${p.ok ? 'funciona' : esc(p.message) + (p.http_status ? ` <small>(HTTP ${p.http_status} ${esc(p.code || '')})</small>` : '')}</p>`).join('') || '<p class="error">Sin claves configuradas.</p>' }
+    try { const r = await api('/api/ai/check'); $('#aiOut').innerHTML = r.providers.filter(p => p.configured).map(p => `<p class="${p.ok ? 'ok' : 'error'}"><b>${esc(p.provider_name)}</b> ${p.active ? '(en uso)' : ''}: ${p.ok === null ? esc(p.message) : p.ok ? 'funciona' : esc(p.message) + (p.http_status ? ` <small>(HTTP ${p.http_status} ${esc(p.code || '')})</small>` : '')}</p>`).join('') || '<p class="error">Sin claves configuradas.</p>' }
     catch (er) { $('#aiOut').innerHTML = `<p class="error">${esc(er.message)}</p>` } finally { e.target.disabled = false; e.target.textContent = 'Comprobar ahora' }
   };
   $('#photoCheck').onclick = async e => {

@@ -13,7 +13,7 @@ from . import db, sources, pipeline, publishers, photos, canva, ai, planner, lay
 from .auth import login, require_auth
 from .config import BASE_DIR, RENDER_DIR, UPLOAD_DIR, SCAN_INTERVAL_MINUTES, AUTO_PIPELINE, OPENAI_API_KEY, ADMIN_PASSWORD, JWT_SECRET, PUBLISH_MODE, CORS_ORIGINS, PUBLIC_BASE_URL, AUTO_PUBLISH
 
-VERSION='4.0.0'
+VERSION='4.1.0'
 app=FastAPI(title='InfoLinense Desk',version=VERSION)
 app.add_middleware(CORSMiddleware,allow_origins=CORS_ORIGINS,allow_credentials=False,allow_methods=['*'],allow_headers=['Authorization','Content-Type'])
 db.init_db()
@@ -59,7 +59,7 @@ async def ai_error_handler(request,exc):
 def auth_login(body:LoginIn): return {'token':login(body.password)}
 @app.get('/api/health')
 def health():
-    return {'ok':True,'version':VERSION,'auth_configured':bool(ADMIN_PASSWORD and JWT_SECRET),'openai_configured':bool(OPENAI_API_KEY),'claude_configured':bool(ai.ANTHROPIC_API_KEY),'ai_configured':ai.AI_ENABLED,'ai_provider':ai.ACTIVE_PROVIDER or None,'ai_fallback':[p for p in ai.provider_chain()[1:]],'draft_provider':ai.ACTIVE_PROVIDER or 'source_draft','draft_mode':'ai' if ai.AI_ENABLED else 'source_draft','web_search':{p:ai.web_enabled(p) for p in ai.provider_chain()},'publish_mode':PUBLISH_MODE,'auto_publish':bool(AUTO_PUBLISH and PUBLISH_MODE!='none')}
+    return {'ok':True,'version':VERSION,'auth_configured':bool(ADMIN_PASSWORD and JWT_SECRET),'openai_configured':bool(OPENAI_API_KEY),'claude_configured':bool(ai.ANTHROPIC_API_KEY),'ai_configured':ai.AI_ENABLED,'ai_provider':ai.ACTIVE_PROVIDER or None,'ai_fallback':[p for p in ai.provider_chain()[1:]],'draft_provider':ai.ACTIVE_PROVIDER or 'source_draft','draft_mode':'ai' if ai.AI_ENABLED else 'source_draft','web_search':{p:ai.web_enabled(p) for p in ai.provider_chain()},'publish_mode':PUBLISH_MODE,'auto_publish':bool(AUTO_PUBLISH and PUBLISH_MODE!='none'),'paid_ai_allowed':ai.AI_ALLOW_PAID}
 
 @app.get('/api/ai/check',dependencies=[Depends(require_auth)])
 def ai_check():

@@ -131,7 +131,7 @@ class Providers(unittest.TestCase):
                 return Resp(400, {'error': {'type': 'invalid_request_error', 'message': 'Your credit balance is too low'}})
             return Resp(200, {'output_text': '{"ok": true}'})
         with patch.object(ai, 'ACTIVE_PROVIDER', 'anthropic'), patch.object(ai, 'ANTHROPIC_API_KEY', 'sk-ant-x'), \
-             patch.object(ai, 'OPENAI_API_KEY', 'sk-x'), patch.object(ai, 'AI_FALLBACK', True), \
+             patch.object(ai, 'OPENAI_API_KEY', 'sk-x'), patch.object(ai, 'AI_FALLBACK', True), patch.object(ai, 'AI_ALLOW_PAID', True), \
              patch.object(ai.requests, 'post', side_effect=fake_post):
             text, provider, _ = ai.ask_ai('s', 'u')
         self.assertEqual(provider, 'openai')
@@ -150,7 +150,7 @@ class Providers(unittest.TestCase):
                 return Resp(529, {'error': {'type': 'overloaded_error', 'message': 'Overloaded'}})
             return Resp(429, {'error': {'code': 'insufficient_quota'}})
         with patch.object(ai, 'ACTIVE_PROVIDER', 'anthropic'), patch.object(ai, 'ANTHROPIC_API_KEY', 'k'), \
-             patch.object(ai, 'OPENAI_API_KEY', 'k'), patch.object(ai, 'AI_FALLBACK', True), \
+             patch.object(ai, 'OPENAI_API_KEY', 'k'), patch.object(ai, 'AI_FALLBACK', True), patch.object(ai, 'AI_ALLOW_PAID', True), \
              patch.object(ai.requests, 'post', side_effect=fake_post):
             with self.assertRaises(ai.AIProviderError) as ctx:
                 ai.ask_ai('s', 'u')
@@ -371,3 +371,27 @@ class Sources(unittest.TestCase):
         self.assertFalse(sources.exact_locality('Avería en la línea 1 del metro de Sevilla'))
         self.assertFalse(sources.exact_locality('La Línea roja del Gobierno en la negociación'))
         self.assertTrue(sources.exact_locality('Colas en la frontera de La Línea con Gibraltar'))
+
+
+class FreeMode(unittest.TestCase):
+    def test_paid_ai_is_never_called_without_permission(self):
+        calls = []
+
+        def fake_post(url, params=None, json=None, headers=None, timeout=None):
+            calls.append(url)
+            return Resp(200, {'candidates': [{'content': {'parts': [{'text': '{"ok": 1}'}]}}]})
+        with patch.object(ai, 'AI_ALLOW_PAID', False), patch.object(ai, 'ACTIVE_PROVIDER', 'gemini'), patch.object(ai, 'GEMINI_API_KEY', 'g'), \
+             patch.object(ai, 'OPENAI_API_KEY', 'sk'), patch.object(ai, 'ANTHROPIC_API_KEY', 'sk-ant'), patch.object(ai, 'AI_FALLBACK', True), \
+             patch.object(ai.requests, 'post', side_effect=fake_post):
+            self.assertEqual(ai.provider_chain(), ['gemini'])
+            data, provider, _ = ai.ask_json('s', 'u')
+        self.assertEqual(provider, 'gemini')
+        self.assertTrue(all('googleapis.com' in u for u in calls))
+
+    def test_gemini_daily_limit_is_explained(self):
+        def fake_post(url, params=None, json=None, headers=None, timeout=None):
+            return Resp(429, {'error': {'status': 'RESOURCE_EXHAUSTED', 'message': 'Quota exceeded'}})
+        with patch.object(ai, 'GEMINI_API_KEY', 'g'), patch.object(ai.requests, 'post', side_effect=fake_post):
+            with self.assertRaises(ai.AIProviderError) as ctx:
+                ai.ask_gemini('s', 'u')
+        self.assertIn('límite gratuito', str(ctx.exception))

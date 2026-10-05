@@ -3,12 +3,19 @@ from urllib.parse import urlparse
 from bs4 import BeautifulSoup
 from .config import (OPENAI_API_KEY, OPENAI_MODEL, OPENAI_WEB_SEARCH,
                     ANTHROPIC_API_KEY, ANTHROPIC_MODEL, ANTHROPIC_WORKSPACE_ID,
-                    ANTHROPIC_WEB_SEARCH, AI_PROVIDER, AI_FALLBACK)
+                    ANTHROPIC_WEB_SEARCH, AI_PROVIDER, AI_FALLBACK,
+                    AI_ALLOW_PAID, GEMINI_API_KEY, GEMINI_MODEL)
 
-PROVIDER_NAMES = {'anthropic': 'Claude (Anthropic)', 'openai': 'ChatGPT (OpenAI)'}
+PROVIDER_NAMES = {'anthropic': 'Claude (Anthropic)', 'openai': 'ChatGPT (OpenAI)', 'gemini': 'Gemini (Google, gratis)'}
+PAID = ('openai', 'anthropic')
 
 
 def _configured_provider():
+    if not AI_ALLOW_PAID:
+        # Modo sin coste: solo la IA gratuita de Google; si no hay clave, borrador a partir de la fuente.
+        return 'gemini' if GEMINI_API_KEY else ''
+    if AI_PROVIDER in ('gemini', 'google'):
+        return 'gemini' if GEMINI_API_KEY else ''
     if AI_PROVIDER in ('anthropic', 'claude'):
         return 'anthropic' if ANTHROPIC_API_KEY else ''
     if AI_PROVIDER in ('openai', 'gpt'):
@@ -26,11 +33,11 @@ AI_ENABLED = bool(ACTIVE_PROVIDER)
 def provider_chain():
     """Providers to try, in order. The second one is only a fallback."""
     chain = [ACTIVE_PROVIDER] if ACTIVE_PROVIDER else []
-    if AI_FALLBACK:
-        for name, key in (('openai', OPENAI_API_KEY), ('anthropic', ANTHROPIC_API_KEY)):
+    if AI_FALLBACK and AI_ALLOW_PAID:
+        for name, key in (('openai', OPENAI_API_KEY), ('anthropic', ANTHROPIC_API_KEY), ('gemini', GEMINI_API_KEY)):
             if key and name not in chain:
                 chain.append(name)
-    return chain
+    return [p for p in chain if AI_ALLOW_PAID or p not in PAID]  # nunca de pago sin permiso
 
 
 def web_enabled(provider):
@@ -170,6 +177,42 @@ def ask_openai(instructions, user_text, web=False, max_tokens=4000):
     return answer
 
 
+def ask_gemini(instructions, user_text, web=False, max_tokens=4000):
+    """Google Gemini (nivel gratuito). Sin búsqueda web para no salir del plan gratis."""
+    if not GEMINI_API_KEY:
+        raise AIProviderError('Falta GEMINI_API_KEY en Railway.', 'gemini', kind='config')
+    url = 'https://generativelanguage.googleapis.com/v1beta/models/%s:generateContent' % GEMINI_MODEL
+    payload = {'systemInstruction': {'parts': [{'text': instructions}]},
+               'contents': [{'role': 'user', 'parts': [{'text': user_text}]}],
+               'generationConfig': {'maxOutputTokens': max(2048, max_tokens * 2), 'temperature': 0.6}}
+    try:
+        r = requests.post(url, params={'key': GEMINI_API_KEY}, json=payload, timeout=150)
+    except requests.RequestException as exc:
+        raise AIProviderError('No se pudo contactar con Gemini (red o tiempo de espera).', 'gemini', kind='network') from exc
+    if not r.ok:
+        try: err = (r.json() or {}).get('error') or {}
+        except Exception: err = {}
+        msg = _hide_keys(err.get('message', '')) if isinstance(err, dict) else ''
+        status = r.status_code
+        if status == 429:
+            kind, text = 'rate_limit', 'Se ha alcanzado el límite gratuito de Gemini por ahora. Se reintentará solo más tarde (o pulsa Reintentar dentro de un rato).'
+        elif status in (401, 403) or 'api key' in msg.lower():
+            kind, text = 'auth', 'Google no acepta la clave GEMINI_API_KEY. Créala de nuevo en aistudio.google.com.'
+        elif status == 404:
+            kind, text = 'bad_request', f'Google no reconoce el modelo {GEMINI_MODEL}. Revisa GEMINI_MODEL en Railway.'
+        elif status >= 500:
+            kind, text = 'overloaded', 'Los servidores de Gemini están saturados. Reintenta en unos minutos.'
+        else:
+            kind, text = 'bad_request', f'Gemini rechazó la solicitud (HTTP {status}).'
+        raise AIProviderError(text, 'gemini', status, str(err.get('status', '') if isinstance(err, dict) else ''), kind, _retry_after(r), msg)
+    data = r.json()
+    parts = ((data.get('candidates') or [{}])[0].get('content') or {}).get('parts') or []
+    text = '\n'.join(p.get('text', '') for p in parts if isinstance(p, dict) and not p.get('thought'))
+    if not text.strip():
+        raise AIProviderError('Gemini no devolvió texto. Reintenta.', 'gemini', 200, kind='empty')
+    return text
+
+
 def ask_anthropic(instructions, user_text, web=False, max_tokens=4000):
     if not ANTHROPIC_API_KEY:
         raise AIProviderError('Falta ANTHROPIC_API_KEY en Railway.', 'anthropic', kind='config')
@@ -217,7 +260,7 @@ def ask_ai(instructions, user_text, web=False, web_required=False, max_tokens=40
         if web_required and not use_web:
             continue
         try:
-            fn = ask_anthropic if provider == 'anthropic' else ask_openai
+            fn = {'anthropic': ask_anthropic, 'openai': ask_openai, 'gemini': ask_gemini}[provider]
             return fn(instructions, user_text, web=use_web, max_tokens=max_tokens), provider, use_web
         except AIProviderError as exc:
             if first_error is None:
@@ -237,22 +280,25 @@ def ask(instructions, user_text, web=False):
 def check_providers():
     """Make a tiny real request to each configured provider and report what it returns."""
     out = []
-    for provider in ('anthropic', 'openai'):
-        key = ANTHROPIC_API_KEY if provider == 'anthropic' else OPENAI_API_KEY
+    for provider in ('gemini', 'openai', 'anthropic'):
+        key = {'anthropic': ANTHROPIC_API_KEY, 'openai': OPENAI_API_KEY, 'gemini': GEMINI_API_KEY}[provider]
         item = {'provider': provider, 'provider_name': PROVIDER_NAMES[provider], 'configured': bool(key),
-                'model': ANTHROPIC_MODEL if provider == 'anthropic' else OPENAI_MODEL,
-                'active': provider == ACTIVE_PROVIDER, 'web_search': web_enabled(provider)}
-        if key:
+                'model': {'anthropic': ANTHROPIC_MODEL, 'openai': OPENAI_MODEL, 'gemini': GEMINI_MODEL}[provider],
+                'active': provider == ACTIVE_PROVIDER, 'web_search': web_enabled(provider),
+                'paid': provider in PAID, 'blocked': provider in PAID and not AI_ALLOW_PAID}
+        if key and item['blocked']:
+            item.update({'ok': None, 'message': 'Desactivada: es de pago (modo sin coste)'})
+        elif key:
             started = time.time()
             try:
-                fn = ask_anthropic if provider == 'anthropic' else ask_openai
+                fn = {'anthropic': ask_anthropic, 'openai': ask_openai, 'gemini': ask_gemini}[provider]
                 fn('Responde solo con la palabra OK.', 'Prueba de conexión', max_tokens=16 if provider == 'anthropic' else 32)
                 item.update({'ok': True, 'message': 'Responde correctamente'})
             except AIProviderError as exc:
                 item.update({'ok': False, **{k: v for k, v in exc.as_dict().items() if k != 'provider'}})
             item['seconds'] = round(time.time() - started, 1)
         out.append(item)
-    return {'active_provider': ACTIVE_PROVIDER or None, 'fallback_enabled': AI_FALLBACK,
+    return {'active_provider': ACTIVE_PROVIDER or None, 'fallback_enabled': AI_FALLBACK, 'paid_allowed': AI_ALLOW_PAID,
             'order': provider_chain(), 'providers': out}
 
 
@@ -305,7 +351,8 @@ def _source_research(candidate,source_text=''):
 
 def research(candidate, source_text=''):
     """Gather verifiable facts. Uses web search only where enabled; otherwise analyses the source text."""
-    if not AI_ENABLED:
+    if not AI_ENABLED or ACTIVE_PROVIDER == 'gemini':
+        # Plan gratuito: no se gasta una petición en investigar; se redacta directamente con el texto de la fuente.
         return _source_research(candidate, source_text)
     prompt = f'''Reúne los hechos de una posible noticia para vecinos de La Línea de la Concepción. No redactes todavía la noticia.
 Si puedes buscar en internet, completa el tema con información pública actual (Ayuntamiento, BOP, BOJA, BOE, contratación, prensa) y antecedentes locales que ayuden a entenderlo.

@@ -22,6 +22,11 @@ ANTHROPIC_WEB_SEARCH = os.getenv('ANTHROPIC_WEB_SEARCH','false').lower() in {'1'
 # Búsqueda de fotos en Google (opcional, más fiable): Programmable Search Engine con búsqueda de imágenes
 GOOGLE_SEARCH_API_KEY = os.getenv('GOOGLE_SEARCH_API_KEY','').strip()
 GOOGLE_SEARCH_CX = os.getenv('GOOGLE_SEARCH_CX','').strip()
+# Modo sin coste: por defecto NUNCA se usan las IA de pago (OpenAI/Anthropic) aunque haya claves.
+AI_ALLOW_PAID = os.getenv('AI_ALLOW_PAID','false').lower() in {'1','true','yes','on'}
+# IA gratuita: Google Gemini (nivel gratuito de Google AI Studio, sin tarjeta)
+GEMINI_API_KEY = os.getenv('GEMINI_API_KEY','').strip()
+GEMINI_MODEL = os.getenv('GEMINI_MODEL','gemini-flash-latest').strip()
 AI_PROVIDER = os.getenv('AI_PROVIDER','auto').strip().lower()
 # Si el proveedor principal falla (saldo, límite, caída), probar el otro si tiene clave.
 AI_FALLBACK = os.getenv('AI_FALLBACK','true').lower() in {'1','true','yes','on'}

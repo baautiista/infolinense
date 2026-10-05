@@ -24,6 +24,13 @@ El backend FastAPI corre en Railway y el panel editorial de Lovable consume la m
 2. Publica el panel como aplicación privada con pantalla de contraseña. Añade **solo su origen exacto** (`https://<tu-proyecto>.lovable.app`) a `CORS_ORIGINS` en Railway. Si usas dominio propio, añádelo separado por coma. Redepliega si Railway no aplica las variables automáticamente.
 3. Accede al panel, prueba Dashboard y Revisión y comprueba **Plantillas → Canva**. Los PNG privados solo existen tras exportar desde Canva y se descargan mediante `fetch` con token; un enlace `<img src="https://backend/media/render/...">` directo devolverá 401.
 
+## Novedades 4.1 — sin coste
+
+- **Modo sin coste por defecto** (`AI_ALLOW_PAID=false`): no se llama nunca a ChatGPT ni a Claude, aunque sus claves sigan en Railway.
+- **IA gratuita: Google Gemini** con `GEMINI_API_KEY` (nivel gratuito de Google AI Studio). Una sola petición por noticia (sin investigación previa ni búsqueda web con IA). Si se alcanza el límite gratuito, la noticia queda con «Reintentar» y se vuelve a intentar sola en la siguiente búsqueda.
+- Sin ninguna clave, los borradores se preparan a partir del texto de la fuente.
+- Para volver a usar IA de pago: `AI_ALLOW_PAID=true`.
+
 ## Novedades 4.0
 
 - **Trabajo por fases**: 1 Ordenar (noticia a noticia por bloques: Urgente, Hoy, Esta semana, Más adelante o No interesa), 2 Redacción (se redactan solas; progreso y reintentos), 3 Revisar (ficha con «Revisada» que pasa a la siguiente) y 4 Publicar (agenda de hoy y próximos días con «Publicar»). Al abrir, el panel va a la primera fase con trabajo. Ajustes en el engranaje.

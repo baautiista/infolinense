@@ -195,32 +195,48 @@ async function publishView(v) {
 window.setTime = async (id, p, value) => { if (!value) return; try { await api(`/api/candidates/${id}/triage`, { method: 'POST', body: JSON.stringify({ priority: p, planned_at: value + ':00' }) }); toast('Hora fijada'); render() } catch (e) { toast(e.message) } };
 function pickedNets() { const boxes = document.querySelectorAll('.netpick input'); if (boxes.length) return [...boxes].filter(i => i.checked).map(i => i.value); let saved = null; try { saved = JSON.parse(localStorage.getItem('nets') || 'null') } catch (e) { } return saved }
 function publishReport(r) { const lines = (r.results || []).filter(x => x.message).map(x => (x.ok ? '✓ ' : '✗ ') + x.message); toast(lines.join(' · ') || (r.published ? 'Publicada' : r.message || 'Aprobada')) }
-window.publishNow = async (id, b) => { b.disabled = true; b.textContent = 'Publicando…'; try { const r = await api(`/api/articles/${id}/publish`, { method: 'POST', body: JSON.stringify({ networks: pickedNets() }) }); publishReport(r); render(); counts() } catch (e) { toast(e.message); b.disabled = false; b.textContent = 'Publicar' } };
+window.publishNow = async (id, b) => { b.disabled = true; b.textContent = 'Publicando…'; try { const r = await api(`/api/articles/${id}/publish`, { method: 'POST', body: JSON.stringify({ networks: pickedNets() }) }); publishReport(r); render(); counts(); if (r.published) offerFacebook(id) } catch (e) { toast(e.message); b.disabled = false; b.textContent = 'Publicar' } };
 // Facebook personal: Meta no deja publicar en perfiles por programa, así que se comparte a mano.
 // 1.ª pulsación: prepara imagen y texto. 2.ª: abre el menú «Compartir» del móvil (o descarga la imagen y abre Facebook).
 const shareKits = {};
-window.shareFb = async (id, b) => {
-  const kit = shareKits[id];
-  if (!kit) {
-    b.disabled = true; const label = b.textContent; b.textContent = 'Preparando…';
-    try {
-      const k = await api(`/api/articles/${id}/share`);
-      const files = [];
-      for (const [i, u] of k.images.entries()) { const r = await fetch(u); if (r.ok) files.push(new File([await r.blob()], `infolinense-${id}-${i + 1}.jpg`, { type: 'image/jpeg' })) }
-      shareKits[id] = { text: k.text + (k.link ? '\n\n' + k.link : ''), files };
-      b.textContent = 'Compartir ahora'; toast('Listo: pulsa «Compartir ahora»');
-    } catch (e) { toast(e.message); b.textContent = label } finally { b.disabled = false }
-    return;
-  }
+function prepareShare(id) {
+  if (!shareKits[id]) shareKits[id] = (async () => {
+    const k = await api(`/api/articles/${id}/share`);
+    const files = [];
+    for (const [i, u] of k.images.entries()) { const r = await fetch(u); if (r.ok) files.push(new File([await r.blob()], `infolinense-${id}-${i + 1}.jpg`, { type: 'image/jpeg' })) }
+    return { text: k.text + (k.link ? '\n\n' + k.link : ''), files };
+  })().catch(e => { delete shareKits[id]; throw e });
+  return shareKits[id];
+}
+async function doShare(kit) {
   const copied = navigator.clipboard ? navigator.clipboard.writeText(kit.text).then(() => true, () => false) : Promise.resolve(false);
   if (kit.files.length && navigator.canShare && navigator.canShare({ files: kit.files })) {
-    try { await navigator.share({ files: kit.files, text: kit.text }); toast((await copied) ? 'Texto copiado: si Facebook no lo pone, mantén pulsado y «Pegar»' : 'Compartido'); return }
-    catch (e) { if (e.name === 'AbortError') return }
+    try { await navigator.share({ files: kit.files, text: kit.text }); toast((await copied) ? 'Elige Facebook. El texto va copiado: si no aparece, mantén pulsado y «Pegar»' : 'Compartido'); return true }
+    catch (e) { if (e.name === 'AbortError') return true; if (e.name === 'NotAllowedError') return false }
   }
   for (const f of kit.files) { const a = document.createElement('a'); a.href = URL.createObjectURL(f); a.download = f.name; document.body.appendChild(a); a.click(); a.remove() }
   window.open('https://www.facebook.com/', '_blank', 'noopener');
   toast((await copied) ? 'Imagen descargada y texto copiado. En Facebook: «¿Qué estás pensando?» → pega el texto y añade la foto' : 'Imagen descargada. Copia el texto con el botón «Copiar»');
+  return true;
+}
+// Un toque: si la imagen ya está preparada se abre «Compartir» al momento; si no, se prepara y se intenta en el mismo toque.
+window.shareFb = async (id, b) => {
+  const label = b ? b.textContent : '';
+  if (b) { b.disabled = true; b.textContent = 'Preparando…' }
+  try {
+    const kit = await prepareShare(id);
+    if (!(await doShare(kit)) && b) { b.textContent = 'Compartir ahora'; toast('Listo: pulsa «Compartir ahora»'); return }
+    if (b) b.textContent = label;
+  } catch (e) { toast(e.message); if (b) b.textContent = label } finally { if (b) b.disabled = false }
 };
+// Tras publicar: barra fija con el botón para compartir en Facebook (la imagen se prepara mientras tanto)
+function offerFacebook(id) {
+  prepareShare(id).catch(() => { });
+  let bar = $('#fbbar'); if (!bar) { bar = document.createElement('div'); bar.id = 'fbbar'; document.body.appendChild(bar) }
+  bar.innerHTML = `<span>Publicada. ¿Y en tu Facebook?</span><button class="btn primary small">Compartir en Facebook</button><button class="link" aria-label="Cerrar">✕</button>`;
+  bar.querySelector('.primary').onclick = e => { shareFb(id, e.target).then(() => bar.remove()) };
+  bar.querySelector('.link').onclick = () => bar.remove();
+}
 window.retryNet = async (id, net, b) => { b.disabled = true; b.textContent = 'Publicando…'; try { const r = await api(`/api/articles/${id}/networks/${net}`, { method: 'POST' }); toast((r.ok ? '✓ ' : '✗ ') + r.message); render() } catch (e) { toast(e.message); b.disabled = false } };
 window.saveNetPrefs = saveNetPrefs;
 
@@ -294,7 +310,7 @@ window.reviewed = async () => {
 };
 window.publish = async () => {
   const b = $('#pubBtn'); b.disabled = true; b.textContent = 'Publicando…';
-  try { await saveArticle(); const r = await api(`/api/articles/${editorId}/publish`, { method: 'POST', body: JSON.stringify({ networks: pickedNets() }) }); publishReport(r); render() }
+  try { await saveArticle(); const r = await api(`/api/articles/${editorId}/publish`, { method: 'POST', body: JSON.stringify({ networks: pickedNets() }) }); publishReport(r); if (r.published) offerFacebook(editorId); render() }
   catch (e) { toast(e.message); b.disabled = false; b.textContent = 'Publicar' }
 };
 window.autoPhoto = async () => {

@@ -13,7 +13,7 @@ from . import db, sources, pipeline, publishers, photos, canva, ai, planner, lay
 from .auth import login, require_auth
 from .config import BASE_DIR, RENDER_DIR, UPLOAD_DIR, SCAN_INTERVAL_MINUTES, AUTO_PIPELINE, OPENAI_API_KEY, ADMIN_PASSWORD, JWT_SECRET, PUBLISH_MODE, CORS_ORIGINS, PUBLIC_BASE_URL, AUTO_PUBLISH
 
-VERSION='6.0.1'
+VERSION='6.1.0'
 app=FastAPI(title='InfoLinense Desk',version=VERSION)
 app.add_middleware(CORSMiddleware,allow_origins=CORS_ORIGINS,allow_credentials=False,allow_methods=['*'],allow_headers=['Authorization','Content-Type'])
 db.init_db()
@@ -1054,5 +1054,7 @@ def startup():
     if os.getenv('DISABLE_SCHEDULER','false').lower() not in {'1','true','yes'}:
         threading.Thread(target=scheduler_loop,daemon=True).start()
         threading.Thread(target=publish_loop,daemon=True).start()
+        try: planner.rebuild_schedule()  # reparte lo pendiente con la parrilla actual
+        except Exception as e: db.log('schedule_error',str(e)[:250])
         try: pipeline.queue_useful_pending()
         except Exception as e: db.log('auto_draft_error',str(e)[:250])

@@ -84,7 +84,15 @@ class MergeTests(unittest.TestCase):
         self.assertEqual(len(items), 1)
         self.assertTrue(items[0]['title'].startswith('Edicto: Aprobación inicial'))
         self.assertEqual(items[0]['url'], 'https://www.sedeelectronica.lalinea.es/edictos/edicto/ver-edicto?codigo=555')
-        self.assertIn('https://www.sedeelectronica.lalinea.es/', calls)
+        self.assertEqual(calls[0], 'https://www.sedeelectronica.lalinea.es/edictos/publico?idOrgan=23')  # entrada pública primero
+
+    def test_edictos_public_entry_is_enough(self):
+        today = datetime.now().strftime('%d/%m/%Y')
+        table = ('<table><tr><td>%s</td><td>31/01/2099</td><td>BASES PUEBLO NAVIDEÑO NAVIDAD Y REYES</td>'
+                 '<td><a href="/edictos/edicto/descarga.action;jsessionid=X?codigo=2026-179987">Ver</a></td></tr></table>' % today)
+        with patch.object(sources.requests.Session, 'get', lambda self, url, **kw: Resp(table)):
+            items = sources.parse_edictos({'url': 'https://www.sedeelectronica.lalinea.es/edictos/edicto/buscar-edictos-filtro-pub?primeraBusqueda=true'})
+        self.assertEqual(items[0]['url'], 'https://www.sedeelectronica.lalinea.es/edictos/edicto/descarga.action?codigo=2026-179987')
 
     def test_edictos_source_is_active(self):
         s = db.row("SELECT * FROM sources WHERE kind='edictos'")
@@ -93,3 +101,41 @@ class MergeTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class ProcurementSources(unittest.TestCase):
+    def setUp(self):
+        db.init_db()
+        for t in ('candidate_links', 'articles', 'candidates'):
+            db.exec_('DELETE FROM ' + t)
+
+    def test_licitacionesio_cards_and_same_tender_merged(self):
+        today = datetime.now().strftime('%d/%m/%Y')
+        later = '15/12/2099'
+        html = f'''<div class="card"><h3><a href="/licitacion/licitacion-de-exhibicion-con-drones-luminosos-museo-cruz-63e1">Licitación de exhibición con drones luminosos Museo Cruz Herrera</a></h3>
+          <p>Ayuntamiento de La Línea de la Concepción</p><span>Publicada {today}</span><span>Plazo {later}</span><span>14.876,04 €</span></div>'''
+
+        class R:
+            text = html; status_code = 200; ok = True
+            def raise_for_status(self): pass
+        with patch.object(sources, 'fetch', return_value=R()):
+            items = sources.read_source({'url': 'https://licitaciones.io/licitaciones/la-linea-de-la-concepcion-ciudad', 'kind': 'rss'})
+        self.assertEqual(len(items), 1)
+        self.assertTrue(items[0]['url'].startswith('https://licitaciones.io/licitacion/'))
+        self.assertIn('Plazo hasta 15/12/2099', items[0]['excerpt'])
+        a = sources.add_candidate('Licitación: Exhibición drones luminosos con motivo del XI Aniversario del Museo Cruz Herrera',
+                                  'https://contratos.gobierto.es/licitaciones/5230345', '', 'Gobierto', published_at=NOW,
+                                  source_meta={'priority': 97, 'official': 0, 'local_scope': 1, 'kind': 'procurement'})
+        b = sources.add_candidate(items[0]['title'], items[0]['url'], items[0]['excerpt'], 'Licitaciones io', published_at=NOW,
+                                  source_meta={'priority': 80, 'official': 0, 'local_scope': 1})
+        self.assertTrue(a); self.assertIsNone(b)
+        self.assertEqual(sources.links_for([a])[a][0]['url'], items[0]['url'])
+
+    def test_rss_source_that_is_a_web_page_falls_back(self):
+        class R:
+            text = '<html><body><article><h2><a href="/n/1">El Ayuntamiento de La Línea abre el plazo de matrícula</a></h2></article></body></html>'
+            content = text.encode(); status_code = 200; ok = True
+            def raise_for_status(self): pass
+        with patch.object(sources, 'fetch', return_value=R()):
+            items = sources.read_source({'url': 'https://example.es/', 'kind': 'rss'})
+        self.assertEqual(items[0]['url'], 'https://example.es/n/1')

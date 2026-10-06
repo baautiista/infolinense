@@ -222,6 +222,39 @@ def parse_procurement(source):
         raise ValueError('La página de licitaciones no mostró ninguna licitación (puede haber cambiado de formato)')
     return results
 
+def parse_licitacionesio(source):
+    """licitaciones.io: tarjetas con enlace /licitacion/…, fechas de publicación y plazo, presupuesto."""
+    r = fetch(source['url'], timeout=30); r.raise_for_status()
+    soup = BeautifulSoup(r.text, 'html.parser')
+    out, seen = [], set()
+    now = datetime.now(timezone.utc)
+    for a in soup.find_all('a', href=re.compile(r'/licitacion/[^/?#]+')):
+        url = urljoin(source['url'], a['href'].split('?')[0])
+        if url in seen: continue
+        card = a
+        for _ in range(6):  # sube hasta la tarjeta que tiene las fechas
+            if card.parent is None or len(re.findall(r'\d{1,2}/\d{1,2}/\d{4}', card.get_text(' ', strip=True))) >= 1:
+                break
+            card = card.parent
+        text = clean(card.get_text(' ', strip=True))
+        title = clean(a.get_text(' ', strip=True)) or clean((card.find(['h2', 'h3', 'h4']) or a).get_text(' ', strip=True))
+        if len(title) < 12: continue
+        dates = re.findall(r'\d{1,2}/\d{1,2}/\d{4}', text)
+        published = _dmy(dates[0]) if dates else ''
+        closing = publication_datetime(_dmy(dates[1])) if len(dates) > 1 else None
+        if not published: continue
+        still_open = closing is not None and closing >= now
+        if not still_open and not recent_enough(published, WINDOW_DAYS['Licitaciones y edictos']): continue
+        amount = re.search(r'\d[\d.,]*\s*€|€\s*\d[\d.,]*', text)
+        excerpt = ' · '.join(x for x in [('Presupuesto: ' + amount.group(0)) if amount else '',
+                                         ('Plazo hasta ' + closing.strftime('%d/%m/%Y')) if closing else ''] if x)
+        seen.add(url)
+        out.append({'title': 'Licitación: ' + title[:240], 'url': url, 'excerpt': excerpt or text[:400], 'published_at': published})
+    if not out and '/licitacion/' not in r.text:
+        raise ValueError('licitaciones.io no mostró licitaciones (puede haber cambiado de formato)')
+    return out
+
+
 def _dmy(value):
     m = re.search(r'(\d{1,2})/(\d{1,2})/(\d{4})', value or '')
     if not m: return ''
@@ -255,6 +288,15 @@ def fetch_edictos_html(url, keep=False):
     root = '%s://%s/' % (parsed.scheme, parsed.netloc)
     base = url.split('/edicto/')[0].rstrip('/') + '/' if '/edicto/' in url else root
     last = None
+    # Entrada pública del tablón (abre sesión sola y devuelve el listado): la que enlaza la propia sede
+    public = root + 'edictos/publico?idOrgan=23'
+    try:
+        first = s.get(public, timeout=30)
+        if first.ok and not _EXPIRED.search(first.text[:20000]) and 'codigo=' in first.text:
+            if keep: _sede.update(session=s, at=time.time())
+            return first.text
+    except requests.RequestException:
+        pass
     for attempt in range(3):
         try:
             last = s.get(url, timeout=30, headers={'Referer': base})
@@ -518,6 +560,22 @@ def find_story(title, exclude=None, days=4):
     return None
 
 
+def find_tender(title, days=45):
+    """La misma licitación vista en otra web (Gobierto, licitaciones.io, BOP…). Los edictos no se unen nunca."""
+    if not re.match(r'\s*licitaci', title or '', re.I):
+        return None
+    since = (datetime.now(timezone.utc) - timedelta(days=days)).strftime('%Y-%m-%d %H:%M:%S')
+    clean_t = lambda t: re.sub(r'^\s*licitaci[oó]n\s*(de|:)?\s*', '', t or '', flags=re.I)
+    mine = _story_tokens(clean_t(title))
+    for c in db.rows("""SELECT id,title FROM candidates WHERE status NOT IN ('rejected','merged') AND created_at>=?
+                        AND title LIKE 'Licitaci%' ORDER BY id""", (since,)):
+        other = _story_tokens(clean_t(c['title']))
+        shared = len(mine & other)
+        if shared >= 4 and shared / max(1, min(len(mine), len(other))) >= 0.7:
+            return c['id']
+    return None
+
+
 def attach_link(cid, title, url, excerpt='', source_name='', outlet='', published_at=''):
     """Añade otra fuente a una noticia ya existente."""
     db.exec_('INSERT OR IGNORE INTO candidate_links(candidate_id,source_name,outlet,url,title,excerpt,published_at) VALUES(?,?,?,?,?,?,?)',
@@ -580,7 +638,7 @@ def add_candidate(title, url, excerpt, source_name, source_id=None, published_at
     if url and (db.row('SELECT 1 FROM candidates WHERE url=?', (url,)) or db.row('SELECT 1 FROM candidate_links WHERE url=?', (url,))):
         return None
     if similar_to_published(title): return None
-    same = None if tender else find_story(title)
+    same = find_tender(title) if tender else find_story(title)
     if same:  # la misma noticia desde otra fuente: se une a la que ya hay
         attach_link(same, title, url, excerpt, source_name, outlet, published_at)
         return None
@@ -600,7 +658,14 @@ def add_candidate(title, url, excerpt, source_name, source_id=None, published_at
 def read_source(source):
     if 'sedeelectronica.lalinea.es/edictos' in (source.get('url') or ''):
         return parse_edictos(source)  # el tablón siempre con su lector (sesión + plan B), se haya añadido como se haya añadido
-    if source['kind'] == 'rss': return parse_rss(source)
+    if 'licitaciones.io/' in (source.get('url') or ''):
+        return parse_licitacionesio(source)
+    if source['kind'] == 'rss':
+        try:
+            items = parse_rss(source)
+        except ET.ParseError:
+            return parse_html(source)  # se añadió como RSS pero es una página web normal
+        return items or parse_html(source)
     if source['kind'] == 'bop': return parse_bop(source)
     if source['kind'] == 'procurement': return parse_procurement(source)
     if source['kind'] == 'edictos': return parse_edictos(source)

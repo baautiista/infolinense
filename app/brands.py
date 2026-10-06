@@ -27,7 +27,7 @@ BRANDS = {
                              'Cristo del Mar y Luz', 'Santo Entierro y Soledad', 'Inmaculada Concepción', 'Hermandad del Rocío',
                              'General', 'Ocasiones especiales'],
                 'templates': {'main': 'EAHXQHp9uXw'}, 'page_mode': 'section', 'carousel_page': 19,
-                'headline_lines': 3, 'line_chars': 30,  # el titular ocupa normalmente 3 líneas de unos 30 caracteres
+                'headline_lines': 3, 'line_chars': 24,  # el titular ocupa normalmente 3 líneas de unos 24 caracteres (letra grande)
                 'free_title_section': 'General'},
     'carnaval': {'name': 'Carnavalinense', 'short': 'Carnaval', 'color': '#E72E79', 'text': '#FFFFFF', 'env': 'CARNAVAL_',
                  'about': 'medio del Carnaval de La Línea de la Concepción: agrupaciones, concurso, coplas, cabalgata y fiesta',

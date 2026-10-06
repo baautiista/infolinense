@@ -51,8 +51,9 @@ SOCIAL_HASHTAGS = os.getenv('SOCIAL_HASHTAGS', '#LaLínea #LaLíneaDeLaConcepci�
 
 GRAPH = 'https://graph.facebook.com/' + META_GRAPH_VERSION
 TIKTOK_API = 'https://open.tiktokapis.com/v2'
-META_SCOPES = ','.join(['pages_show_list', 'pages_read_engagement', 'pages_manage_posts', 'business_management',
-                        'instagram_basic', 'instagram_content_publish'])
+# Solo los permisos de páginas: Instagram va por su propio inicio de sesión. Pedir permisos que la app no tiene
+# añadidos en «Casos de uso» provoca el error 1349003 de Facebook.
+META_SCOPES = os.getenv('META_SCOPES', 'pages_show_list,pages_read_engagement,pages_manage_posts').replace(' ', '')
 TIKTOK_SCOPES = os.getenv('TIKTOK_SCOPES', 'user.info.basic,video.publish').replace(' ', '')
 NETWORKS = ('instagram', 'facebook', 'tiktok')
 NAMES = {'instagram': 'Instagram', 'facebook': 'Facebook', 'tiktok': 'TikTok'}

@@ -73,7 +73,8 @@ def init_db():
     for name,ddl in {
         'local_scope':'INTEGER NOT NULL DEFAULT 0', 'last_checked_at':'TEXT',
         'last_success_at':'TEXT', 'last_error':'TEXT',
-        'items_seen':'INTEGER NOT NULL DEFAULT 0', 'items_added':'INTEGER NOT NULL DEFAULT 0'
+        'items_seen':'INTEGER NOT NULL DEFAULT 0', 'items_added':'INTEGER NOT NULL DEFAULT 0',
+        'brand':"TEXT NOT NULL DEFAULT 'infolinense'"
     }.items():
         if name not in existing: c.execute(f'ALTER TABLE sources ADD COLUMN {name} {ddl}')
     if 'research_json' not in {r[1] for r in c.execute('PRAGMA table_info(candidates)')}:
@@ -93,13 +94,15 @@ def init_db():
         'scope':'TEXT',
         'social_type':'TEXT',
         'image_hint':'TEXT',
-        'merged_into':'INTEGER'
+        'merged_into':'INTEGER',
+        'brand':"TEXT NOT NULL DEFAULT 'infolinense'"
     }.items():
         if name not in existing_candidates: c.execute(f'ALTER TABLE candidates ADD COLUMN {name} {ddl}')
     existing_articles={r[1] for r in c.execute('PRAGMA table_info(articles)')}
     for name,ddl in {
         'carousel_suitable':'INTEGER NOT NULL DEFAULT 0',
         'scheduled_at':'TEXT',
+        'brand':"TEXT NOT NULL DEFAULT 'infolinense'",
         'scheduled_networks':'TEXT',
         'schedule_error':'TEXT',
         'carousel_reason':'TEXT',
@@ -165,6 +168,27 @@ def init_db():
                  source_name TEXT, outlet TEXT, url TEXT UNIQUE, title TEXT, excerpt TEXT, published_at TEXT,
                  created_at TEXT DEFAULT CURRENT_TIMESTAMP)''')
     c.execute('CREATE INDEX IF NOT EXISTS idx_links_cand ON candidate_links(candidate_id)')
+    # Fuentes de El Cofrade Linense y Carnavalinense (5.8)
+    cofrade=[('La Línea Cofrade','https://www.lalineacofrade.com/','html'),
+      ('Entrada Triunfal y Alegría','https://www.facebook.com/hermandad.entradatriunfal','social'),
+      ('Flagelación y Estrella','https://www.facebook.com/flagelacion.estrella.16','social'),
+      ('Esperanza y Concepción (Silencio)','https://www.facebook.com/SilencioLaLinea','social'),
+      ('Penas y Dolores','https://www.facebook.com/profile.php?id=100064501760045','social'),
+      ('Oración y Amor','https://www.facebook.com/Hermandaddelaoracionlalinea','social'),
+      ('Abandono y Mayor Dolor','https://www.facebook.com/abandonoymayordolor','social'),
+      ('Cautivo y Trinidad (Medinaceli)','https://www.facebook.com/profile.php?id=100064805047717','social'),
+      ('Perdón y Salud','https://www.facebook.com/sanpedrolalinea','social'),
+      ('Almas y Angustias','https://www.facebook.com/almasyangustias','social'),
+      ('Gran Poder y Ángeles','https://www.facebook.com/hdadgranpoderlalinea','social'),
+      ('Misericordia y Amargura','https://www.facebook.com/SacramentalYRealHermandaddelaAmargura','social'),
+      ('Amor y Esperanza','https://www.facebook.com/hermandadamoresperanzalalinea','social'),
+      ('Cristo del Mar · Santo Entierro','https://www.facebook.com/cristodelmar.lalinea','social'),
+      ('Cofrade · noticias de La Línea',news('"La Línea" (hermandad OR cofradía OR cofrade OR "Semana Santa" OR costaleros OR besamanos) when:3d'),'rss')]
+    for n,u,k in cofrade:
+        c.execute("INSERT OR IGNORE INTO sources(name,url,kind,priority,official,local_scope,brand) VALUES(?,?,?,?,?,?,?)",
+                  (n,u,k,85 if k!='rss' else 75,0,0 if k=='rss' else 1,'cofrade'))
+    c.execute("INSERT OR IGNORE INTO sources(name,url,kind,priority,official,local_scope,brand) VALUES(?,?,?,?,?,?,?)",
+              ('Carnaval · noticias de La Línea',news('"La Línea" (carnaval OR chirigota OR comparsa OR murga OR cuarteto OR agrupación) when:3d'),'rss',75,0,0,'carnaval'))
     # El tablón de edictos es fuente prioritaria: se reactiva una vez (5.6)
     # Solo La Línea (5.7): «Campo de Gibraltar» trae otros municipios; Gibraltar pasa por el filtro de temas
     if not c.execute("SELECT 1 FROM settings WHERE key='solo_linea_57'").fetchone():

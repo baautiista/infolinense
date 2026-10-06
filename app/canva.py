@@ -28,9 +28,20 @@ TEMPLATE_BY_LINES = {
 }
 
 
-def template_for(headline):
+def _brand_templates(brand):
+    """Plantillas del medio: {main, 1, 2, 4}. InfoLinense usa las de Railway si no se han cambiado en Ajustes."""
+    from . import brands
+    t = brands.settings(brand)['templates']
+    if brands.valid(brand) == brands.DEFAULT:
+        return {'main': t.get('main') or TEMPLATE_ID, '1': t.get('1') or TEMPLATE_BY_LINES.get(1, ''),
+                '2': t.get('2') or TEMPLATE_BY_LINES.get(2, ''), '4': t.get('4') or TEMPLATE_BY_LINES.get(4, '')}
+    return t
+
+
+def template_for(headline, brand='infolinense'):
+    t = _brand_templates(brand)
     lines = len(layout.headline_lines(headline))
-    return TEMPLATE_BY_LINES.get(lines) or TEMPLATE_ID
+    return t.get(str(lines)) or t.get('main') or ''
 API = 'https://api.canva.com/rest/v1'
 SCOPES = 'asset:read asset:write brandtemplate:content:read design:content:read design:content:write design:meta:read'
 _lock = threading.RLock()
@@ -169,7 +180,15 @@ def _content_hash(article):
     return hashlib.sha256(json.dumps(fields, ensure_ascii=False).encode()).hexdigest()
 
 
+def _is_default(article):
+    from . import brands
+    return brands.valid(article.get('brand')) == brands.DEFAULT
+
+
 def _page_for(article):
+    if not _is_default(article):  # otros medios: la página indicada en Ajustes → Medios (normalmente la 1)
+        from . import brands
+        return int(brands.settings(article.get('brand'))['page'] or 1)
     return layout.family_for(article.get('section'), article.get('headline'))[1]
 
 
@@ -192,6 +211,9 @@ def design_fields(article, strict=True):
         if not layout.headline_fits(headline):
             headline = layout.fit_headline(headline)
         summary = layout.fit_summary(summary)
+    if not _is_default(article):
+        return {'HEADLINE': headline, 'SUMMARY': summary, 'SECTION': (article.get('section') or '').strip().upper(),
+                'page': _page_for(article), 'template': template_for(headline, article.get('brand'))}
     return {'HEADLINE': headline, 'SUMMARY': summary, 'SECTION': family[0], 'page': family[1],
             'template': template_for(headline)}
 
@@ -253,17 +275,25 @@ def create_design(article, store=True, title_suffix='', output_suffix=None, stri
     photo = Path(article.get('image_local') or '')
     if not photo.is_file():
         raise ValueError('Elige primero una foto para la noticia')
+    from . import brands
+    brand = brands.settings(article.get('brand'))
     texts = design_fields(article, strict)
     template_id = texts['template']
+    if not template_id:
+        raise ValueError('Falta la plantilla de Canva de %s. Pégala en Ajustes → Medios.' % brand['name'])
     schema = _api('GET', '/brand-templates/' + template_id + '/dataset').get('dataset', {})
-    expected = {'HEADLINE': 'text', 'SUMMARY': 'text', 'SECTION': 'text', 'PHOTO': 'image'}
-    if any(schema.get(key, {}).get('type') != kind for key, kind in expected.items()):
-        raise ValueError('Han cambiado los campos de la plantilla de Canva')
+    expected = {'HEADLINE': 'text', 'SUMMARY': 'text', 'PHOTO': 'image'}
+    if _is_default(article):
+        expected['SECTION'] = 'text'
+    missing = [key for key, kind in expected.items() if schema.get(key, {}).get('type') != kind]
+    if missing:
+        raise ValueError('A la plantilla de Canva de %s le faltan los campos de datos: %s. En Canva, en la plantilla, '
+                         'pon esos nombres a los cuadros de texto y a la foto (Aplicaciones → Autocompletar).' % (brand['name'], ', '.join(missing)))
     data = photo.read_bytes()
     if len(data) > 20_000_000:
         raise ValueError('La fotografía supera 20 MB')
     suffix = ''.join(ch for ch in str(output_suffix or '') if ch.isalnum() or ch in '_-')
-    filename = 'InfoLinense-' + str(article['id']) + (('-' + suffix) if suffix else '') + photo.suffix
+    filename = re.sub(r'\W+', '', brand['name']) + '-' + str(article['id']) + (('-' + suffix) if suffix else '') + photo.suffix
     metadata = json.dumps({'name_base64': base64.b64encode(filename.encode()).decode()})
     upload = _api('POST', '/asset-uploads', data=data,
                   headers={'Content-Type': 'application/octet-stream', 'Asset-Upload-Metadata': metadata})
@@ -277,7 +307,9 @@ def create_design(article, store=True, title_suffix='', output_suffix=None, stri
         'SECTION': {'type': 'text', 'text': texts['SECTION']},
         'PHOTO': {'type': 'image', 'asset_id': asset['id']},
     }
-    name = 'InfoLinense · ' + (article.get('headline') or '')[:100]
+    if schema.get('SECTION', {}).get('type') != 'text' or not texts['SECTION']:
+        fields.pop('SECTION')  # plantilla sin cuadro de sección
+    name = brand['name'] + ' · ' + (article.get('headline') or '')[:100]
     if title_suffix:
         name += ' · ' + str(title_suffix)[:40]
     job = _api('POST', '/autofills', json={'type': 'create_from_brand_template',

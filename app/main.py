@@ -1,4 +1,4 @@
-import os, json, threading, time, ipaddress, zipfile
+import os, json, re, threading, time, ipaddress, zipfile
 from datetime import datetime, timezone, timedelta
 from urllib.parse import urlparse
 from zoneinfo import ZoneInfo
@@ -9,15 +9,16 @@ from fastapi.responses import FileResponse, RedirectResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from . import db, sources, pipeline, publishers, photos, canva, ai, planner, layout, social, social_publish
+from . import db, sources, pipeline, publishers, photos, canva, ai, planner, layout, social, social_publish, brands
 from .auth import login, require_auth
 from .config import BASE_DIR, RENDER_DIR, UPLOAD_DIR, SCAN_INTERVAL_MINUTES, AUTO_PIPELINE, OPENAI_API_KEY, ADMIN_PASSWORD, JWT_SECRET, PUBLISH_MODE, CORS_ORIGINS, PUBLIC_BASE_URL, AUTO_PUBLISH
 
-VERSION='5.7.0'
+VERSION='5.8.0'
 app=FastAPI(title='InfoLinense Desk',version=VERSION)
 app.add_middleware(CORSMiddleware,allow_origins=CORS_ORIGINS,allow_credentials=False,allow_methods=['*'],allow_headers=['Authorization','Content-Type'])
 db.init_db()
 social_publish.init_tables()
+brands.init_tables()
 
 class LoginIn(BaseModel): password:str
 class PublishIn(BaseModel): networks:list[str]|None=None
@@ -31,8 +32,9 @@ class SourceIn(BaseModel):
     priority:int=50
     official:bool=False
     local_scope:bool=False
+    brand:str='infolinense'
 class EditArticle(BaseModel):
-    section:str|None=None; headline:str|None=None; subtitle:str|None=None; body:str|None=None; graphic_summary:str|None=None; image_headline:str|None=None
+    section:str|None=None; headline:str|None=None; subtitle:str|None=None; body:str|None=None; graphic_summary:str|None=None; image_headline:str|None=None; brand:str|None=None
 class PhotoChoice(BaseModel): url:str; source:str=''; license:str=''; author:str=''; confirm_permission:bool=False
 class TriageIn(BaseModel): priority:str; planned_at:str|None=None
 class CarouselPhoto(BaseModel): url:str; source:str=''; license:str=''; author:str=''; publish_safe:bool=False
@@ -188,7 +190,7 @@ def triage_candidate(cid:int,body:TriageIn):
     return db.row('SELECT * FROM candidates WHERE id=?',(cid,))
 
 @app.get('/api/candidates',dependencies=[Depends(require_auth)])
-def candidates(status:str='new'):
+def candidates(status:str='new',brand:str=''):
     base="""SELECT c.*,s.kind AS source_kind,s.official AS source_official,
                     s.local_scope AS source_local_scope,a.id AS article_id,a.status AS article_status
              FROM candidates c LEFT JOIN sources s ON s.id=c.source_id
@@ -210,23 +212,30 @@ def candidates(status:str='new'):
         out.append(r)
     links=sources.links_for([r['id'] for r in out])
     for r in out: r['links']=links.get(r['id'],[])
+    out=_bf(out,brand)
     order={g:i for i,g in enumerate(sources.BLOCKS)}
     out.sort(key=lambda r:r.get('date_iso') or '',reverse=True)  # lo más reciente primero
     out.sort(key=lambda r:order.get(r['group'],9))
     return out
 
 # ---------- Trabajo por fases: 1 Ordenar · 2 Redacción · 3 Revisar · 4 Publicar ----------
-def _sort_queue():
-    rows=[r for r in candidates('pending') if not r.get('article_id') and (r.get('editorial_priority') or 'undecided') in ('undecided','')]
-    rows+= [r for r in social.items() if not r.get('article_id') and (r.get('editorial_priority') or 'undecided') in ('undecided','')]
+def _bf(rows,brand):
+    """Filtra por medio (InfoLinense, Cofrade, Carnaval); vacío o «all» = todos."""
+    if not brand or brand=='all': return rows
+    return [r for r in rows if (r.get('brand') or brands.DEFAULT)==brand]
+
+def _sort_queue(brand=''):
+    rows=[r for r in candidates('pending',brand) if not r.get('article_id') and (r.get('editorial_priority') or 'undecided') in ('undecided','')]
+    rows+= [r for r in _bf(social.items(),brand) if not r.get('article_id') and (r.get('editorial_priority') or 'undecided') in ('undecided','')]
     return rows
 
-def _drafting():
-    rows=db.rows("""SELECT c.id,c.title,c.source_name,c.outlet,c.editorial_priority,c.planned_at,c.work_state,c.work_step,c.work_error,
+def _drafting(brand=''):
+    rows=db.rows("""SELECT c.id,c.brand,c.title,c.source_name,c.outlet,c.editorial_priority,c.planned_at,c.work_state,c.work_step,c.work_error,
                       a.id article_id,a.status article_status,a.headline
                       FROM candidates c LEFT JOIN articles a ON a.candidate_id=c.id AND a.status!='rejected'
                       WHERE c.status NOT IN ('archived','published') AND c.editorial_priority IN ('urgent','today','this_week','future')
                         AND (a.id IS NULL OR a.status='draft')""")
+    rows=_bf(rows,brand)
     order={'urgent':0,'today':1,'this_week':2,'future':3}
     rows.sort(key=lambda r:(order.get(r['editorial_priority'],9),r.get('planned_at') or '9999'))
     for r in rows:
@@ -234,22 +243,22 @@ def _drafting():
     return rows
 
 @app.get('/api/workflow',dependencies=[Depends(require_auth)])
-def workflow():
+def workflow(brand:str=''):
     """Cuántas piezas hay en cada fase del día."""
-    drafting=_drafting()
-    publish=db.rows("SELECT id FROM articles WHERE status IN ('review_ready','approved')")
-    published=db.row("SELECT COUNT(*) n FROM articles WHERE status='published' AND updated_at>=date('now')")['n']
-    return {'sort':len(_sort_queue()),'drafting':sum(1 for r in drafting if r['state']!='ready'),
+    drafting=_drafting(brand)
+    publish=_bf(db.rows("SELECT id,brand FROM articles WHERE status IN ('review_ready','approved')"),brand)
+    published=len(_bf(db.rows("SELECT id,brand FROM articles WHERE status='published' AND updated_at>=date('now')"),brand))
+    return {'sort':len(_sort_queue(brand)),'drafting':sum(1 for r in drafting if r['state']!='ready'),
             'errors':sum(1 for r in drafting if r['state']=='error'),'review':sum(1 for r in drafting if r['state']=='ready'),
             'publish':len(publish),'published_today':published}
 
 @app.get('/api/sort-queue',dependencies=[Depends(require_auth)])
-def sort_queue():
-    return _sort_queue()
+def sort_queue(brand:str=''):
+    return _sort_queue(brand)
 
 @app.get('/api/drafting',dependencies=[Depends(require_auth)])
-def drafting():
-    return _drafting()
+def drafting(brand:str=''):
+    return _drafting(brand)
 
 @app.post('/api/articles/{aid}/ready',dependencies=[Depends(require_auth)])
 def mark_ready(aid:int):
@@ -262,11 +271,12 @@ def mark_ready(aid:int):
     return {'ok':True}
 
 @app.get('/api/to-publish',dependencies=[Depends(require_auth)])
-def to_publish():
-    rows=db.rows("""SELECT a.id,a.headline,a.section,a.status,a.image_local,a.publish_url,c.planned_at,c.editorial_priority,c.id candidate_id,
+def to_publish(brand:str=''):
+    rows=db.rows("""SELECT a.id,a.brand,a.headline,a.section,a.status,a.image_local,a.publish_url,c.planned_at,c.editorial_priority,c.id candidate_id,
                       a.scheduled_at,a.scheduled_networks,a.schedule_error,d.exported canva_exported FROM articles a LEFT JOIN candidates c ON c.id=a.candidate_id
                       LEFT JOIN canva_designs d ON d.article_id=a.id
                       WHERE a.status IN ('review_ready','approved') OR (a.status='published' AND a.updated_at>=date('now'))""")
+    rows=_bf(rows,brand)
     for r in rows: r['has_photo']=bool(r.pop('image_local',None))
     posts=social_publish.posts_for([r['id'] for r in rows])
     for r in rows: r['networks']=posts.get(r['id'],{})
@@ -274,12 +284,13 @@ def to_publish():
     return rows
 
 @app.get('/api/articles',dependencies=[Depends(require_auth)])
-def list_articles():
+def list_articles(brand:str=''):
     """Todas las noticias redactadas que siguen vivas (borrador, revisión, aprobadas y publicadas recientes)."""
-    rows=db.rows("""SELECT a.id,a.candidate_id,a.section,a.headline,a.status,a.image_url,a.updated_at,a.publish_url,
+    rows=db.rows("""SELECT a.id,a.brand,a.candidate_id,a.section,a.headline,a.status,a.image_url,a.updated_at,a.publish_url,
                     c.planned_at,c.editorial_priority,c.source_name,c.outlet,d.exported canva_exported
                     FROM articles a LEFT JOIN candidates c ON c.id=a.candidate_id LEFT JOIN canva_designs d ON d.article_id=a.id
                     WHERE a.status IN ('draft','review_ready','approved') OR (a.status='published' AND a.updated_at>=datetime('now','-3 day'))""")
+    rows=_bf(rows,brand)
     order={'urgent':0,'today':1,'this_week':2,'future':3}
     rows.sort(key=lambda r:(r['status']=='published',order.get(r.get('editorial_priority'),9),r.get('planned_at') or '9999'))
     return rows
@@ -378,8 +389,8 @@ def prepare(cid:int,research:bool=False):
         aid=pipeline.process_candidate(cid,force_research=research); return db.row('SELECT * FROM articles WHERE id=?',(aid,))
     except Exception as e: raise HTTPException(500,str(e))
 @app.get('/api/review',dependencies=[Depends(require_auth)])
-def review():
-    return db.rows("""SELECT a.*,c.title source_title,c.url source_url,c.score,c.source_name,d.url canva_url,d.exported canva_exported FROM articles a LEFT JOIN candidates c ON c.id=a.candidate_id LEFT JOIN canva_designs d ON d.article_id=a.id WHERE a.status IN ('review_ready','approved') ORDER BY a.id DESC""")
+def review(brand:str=''):
+    return _bf(db.rows("""SELECT a.*,c.title source_title,c.url source_url,c.score,c.source_name,d.url canva_url,d.exported canva_exported FROM articles a LEFT JOIN candidates c ON c.id=a.candidate_id LEFT JOIN canva_designs d ON d.article_id=a.id WHERE a.status IN ('review_ready','approved') ORDER BY a.id DESC"""),brand)
 @app.get('/api/articles/{aid}',dependencies=[Depends(require_auth)])
 def article(aid:int):
     a=db.row('SELECT a.*,c.url source_url,c.score,c.source_name,c.outlet,c.planned_at FROM articles a LEFT JOIN candidates c ON c.id=a.candidate_id WHERE a.id=?',(aid,))
@@ -511,9 +522,15 @@ def edit_article(aid:int,body:EditArticle):
     original=db.row('SELECT * FROM articles WHERE id=?',(aid,))
     if not original: raise HTTPException(404)
     fields=[]; vals=[]
+    brand=body.brand if body.brand in brands.BRANDS else original.get('brand') or brands.DEFAULT
+    def norm_section(v):
+        if brand==brands.DEFAULT: return layout.normalize_section(v)
+        return re.sub(r'\s+',' ',str(v or '')).strip().upper()[:30] or (brands.settings(brand)['sections'] or ['NOTICIAS'])[0]
     for k,v in body.model_dump(exclude_none=True).items():
+        if k=='brand':
+            if v not in brands.BRANDS: continue
         if k=='section':
-            v=layout.normalize_section(v)
+            v=norm_section(v)
         if k=='body':
             v=v[:2200]
             fields.append('social_text=?'); vals.append(v)
@@ -521,10 +538,13 @@ def edit_article(aid:int,body:EditArticle):
     if fields:
         # La imagen de Canva solo se invalida si cambia algo que aparece en ella (titular, entradilla, sección).
         changes=body.model_dump(exclude_none=True)
-        if 'section' in changes: changes['section']=layout.normalize_section(changes['section'])
-        image_changed=any(k in changes and (changes[k] or '')!=(original.get(k) or '') for k in ('headline','subtitle','section'))
+        if 'section' in changes: changes['section']=norm_section(changes['section'])
+        image_changed=any(k in changes and (changes[k] or '')!=(original.get(k) or '') for k in ('headline','subtitle','section','brand'))
         db.exec_(f"UPDATE articles SET {','.join(fields)}{',render_path=NULL' if image_changed else ''},updated_at=CURRENT_TIMESTAMP WHERE id=?",tuple(vals+[aid]))
         if image_changed: db.exec_('UPDATE canva_designs SET exported=0 WHERE article_id=?',(aid,))
+        if 'brand' in changes and changes['brand']!=original.get('brand'):
+            db.exec_('UPDATE candidates SET brand=? WHERE id=?',(changes['brand'],original['candidate_id']))
+            db.exec_('DELETE FROM canva_designs WHERE article_id=?',(aid,))  # otra plantilla de Canva
         if original['status']=='approved':
             db.exec_("UPDATE articles SET status='review_ready' WHERE id=?",(aid,))
     return db.row('SELECT * FROM articles WHERE id=?',(aid,))
@@ -668,8 +688,8 @@ def do_publish(aid,nets):
         if not a.get('image_local') or not Path(a['image_local']).is_file(): raise HTTPException(400,'Elige una foto antes de publicar')
         db.exec_("UPDATE articles SET status='approved',updated_at=CURRENT_TIMESTAMP WHERE id=?",(aid,))
         db.exec_("UPDATE candidates SET status='review_ready' WHERE id=?",(a['candidate_id'],))
-        if PUBLISH_MODE=='none' or not AUTO_PUBLISH:
-            web={'network':'web','ok':False,'skipped':True,'message':'La web no está configurada en Railway'}
+        if not brands.web_enabled(a.get('brand')):
+            web={'network':'web','ok':False,'skipped':True,'message':'La web de %s no está configurada en Railway'%brands.BRANDS[brands.valid(a.get('brand'))]['name']}
         else:
             try:
                 url=publishers.publish(a)
@@ -692,7 +712,10 @@ def do_publish(aid,nets):
 @app.post('/api/articles/{aid}/publish',dependencies=[Depends(require_auth)])
 def publish(aid:int,body:PublishIn|None=None):
     """«Publicar ahora»: publica en la web y en las redes elegidas (solo al pulsar el botón)."""
-    nets=social_publish.connected_networks() if body is None or body.networks is None else [n for n in body.networks if n in social_publish.NETWORKS]
+    a=db.row('SELECT brand FROM articles WHERE id=?',(aid,))
+    if not a: raise HTTPException(404)
+    ok=social_publish.connected_networks(a.get('brand') or brands.DEFAULT)  # solo las redes de su medio que estén conectadas
+    nets=ok if body is None or body.networks is None else [n for n in body.networks if n in ok]
     return do_publish(aid,nets)
 
 MADRID=ZoneInfo('Europe/Madrid')
@@ -708,7 +731,8 @@ def schedule_article(aid:int,body:ScheduleIn):
     except ValueError: raise HTTPException(400,'Elige día y hora')
     if when.tzinfo is None: when=when.replace(tzinfo=MADRID)
     if when<datetime.now(timezone.utc)-timedelta(minutes=2): raise HTTPException(400,'Esa hora ya ha pasado: elige una hora futura o pulsa «Publicar ahora»')
-    nets=[n for n in (body.networks or []) if n in social_publish.NETWORKS]
+    ok=social_publish.connected_networks(a.get('brand') or brands.DEFAULT)
+    nets=[n for n in (body.networks or []) if n in ok]
     _ready_to_publish(a,nets)
     local=when.astimezone(MADRID).isoformat(timespec='minutes')
     db.exec_("UPDATE articles SET status='approved',scheduled_at=?,scheduled_networks=?,schedule_error=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=?",
@@ -775,10 +799,13 @@ def public_media(name:str):
     return FileResponse(path,media_type='image/jpeg')
 
 @app.get('/api/networks',dependencies=[Depends(require_auth)])
-def networks_status(): return social_publish.status()
+def networks_status(brand:str='infolinense'):
+    with social_publish.use_brand(brand): return social_publish.status()
 
 @app.get('/api/networks/{network}/connect',dependencies=[Depends(require_auth)])
-def networks_connect(network:str):
+def networks_connect(network:str,brand:str='infolinense'):
+    with social_publish.use_brand(brand): return _networks_connect(network)
+def _networks_connect(network):
     try:
         if network=='meta': return {'url':social_publish.meta_login_url()}
         if network=='tiktok': return {'url':social_publish.tiktok_login_url()}
@@ -839,24 +866,39 @@ def share_kit(aid:int):
     if not a: raise HTTPException(404)
     try: urls=[social_publish.public_image(p) for p in social_publish.article_images(a)]
     except social_publish.SocialError as e: raise HTTPException(400,str(e))
-    return {'text':social_publish.caption(a,5000),'images':urls,'link':a.get('publish_url') or ''}
+    with social_publish.use_brand(a.get('brand') or brands.DEFAULT): text=social_publish.caption(a,5000)
+    return {'text':text,'images':urls,'link':a.get('publish_url') or ''}
 
 @app.post('/api/networks/meta/token',dependencies=[Depends(require_auth)])
-def meta_token(t:TokenIn):
+def meta_token(t:TokenIn,brand:str='infolinense'):
     """Conexión alternativa: pegar el token del Explorador de la API Graph de Meta."""
-    try: page=social_publish.meta_from_user_token(t.token)
+    try:
+        with social_publish.use_brand(brand): page=social_publish.meta_from_user_token(t.token)
     except social_publish.SocialError as e: raise HTTPException(400,str(e))
     return {'ok':True,'name':page.get('name'),'instagram':page.get('instagram_username')}
 
 @app.post('/api/networks/meta/page',dependencies=[Depends(require_auth)])
-def meta_page(p:PageIn):
-    try: page=social_publish.meta_choose_page(p.page_id); return {'ok':True,'name':page.get('name'),'instagram':page.get('instagram_username')}
+def meta_page(p:PageIn,brand:str='infolinense'):
+    try:
+        with social_publish.use_brand(brand): page=social_publish.meta_choose_page(p.page_id)
+        return {'ok':True,'name':page.get('name'),'instagram':page.get('instagram_username')}
     except social_publish.SocialError as e: raise HTTPException(400,str(e))
 
 @app.post('/api/networks/{network}/disconnect',dependencies=[Depends(require_auth)])
-def networks_disconnect(network:str):
+def networks_disconnect(network:str,brand:str='infolinense'):
     if network not in ('meta','tiktok','instagram'): raise HTTPException(404)
-    social_publish.disconnect(network); return {'ok':True}
+    with social_publish.use_brand(brand): social_publish.disconnect(network)
+    return {'ok':True}
+class BrandIn(BaseModel):
+    templates:dict|None=None; hashtags:str|None=None; sections:list[str]|str|None=None; page:int|None=None
+@app.get('/api/brands',dependencies=[Depends(require_auth)])
+def brands_list(): return brands.all_public()
+@app.put('/api/brands/{slug}',dependencies=[Depends(require_auth)])
+def brands_save(slug:str,b:BrandIn):
+    if slug not in brands.BRANDS: raise HTTPException(404)
+    try: brands.save_settings(slug,b.model_dump(exclude_none=True))
+    except ValueError as e: raise HTTPException(400,str(e))
+    return brands.public(slug)
 @app.get('/api/sources',dependencies=[Depends(require_auth)])
 def list_sources(): return db.rows('SELECT * FROM sources ORDER BY priority DESC')
 def validate_source(s):
@@ -877,18 +919,20 @@ def validate_source(s):
         raise HTTPException(400,'El extractor de licitaciones corresponde a Gobierto')
     if s.kind=='bop' and host not in ('bopcadiz.es','www.bopcadiz.es'):
         raise HTTPException(400,'El extractor del BOP corresponde a Cádiz')
-    return s.name.strip(),s.url.strip(),s.kind,s.priority,int(s.official),int(s.local_scope)
+    brand=s.brand if s.brand in brands.BRANDS else brands.DEFAULT
+    local=1 if brand!=brands.DEFAULT else int(s.local_scope)  # fuentes propias del medio: todo lo que publican interesa
+    return s.name.strip(),s.url.strip(),s.kind,s.priority,int(s.official),local,brand
 @app.post('/api/sources',dependencies=[Depends(require_auth)])
 def add_source(s:SourceIn):
     values=validate_source(s)
-    try: return {'id':db.exec_('INSERT INTO sources(name,url,kind,priority,official,local_scope) VALUES(?,?,?,?,?,?)',values)}
+    try: return {'id':db.exec_('INSERT INTO sources(name,url,kind,priority,official,local_scope,brand) VALUES(?,?,?,?,?,?,?)',values)}
     except Exception as e: raise HTTPException(400,str(e))
 @app.put('/api/sources/{sid}',dependencies=[Depends(require_auth)])
 def edit_source(sid:int,s:SourceIn):
     if not db.row('SELECT id FROM sources WHERE id=?',(sid,)): raise HTTPException(404)
     values=validate_source(s)
     try:
-        db.exec_('''UPDATE sources SET name=?,url=?,kind=?,priority=?,official=?,local_scope=?,
+        db.exec_('''UPDATE sources SET name=?,url=?,kind=?,priority=?,official=?,local_scope=?,brand=?,
                    last_checked_at=NULL,last_error=NULL WHERE id=?''',(*values,sid))
     except Exception as e: raise HTTPException(400,str(e))
     return {'ok':True}

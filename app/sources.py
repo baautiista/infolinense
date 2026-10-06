@@ -339,6 +339,10 @@ def place_ok(text, extra=''):
     text = text or ''
     if exact_locality(text):
         return True
+    if re.search(r'\bLa\s+L[ií]nea\b', text) and not _UNRELATED.search(text):
+        from . import brands
+        if brands.classify(text):  # «La Línea» + hermandades o carnaval: es de la ciudad
+            return True
     return gibraltar_topic(text + ' ' + (extra or ''))
 
 
@@ -563,9 +567,13 @@ def add_candidate(title, url, excerpt, source_name, source_id=None, published_at
     if tender:
         score = min(100, score + 30)  # licitaciones y edictos, prioridad alta
     relevance = 'low' if score < 50 else ('medium' if score < 70 else 'high')
-    return db.exec_('''INSERT OR IGNORE INTO candidates(source_id,source_name,title,url,published_at,excerpt,score,relevance,status,local_angle,outlet,image_hint)
-                       VALUES(?,?,?,?,?,?,?,?,?,?,?,?)''',
-                    (source_id, source_name, title, url, published_at, excerpt, score, relevance, 'new', local_angle, clean(outlet)[:120], image or ''))
+    from . import brands
+    brand = brands.valid(source_meta.get('brand') or brands.DEFAULT)
+    if brand == brands.DEFAULT:
+        brand = brands.classify(title + ' ' + excerpt[:600]) or brand  # cofradías → El Cofrade Linense; carnaval → Carnavalinense
+    return db.exec_('''INSERT OR IGNORE INTO candidates(source_id,source_name,title,url,published_at,excerpt,score,relevance,status,local_angle,outlet,image_hint,brand)
+                       VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)''',
+                    (source_id, source_name, title, url, published_at, excerpt, score, relevance, 'new', local_angle, clean(outlet)[:120], image or '', brand))
 
 def read_source(source):
     if source['kind'] == 'rss': return parse_rss(source)

@@ -1,0 +1,86 @@
+import os
+import tempfile
+import unittest
+from datetime import datetime, timezone
+from pathlib import Path
+from unittest.mock import patch
+
+_temp = tempfile.TemporaryDirectory()
+os.environ.setdefault('DATA_DIR', _temp.name)
+os.environ.setdefault('DB_PATH', str(Path(_temp.name) / 'brands.sqlite'))
+for _k, _v in (('RENDER_DIR', 'renders'), ('UPLOAD_DIR', 'uploads'), ('TEMPLATE_DIR', 'templates')):
+    os.environ.setdefault(_k, str(Path(_temp.name) / _v))
+    Path(os.environ[_k]).mkdir(parents=True, exist_ok=True)
+
+from app import brands, canva, db, main, publishers, sources, social_publish as sp  # noqa: E402
+
+NOW = datetime.now(timezone.utc).isoformat()
+
+
+class BrandTests(unittest.TestCase):
+    def setUp(self):
+        db.init_db(); sp.init_tables(); brands.init_tables()
+        for t in ('social_accounts', 'candidates', 'articles', 'brand_settings'):
+            db.exec_('DELETE FROM ' + t)
+
+    def test_classify_and_source_brand(self):
+        self.assertEqual(brands.classify('La Hermandad del Gran Poder anuncia su besamanos'), 'cofrade')
+        self.assertEqual(brands.classify('La comparsa linense gana el concurso de agrupaciones del carnaval'), 'carnaval')
+        self.assertIsNone(brands.classify('Obras en la calle Real'))
+        cid = sources.add_candidate('Besamanos de la Virgen de la Amargura este domingo en La Línea', 'https://x/1', '', 'Google',
+                                    published_at=NOW, source_meta={'priority': 70, 'official': 0, 'local_scope': 0})
+        self.assertEqual(db.row('SELECT brand FROM candidates WHERE id=?', (cid,))['brand'], 'cofrade')
+        cid = sources.add_candidate('Horario de los cultos de la Esperanza', 'https://fb/2', '', 'Amor y Esperanza',
+                                    published_at=NOW, source_meta={'priority': 85, 'official': 0, 'local_scope': 1, 'brand': 'cofrade'})
+        self.assertEqual(db.row('SELECT brand FROM candidates WHERE id=?', (cid,))['brand'], 'cofrade')
+        self.assertTrue(all(r['brand'] == 'cofrade' for r in main.candidates('pending', 'cofrade')))
+        self.assertEqual(main.candidates('pending', 'carnaval'), [])
+
+    def test_cofrade_sources_seeded(self):
+        names = {r['name'] for r in db.rows("SELECT name FROM sources WHERE brand='cofrade'")}
+        self.assertIn('Gran Poder y Ángeles', names); self.assertIn('La Línea Cofrade', names)
+
+    def test_settings_and_templates(self):
+        b = brands.save_settings('cofrade', {'templates': {'main': 'https://www.canva.com/brand/brand-templates/EAHcofrade12'},
+                                             'sections': 'Hermandades, cultos'})
+        self.assertEqual(b['templates']['main'], 'EAHcofrade12')
+        self.assertEqual(b['sections'], ['HERMANDADES', 'CULTOS'])
+        self.assertEqual(canva.template_for('Titular corto', 'cofrade'), 'EAHcofrade12')
+        f = canva.design_fields({'brand': 'cofrade', 'headline': 'Besamanos', 'subtitle': 'Domingo', 'section': 'cultos'})
+        self.assertEqual((f['SECTION'], f['template'], f['page']), ('CULTOS', 'EAHcofrade12', 1))
+        with self.assertRaises(ValueError):
+            brands.save_settings('carnaval', {'templates': {'main': 'no es una plantilla'}})
+
+    def test_accounts_are_separate_per_brand(self):
+        with sp.use_brand('cofrade'):
+            sp._save_account('instagram', {'access_token': 'C', 'username': 'elcofradelinense', 'expires_at': 9e12, 'obtained_at': 9e12})
+        self.assertEqual(sp.connected_networks('cofrade'), ['instagram'])
+        self.assertEqual(sp.connected_networks('infolinense'), [])
+        self.assertEqual(main.networks_status('cofrade')['instagram']['name'], 'elcofradelinense')
+        # el estado de OAuth recuerda el medio
+        with sp.use_brand('carnaval'):
+            state = sp._new_state('tiktok')
+        self.assertEqual(sp._check_state('tiktok', state), 'carnaval')
+
+    def test_brand_web_from_railway_prefix(self):
+        self.assertFalse(brands.web_enabled('carnaval'))
+        with patch.dict(os.environ, {'CARNAVAL_WEBHOOK_URL': 'https://carnaval.example/fn', 'CARNAVAL_WEBHOOK_SECRET': 'k'}):
+            self.assertTrue(brands.web_enabled('carnaval'))
+            sent = {}
+
+            class R:
+                ok = True; status_code = 200; text = ''
+                def json(self): return {'url': 'https://carnaval.example/n/1'}
+            with patch.object(publishers.requests, 'post', side_effect=lambda url, json=None, headers=None, timeout=None: sent.update(url=url, json=json, headers=headers) or R()):
+                url = publishers.publish({'id': 3, 'brand': 'carnaval', 'headline': 'Comparsa', 'subtitle': 'x', 'body': 'y', 'section': 'concurso'})
+        self.assertEqual(url, 'https://carnaval.example/n/1')
+        self.assertEqual((sent['url'], sent['json']['brand'], sent['json']['section'], sent['headers']['x-infolinense-secret']),
+                         ('https://carnaval.example/fn', 'carnaval', 'CONCURSO', 'k'))
+
+    def test_caption_uses_brand_hashtags(self):
+        with sp.use_brand('cofrade'):
+            self.assertIn('#ElCofradeLinense', sp.caption({'headline': 'H', 'subtitle': '', 'body': 'B'}))
+
+
+if __name__ == '__main__':
+    unittest.main()

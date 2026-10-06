@@ -153,8 +153,15 @@ def scan():
         path = urlparse(src['url']).path.strip('/')
         target = '/'.join(path.split('/')[:2]) if path.startswith('groups/') else path.split('/')[0]
         host = urlparse(src['url']).hostname or 'facebook.com'
+        own = (src.get('brand') or 'infolinense') != 'infolinense'
         for item in web_search(f'site:{host}/{target}', days=3, limit=15):
-            cid = _add(item, sid, src['name'])
+            if own:  # página de una hermandad o agrupación: todo lo que publica es del medio (Cofrade, Carnaval)
+                date = sources.parse_es_date(item.get('snippet', '')) or sources.parse_es_date(item.get('title', ''))
+                cid = sources.add_candidate(item['title'], item['url'], item.get('snippet', ''), src['name'], src['id'], date,
+                                            {'priority': src.get('priority') or 70, 'official': 0, 'local_scope': 1, 'brand': src['brand']},
+                                            outlet=src['name'])
+            else:
+                cid = _add(item, sid, src['name'])
             if cid: added.append(cid)
     # 2. Quejas vecinales públicas
     for q in ('site:facebook.com "La Línea" vecinos (queja OR denuncian OR quejan OR reclaman OR abandono)',

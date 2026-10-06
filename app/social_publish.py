@@ -10,8 +10,10 @@ Solo se publica cuando el usuario pulsa «Publicar». Cada red se conecta una ve
 Las redes descargan la imagen desde una dirección pública temporal de este servidor
 (/p/<código>.jpg), que solo se crea en el momento de publicar.
 """
+import contextvars
 import json
 import os
+from contextlib import contextmanager
 import re
 import secrets
 import time
@@ -22,7 +24,7 @@ from urllib.parse import urlencode
 import requests
 from PIL import Image
 
-from . import db
+from . import brands, db
 from .config import PUBLIC_BASE_URL, RENDER_DIR
 
 META_APP_ID = os.getenv('META_APP_ID', '').strip()
@@ -70,10 +72,37 @@ def init_tables():
         token TEXT PRIMARY KEY, path TEXT NOT NULL, expires_at INTEGER NOT NULL)''')
 
 
+# ---------- medio en uso (cada medio tiene sus propias cuentas) ----------
+
+_brand = contextvars.ContextVar('brand', default=brands.DEFAULT)
+
+
+@contextmanager
+def use_brand(slug):
+    token = _brand.set(brands.valid(slug))
+    try:
+        yield
+    finally:
+        _brand.reset(token)
+
+
+def current_brand():
+    return _brand.get()
+
+
+def _key(network):
+    b = _brand.get()
+    return network if b == brands.DEFAULT else '%s@%s' % (network, b)
+
+
+def _is_default():
+    return _brand.get() == brands.DEFAULT
+
+
 # ---------- cuentas guardadas ----------
 
 def _account(network):
-    row = db.row('SELECT data FROM social_accounts WHERE network=?', (network,))
+    row = db.row('SELECT data FROM social_accounts WHERE network=?', (_key(network),))
     try:
         return json.loads(row['data']) if row else None
     except ValueError:
@@ -82,14 +111,11 @@ def _account(network):
 
 def _save_account(network, data):
     db.exec_('INSERT OR REPLACE INTO social_accounts(network,data,updated_at) VALUES(?,?,CURRENT_TIMESTAMP)',
-             (network, json.dumps(data, ensure_ascii=False)))
+             (_key(network), json.dumps(data, ensure_ascii=False)))
 
 
 def disconnect(network):
-    if network == 'meta':
-        db.exec_("DELETE FROM social_accounts WHERE network IN ('meta')")
-    else:
-        db.exec_('DELETE FROM social_accounts WHERE network=?', (network,))
+    db.exec_('DELETE FROM social_accounts WHERE network=?', (_key(network),))
 
 
 def _meta():
@@ -98,7 +124,7 @@ def _meta():
     page = acc.get('page') or {}
     if page.get('access_token'):
         return page
-    if META_PAGE_ID and META_PAGE_TOKEN:
+    if META_PAGE_ID and META_PAGE_TOKEN and _is_default():
         return {'id': META_PAGE_ID, 'name': '', 'access_token': META_PAGE_TOKEN,
                 'instagram_id': INSTAGRAM_USER_ID, 'instagram_username': ''}
     return {}
@@ -110,8 +136,9 @@ def status():
     acc = _account('meta') or {}
     tiktok = _account('tiktok') or {}
     return {
+        'brand': _brand.get(),
         'public_url_ok': PUBLIC_BASE_URL.startswith('https://'),
-        'meta_configured': bool(META_APP_ID and META_APP_SECRET and PUBLIC_BASE_URL) or bool(META_PAGE_ID and META_PAGE_TOKEN),
+        'meta_configured': bool(META_APP_ID and META_APP_SECRET and PUBLIC_BASE_URL) or bool(META_PAGE_ID and META_PAGE_TOKEN and _is_default()),
         'meta_login': bool(META_APP_ID and META_APP_SECRET and PUBLIC_BASE_URL),
         'meta_callback': PUBLIC_BASE_URL + '/api/networks/meta/callback' if PUBLIC_BASE_URL else '',
         'facebook': {'connected': bool(meta.get('access_token')), 'name': meta.get('name') or ''},
@@ -131,8 +158,12 @@ def status():
     }
 
 
-def connected_networks():
-    s = status()
+def connected_networks(brand=None):
+    if brand:
+        with use_brand(brand):
+            s = status()
+    else:
+        s = status()
     return [n for n in NETWORKS if s[n]['connected']]
 
 
@@ -141,15 +172,18 @@ def connected_networks():
 def _new_state(network):
     state = secrets.token_urlsafe(32)
     db.exec_('DELETE FROM social_oauth_state WHERE expires_at<?', (int(time.time()),))
-    db.exec_('INSERT INTO social_oauth_state VALUES(?,?,?)', (state, network, int(time.time()) + 900))
+    db.exec_('INSERT INTO social_oauth_state VALUES(?,?,?)', (state, _key(network), int(time.time()) + 900))
     return state
 
 
 def _check_state(network, state):
+    """Comprueba la autorización y deja activo el medio con el que se pulsó «Conectar»."""
     row = db.row('SELECT network,expires_at FROM social_oauth_state WHERE state=?', (state or '',))
     db.exec_('DELETE FROM social_oauth_state WHERE state=?', (state or '',))
-    if not row or row['network'] != network or row['expires_at'] < int(time.time()):
+    net, _, brand = (row['network'] if row else '').partition('@')
+    if not row or net != network or row['expires_at'] < int(time.time()):
         raise SocialError('La autorización caducó o no se inició desde InfoLinense Desk. Vuelve a pulsar «Conectar».')
+    return brands.valid(brand or brands.DEFAULT)
 
 
 def meta_login_url():
@@ -177,7 +211,11 @@ def _graph(method, path, base=None, **kw):
 
 
 def meta_complete(code, state):
-    _check_state('meta', state)
+    with use_brand(_check_state('meta', state)):
+        return _meta_complete(code)
+
+
+def _meta_complete(code):
     short = _graph('GET', '/oauth/access_token', params={
         'client_id': META_APP_ID, 'client_secret': META_APP_SECRET,
         'redirect_uri': status()['meta_callback'], 'code': code})['access_token']
@@ -206,7 +244,7 @@ def meta_from_user_token(short):
                       'instagram_id': ig.get('id') or '', 'instagram_username': ig.get('username') or ''})
     if not pages:
         raise SocialError('Tu usuario de Facebook no administra ninguna página o no diste permiso a la página.')
-    chosen = next((p for p in pages if p['id'] == META_PAGE_ID), None) \
+    chosen = next((p for p in pages if p['id'] == META_PAGE_ID and _is_default()), None) \
         or next((p for p in pages if p['instagram_id']), None) or pages[0]
     _save_account('meta', {'pages': pages, 'page': chosen})
     return chosen
@@ -231,7 +269,11 @@ def instagram_login_url():
 
 
 def instagram_complete(code, state):
-    _check_state('instagram', state)
+    with use_brand(_check_state('instagram', state)):
+        return _instagram_complete(code)
+
+
+def _instagram_complete(code):
     code = (code or '').split('#')[0]
     try:
         r = requests.post('https://api.instagram.com/oauth/access_token', timeout=30, data={
@@ -298,7 +340,11 @@ def _tiktok_token(form):
 
 
 def tiktok_complete(code, state):
-    _check_state('tiktok', state)
+    with use_brand(_check_state('tiktok', state)):
+        return _tiktok_complete(code)
+
+
+def _tiktok_complete(code):
     acc = _tiktok_token({'code': code, 'grant_type': 'authorization_code', 'redirect_uri': status()['tiktok_callback']})
     try:
         info = requests.get(TIKTOK_API + '/user/info/', params={'fields': 'display_name'},
@@ -396,7 +442,7 @@ def article_images(article):
 def caption(article, limit=2200):
     parts = [article.get('headline') or '', article.get('subtitle') or '', article.get('body') or '']
     text = '\n\n'.join(p.strip() for p in parts if p and p.strip())
-    tags = SOCIAL_HASHTAGS
+    tags = SOCIAL_HASHTAGS if _brand.get() == brands.DEFAULT and os.getenv('SOCIAL_HASHTAGS') else brands.settings(_brand.get())['hashtags']
     room = limit - (len(tags) + 2 if tags else 0)
     if len(text) > room:
         cut = text[:room - 1]
@@ -485,7 +531,12 @@ def _tiktok_post(article, urls):
 
 
 def publish(network, article):
-    """Publica en una red. No repite si ya se publicó. Devuelve el resultado y lo guarda."""
+    """Publica en una red, con las cuentas del medio de la noticia. No repite si ya se publicó."""
+    with use_brand(article.get('brand') or brands.DEFAULT):
+        return _publish(network, article)
+
+
+def _publish(network, article):
     if network not in NETWORKS:
         raise SocialError('Red desconocida')
     done = db.row("SELECT * FROM social_posts WHERE article_id=? AND network=? AND status='published'", (article['id'], network))

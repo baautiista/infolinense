@@ -171,3 +171,10 @@ label{display:grid;gap:6px;font-weight:700;font-size:14px}
 #fbbar .link{color:#fff;font-size:1.1rem}
 
 .sched{background:#e8f0ff;color:#0a2a7a;border-radius:10px;padding:8px 10px;margin:6px 0;font-size:.92rem}
+
+.brandbar{display:flex;gap:6px;overflow-x:auto;padding:8px 16px;background:#fff;border-bottom:1px solid #e3e8f3;scrollbar-width:none}
+.brandbar::-webkit-scrollbar{display:none}
+.bchip{flex:none;border:1.5px solid var(--c);color:var(--c);background:#fff;border-radius:999px;padding:5px 12px;font:600 .85rem Figtree,system-ui;cursor:pointer}
+.bchip.on{background:var(--c);color:#fff}
+.brandpick .chips{display:flex;flex-wrap:wrap;gap:6px}
+.brand{display:inline-block;border-radius:6px;padding:1px 7px;font-size:.72rem;font-weight:700;letter-spacing:.02em}

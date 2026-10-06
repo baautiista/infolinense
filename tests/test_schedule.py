@@ -40,7 +40,7 @@ class ScheduleTests(unittest.TestCase):
         with patch.object(main.publishers, 'publish', side_effect=AssertionError('aún no')):
             self.assertEqual(main.publish_due(), [])  # todavía no es la hora
         db.exec_("UPDATE articles SET scheduled_at=? WHERE id=?", ((datetime.now(timezone.utc) - timedelta(minutes=1)).isoformat(), self.aid))
-        with patch.object(main, 'AUTO_PUBLISH', True), patch.object(main, 'PUBLISH_MODE', 'lovable'), \
+        with patch.object(main.publishers, 'AUTO_PUBLISH', True), patch.object(main.publishers, 'PUBLISH_MODE', 'lovable'), \
                 patch.object(main.publishers, 'publish', return_value='https://web/x'):
             self.assertEqual(main.publish_due(), [self.aid])
         a = db.row('SELECT status,publish_url,scheduled_at FROM articles WHERE id=?', (self.aid,))
@@ -50,13 +50,13 @@ class ScheduleTests(unittest.TestCase):
         with self.assertRaises(HTTPException):
             main.schedule_article(self.aid, main.ScheduleIn(at='2020-01-01T10:00'))
         future = (datetime.now() + timedelta(days=1)).strftime('%Y-%m-%dT10:00')
-        with self.assertRaises(HTTPException) as e:
+        with patch.object(sp, 'connected_networks', return_value=['instagram']), self.assertRaises(HTTPException) as e:
             main.schedule_article(self.aid, main.ScheduleIn(at=future, networks=['instagram']))
         self.assertIn('Canva', str(e.exception.detail))
 
     def test_failed_scheduled_publish_is_reported(self):
         db.exec_("UPDATE articles SET scheduled_at=?,scheduled_networks='[]' WHERE id=?", (NOW, self.aid))
-        with patch.object(main, 'AUTO_PUBLISH', True), patch.object(main, 'PUBLISH_MODE', 'lovable'), \
+        with patch.object(main.publishers, 'AUTO_PUBLISH', True), patch.object(main.publishers, 'PUBLISH_MODE', 'lovable'), \
                 patch.object(main.publishers, 'publish', side_effect=RuntimeError('web caída')):
             main.publish_due()
         a = db.row('SELECT status,scheduled_at,schedule_error FROM articles WHERE id=?', (self.aid,))

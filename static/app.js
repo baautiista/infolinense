@@ -16,6 +16,18 @@ const SEC = Object.fromEntries(SECTIONS.map(s => [s[0], s]));
 const STATUS = { draft: 'Borrador', review_ready: 'Revisada', approved: 'Aprobada', published: 'Publicada' };
 const PHASES = [['sort', 'Ordenar'], ['writing', 'Redacción'], ['review', 'Revisar'], ['publish', 'Publicar']];
 const KIND = { queja: 'Queja', propuesta: 'Propuesta', asociacion: 'Asociación' };
+/* Medios: InfoLinense, El Cofrade Linense, Carnavalinense. Se filtra todo el panel por el medio elegido arriba. */
+let BRANDS = [{ slug: 'infolinense', name: 'InfoLinense', short: 'InfoLinense', color: '#0150FE', text: '#fff', sections: [] }];
+let BRAND = (() => { try { return localStorage.getItem('brand') || 'all' } catch (e) { return 'all' } })();
+const brandOf = slug => BRANDS.find(b => b.slug === (slug || 'infolinense')) || BRANDS[0];
+function brandBadge(slug) { const b = brandOf(slug); return BRANDS.length > 1 ? `<span class="brand" style="background:${b.color};color:${b.text || '#fff'}">${esc(b.short)}</span>` : '' }
+function netBrand() { return BRAND === 'all' ? 'infolinense' : BRAND }
+function drawBrandBar() {
+  const bar = $('#brandBar'); if (!bar) return;
+  bar.innerHTML = [{ slug: 'all', short: 'Todos', color: '#061E5C' }, ...BRANDS].map(b => `<button class="bchip ${b.slug === BRAND ? 'on' : ''}" data-b="${b.slug}" style="--c:${b.color}">${esc(b.short)}</button>`).join('');
+  bar.querySelectorAll('[data-b]').forEach(x => x.onclick = () => { BRAND = x.dataset.b; try { localStorage.setItem('brand', BRAND) } catch (e) { } drawBrandBar(); block = null; render(); counts() });
+}
+async function loadBrands() { try { BRANDS = await api('/api/brands') } catch (e) { } if (BRAND !== 'all' && !BRANDS.some(b => b.slug === BRAND)) BRAND = 'all'; drawBrandBar() }
 
 /* ---------- utilidades ---------- */
 function esc(s) { return String(s ?? '').replace(/[&<>"']/g, m => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[m])) }
@@ -36,10 +48,12 @@ function ago(iso) {
   return `${day} ${d.toLocaleTimeString('es-ES', { timeZone: 'Europe/Madrid', hour: '2-digit', minute: '2-digit' })}`;
 }
 function isToday(iso) { return iso && new Date(iso).toLocaleDateString('es-ES', { timeZone: 'Europe/Madrid' }) === new Date().toLocaleDateString('es-ES', { timeZone: 'Europe/Madrid' }) }
-function secBadge(name) { const s = SEC[name] || SEC.CIUDAD; return `<span class="sec" style="background:${s[1]};color:${s[2]}">${esc(s[0])}</span>` }
+function secBadge(name, brand) { if (brand && brand !== 'infolinense') { const b = brandOf(brand); return name ? `<span class="sec" style="background:${b.color};color:${b.text || '#fff'}">${esc(name)}</span>` : '' } const s = SEC[name] || SEC.CIUDAD; return `<span class="sec" style="background:${s[1]};color:${s[2]}">${esc(s[0])}</span>` }
 const wait = ms => new Promise(r => setTimeout(r, ms));
 
+const BRANDED = /^\/api\/(sort-queue|drafting|to-publish|review|workflow|candidates|articles)(\?|$)/;
 async function request(url, opt = {}) {
+  if (BRAND !== 'all' && (!opt.method || opt.method === 'GET') && BRANDED.test(url)) url += (url.includes('?') ? '&' : '?') + 'brand=' + encodeURIComponent(BRAND);
   const headers = { ...(opt.body instanceof FormData ? {} : { 'Content-Type': 'application/json' }), ...(token ? { Authorization: `Bearer ${token}` } : {}) };
   const r = await fetch(url, { ...opt, headers });
   if (r.status === 401 && url !== '/api/auth/login') { logout(); throw new Error('La sesión ha caducado') }
@@ -59,6 +73,7 @@ $('#loginForm').onsubmit = async e => {
 };
 async function start() {
   $('#login').hidden = true; $('#app').hidden = false;
+  await loadBrands();
   const h = location.hash.slice(1);
   if (h) return go(h);
   // Al abrir, se va a la primera fase con trabajo pendiente.
@@ -124,7 +139,7 @@ function special(n) { const t = `${n.title} ${n.excerpt || ''} ${n.source_name |
 function focusCard(n) {
   const sp = special(n);
   return `<article class="focuscard" id="fc">
-    <div class="meta">${n.social_type ? `<span class="kind ${n.social_type}">${KIND[n.social_type] || ''}</span>` : ''}${sp ? `<span class="flag">${sp}</span>` : ''}<span class="src">${esc(n.outlet || n.source_name || host(n.url))}${(n.links || []).length ? ` +${n.links.length} ${n.links.length === 1 ? 'fuente' : 'fuentes'}` : ''}</span><span>${n.date_iso ? ago(n.date_iso) : 'fecha no indicada'}</span></div>
+    <div class="meta">${brandBadge(n.brand)}${n.social_type ? `<span class="kind ${n.social_type}">${KIND[n.social_type] || ''}</span>` : ''}${sp ? `<span class="flag">${sp}</span>` : ''}<span class="src">${esc(n.outlet || n.source_name || host(n.url))}${(n.links || []).length ? ` +${n.links.length} ${n.links.length === 1 ? 'fuente' : 'fuentes'}` : ''}</span><span>${n.date_iso ? ago(n.date_iso) : 'fecha no indicada'}</span></div>
     <h2>${esc(n.title)}</h2>
     ${n.local_angle ? `<p class="angle">${esc(n.local_angle)}</p>` : n.excerpt && n.excerpt !== n.title ? `<p class="angle">${esc(n.excerpt.slice(0, 260))}</p>` : ''}
     <a class="link" href="${safeUrl(n.url)}" target="_blank" rel="noopener noreferrer">Ver la fuente</a>
@@ -148,7 +163,7 @@ async function writingView(v) {
   const ready = rows.filter(r => r.state === 'ready').length;
   v.innerHTML = rows.length ? `<div class="bar"><span style="width:${Math.round(100 * ready / rows.length)}%"></span></div>
     <p class="progress">${ready} de ${rows.length} listas para revisar</p>
-    <div class="list">${rows.map(r => `<article class="item row-${r.state}"><div class="meta"><span>${esc(PRIO_LABEL[r.editorial_priority] || '')}</span>${r.planned_at ? `<span>${esc(String(r.planned_at).slice(11, 16))}</span>` : ''}</div>
+    <div class="list">${rows.map(r => `<article class="item row-${r.state}"><div class="meta">${brandBadge(r.brand)}<span>${esc(PRIO_LABEL[r.editorial_priority] || '')}</span>${r.planned_at ? `<span>${esc(String(r.planned_at).slice(11, 16))}</span>` : ''}</div>
       <h3>${esc(r.headline || r.title)}</h3>
       <div class="state">${r.state === 'ready' ? `<button class="btn small primary" onclick="go('editor/${r.article_id}')">Revisar</button>` :
         r.state === 'error' ? `<span class="error">${esc(jparse(r.work_error, {}).message || 'No se pudo redactar')}</span><button class="btn small" onclick="retry(${r.id})">Reintentar</button>` :
@@ -165,7 +180,7 @@ async function reviewView(v) {
   const rows = (await api('/api/drafting')).filter(r => r.state === 'ready');
   reviewIds = rows.map(r => r.article_id);
   v.innerHTML = rows.length ? `<p class="progress">${rows.length} por revisar. Corrige texto, foto e imagen y pulsa «Revisada».</p>
-    <div class="list">${rows.map(r => `<a class="item" href="#editor/${r.article_id}"><div class="meta"><span>${esc(PRIO_LABEL[r.editorial_priority] || '')}</span>${r.planned_at ? `<span>${esc(String(r.planned_at).slice(11, 16))}</span>` : ''}</div><h3>${esc(r.headline || r.title)}</h3></a>`).join('')}</div>`
+    <div class="list">${rows.map(r => `<a class="item" href="#editor/${r.article_id}"><div class="meta">${brandBadge(r.brand)}<span>${esc(PRIO_LABEL[r.editorial_priority] || '')}</span>${r.planned_at ? `<span>${esc(String(r.planned_at).slice(11, 16))}</span>` : ''}</div><h3>${esc(r.headline || r.title)}</h3></a>`).join('')}</div>`
     : `<p class="empty">No queda nada por revisar.</p>${nextPhase('Ir a Publicar', 'publish')}`;
 }
 
@@ -175,14 +190,14 @@ function netPrefs(available) { let saved = null; try { saved = JSON.parse(localS
 function saveNetPrefs() { try { localStorage.setItem('nets', JSON.stringify([...document.querySelectorAll('.netpick input:checked')].map(i => i.value))) } catch (e) { } }
 function netStatus(r) { const n = r.networks || {}; return Object.keys(n).map(k => n[k].status === 'published' ? (n[k].url ? `<a class="net ok" href="${safeUrl(n[k].url)}" target="_blank" rel="noopener">${NET_NAMES[k]} ✓</a>` : `<span class="net ok">${NET_NAMES[k]} ✓</span>`) : `<button class="net bad" title="${esc(n[k].message)}" onclick="retryNet(${r.id},'${k}',this)">${NET_NAMES[k]}: reintentar</button>`).join('') }
 async function publishView(v) {
-  const [rows, nets] = await Promise.all([api('/api/to-publish'), api('/api/networks').catch(() => ({}))]);
+  const [rows, nets] = await Promise.all([api('/api/to-publish'), api('/api/networks?brand=' + netBrand()).catch(() => ({}))]);
   const available = ['instagram', 'facebook', 'tiktok'].filter(n => (nets[n] || {}).connected);
   const chosen = netPrefs(available);
-  const picker = available.length ? `<div class="netpick row wrap"><span class="muted small">Publicar también en:</span>${available.map(n => `<label class="switch"><input type="checkbox" value="${n}" ${chosen.includes(n) ? 'checked' : ''} onchange="saveNetPrefs()"> ${NET_NAMES[n]}</label>`).join('')}</div>` : `<p class="muted small">Las redes sociales no están conectadas. <a href="#settings">Conéctalas en Ajustes</a>.</p>`;
+  const picker = available.length ? `<div class="netpick row wrap"><span class="muted small">${BRAND === 'all' ? 'Publicar también en (cada noticia en las cuentas de su medio):' : 'Publicar también en:'}</span>${available.map(n => `<label class="switch"><input type="checkbox" value="${n}" ${chosen.includes(n) ? 'checked' : ''} onchange="saveNetPrefs()"> ${NET_NAMES[n]}</label>`).join('')}</div>` : `<p class="muted small">Las redes sociales no están conectadas. <a href="#settings">Conéctalas en Ajustes</a>.</p>`;
   const today = new Date().toLocaleDateString('sv-SE', { timeZone: 'Europe/Madrid' });
   const isTodayRow = r => !r.planned_at || String(r.planned_at).slice(0, 10) <= today;
   const row = r => `<article class="item slot"><div class="hour">${r.planned_at ? esc(String(r.planned_at).slice(11, 16)) : '–'}</div><div class="grow">
-      <div class="meta">${secBadge(r.section)}<span class="st st-${r.status}">${STATUS[r.status]}</span><span>${r.canva_exported ? 'Imagen lista' : r.has_photo ? 'Con foto' : 'Sin foto'}</span></div>
+      <div class="meta">${brandBadge(r.brand)}${secBadge(r.section, r.brand)}<span class="st st-${r.status}">${STATUS[r.status]}</span><span>${r.canva_exported ? 'Imagen lista' : r.has_photo ? 'Con foto' : 'Sin foto'}</span></div>
       <h3><a href="#editor/${r.id}">${esc(r.headline)}</a></h3>
       ${r.status === 'published' ? `<div class="row wrap">${r.publish_url ? `<a class="net ok" href="${safeUrl(r.publish_url)}" target="_blank" rel="noopener">Web ✓</a>` : ''}${netStatus(r)}${r.canva_exported ? `<button class="net" onclick="shareFb(${r.id},this)">Compartir en Facebook</button>` : ''}</div>` :
         r.scheduled_at ? `<div class="sched"><b>⏰ Se publica sola ${esc(whenText(r.scheduled_at))}</b> · ${schedNets(r)}</div>
@@ -278,7 +293,8 @@ async function editor(v) {
     <section class="fields">
       <div class="meta"><span class="st st-${a.status}">${STATUS[a.status] || a.status}</span>${a.source_url ? `<a href="${safeUrl(a.source_url)}" target="_blank" rel="noopener noreferrer">Fuente: ${esc(a.outlet || a.source_name || host(a.source_url))}</a>` : ''}${published && a.publish_url ? `<a href="${safeUrl(a.publish_url)}" target="_blank" rel="noopener">Ver en la web</a>` : ''}</div>
       ${a.focus ? `<p class="focus"><b>Enfoque:</b> ${esc(a.focus)}</p>` : ''}
-      <label>Sección<select id="f-section">${SECTIONS.map(s => `<option ${s[0] === a.section ? 'selected' : ''}>${s[0]}</option>`).join('')}</select></label>
+      ${BRANDS.length > 1 ? `<label>Medio<select id="f-brand">${BRANDS.map(b => `<option value="${b.slug}" ${b.slug === (a.brand || 'infolinense') ? 'selected' : ''}>${esc(b.name)}</option>`).join('')}</select></label>` : ''}
+      <label>Sección<select id="f-section">${sectionOptions(a.brand, a.section)}</select></label>
       <label>Titular <span class="muted" id="fit"></span><textarea id="f-headline" rows="2">${esc(a.headline)}</textarea></label>
       ${options.length ? `<details class="alts"><summary>7 titulares alternativos</summary>${options.map((h, i) => `<button class="alt" data-i="${i}">${esc(h)}</button>`).join('')}<button class="link" id="moreHeads">Proponer otros 7</button></details>` : `<button class="link" id="moreHeads">Proponer 7 titulares</button>`}
       <label>Entradilla <span class="muted" id="sub"></span><textarea id="f-subtitle" rows="3">${esc(a.subtitle)}</textarea></label>
@@ -297,6 +313,7 @@ async function editor(v) {
   const fit = () => { const n = lines(f('headline').value); $('#fit').textContent = n <= 4 ? `${n} de 4 líneas en la imagen` : `${n} líneas: no cabe en la imagen, acórtalo`; $('#fit').className = n <= 4 ? 'muted' : 'error' };
   const sub = () => { const n = f('subtitle').value.trim().length; $('#sub').textContent = n <= 165 ? `${n} / 165` : `${n} / 165: no cabe en la imagen, acórtala`; $('#sub').className = n <= 165 ? 'muted' : 'error' };
   const count = () => $('#count').textContent = `${f('body').value.length} / 2.200`;
+  if (f('brand')) f('brand').onchange = async e => { const b = e.target.value; f('section').innerHTML = sectionOptions(b, ''); try { await saveArticle(); toast('Ahora es de ' + brandOf(b).name + ': crea la imagen con su plantilla'); render() } catch (er) { toast(er.message) } };
   f('headline').oninput = fit; f('subtitle').oninput = sub; f('body').oninput = count; fit(); sub(); count();
   v.querySelectorAll('.alt').forEach(b => b.onclick = () => { f('headline').value = options[b.dataset.i]; fit(); toast('Titular cambiado') });
   $('#moreHeads').onclick = async e => { e.target.textContent = 'Pensando…'; try { await saveArticle(); await api(`/api/articles/${a.id}/headlines`, { method: 'POST' }); render() } catch (er) { toast(er.message); e.target.textContent = 'Reintentar' } };
@@ -304,7 +321,12 @@ async function editor(v) {
   if (img) img.src = await blobUrl(kit.image_url || kit.photo_download_url);
   else autoPhoto();
 }
-function values() { const o = {}; ['section', 'headline', 'subtitle', 'body'].forEach(k => o[k] = $(`#f-${k}`).value); return o }
+function sectionOptions(brand, current) {
+  const list = (!brand || brand === 'infolinense') ? SECTIONS.map(s => s[0]) : (brandOf(brand).sections || []);
+  const all = current && !list.includes(current) ? [current, ...list] : list;
+  return all.map(s => `<option ${s === current ? 'selected' : ''}>${esc(s)}</option>`).join('');
+}
+function values() { const o = {}; ['section', 'headline', 'subtitle', 'body', 'brand'].forEach(k => { const el = $(`#f-${k}`); if (el) o[k] = el.value }); return o }
 async function saveArticle(say) { await api(`/api/articles/${editorId}`, { method: 'PUT', body: JSON.stringify(values()) }); if (say) toast('Guardado') }
 window.save = s => saveArticle(s).catch(e => toast(e.message));
 window.copyText = async () => { const o = values(); await navigator.clipboard.writeText([o.headline, o.subtitle, o.body].filter(Boolean).join('\n\n')); toast('Texto copiado') };
@@ -365,9 +387,29 @@ window.carousel = async () => {
 };
 
 /* ---------- Ajustes ---------- */
+let settingsBrand = null;
 async function settings(v) {
-  const [h, caps, srcs, nets] = await Promise.all([api('/api/health'), api('/api/capabilities'), api('/api/sources'), api('/api/networks').catch(() => ({}))]);
-  v.innerHTML = `<section class="panel"><h2>Redacción con IA</h2>
+  settingsBrand = settingsBrand || netBrand();
+  const SB = settingsBrand, B = brandOf(SB), q = '?brand=' + SB;
+  const [h, caps, allSrcs, nets] = await Promise.all([api('/api/health'), api('/api/capabilities'), api('/api/sources'), api('/api/networks' + q).catch(() => ({}))]);
+  const srcs = allSrcs.filter(s => (s.brand || 'infolinense') === SB);
+  const isMain = SB === 'infolinense';
+  const T = B.templates || {};
+  v.innerHTML = `<section class="panel brandpick"><h2>Medio</h2><p class="muted small">Plantilla de Canva, redes, web y fuentes de cada medio.</p>
+      <div class="chips">${BRANDS.map(b => `<button class="bchip ${b.slug === SB ? 'on' : ''}" data-sb="${b.slug}" style="--c:${b.color}">${esc(b.name)}</button>`).join('')}</div></section>
+    <section class="panel"><h2>${esc(B.name)} · Canva y textos</h2>
+      <form id="brandForm" class="stack">
+        <label>Plantilla de marca de Canva (pega el enlace)<input name="main" value="${esc(T.main || (isMain ? caps.canva_template_url || '' : ''))}" placeholder="https://www.canva.com/brand/brand-templates/…"></label>
+        <details class="alts"><summary>Variantes según las líneas del titular (opcional)</summary>
+          <label>Titular de 1 línea<input name="t1" value="${esc(T['1'] || '')}"></label>
+          <label>Titular de 2 líneas<input name="t2" value="${esc(T['2'] || '')}"></label>
+          <label>Titular de 4 líneas<input name="t4" value="${esc(T['4'] || '')}"></label></details>
+        ${isMain ? '' : `<label>Secciones (separadas por comas)<input name="sections" value="${esc((B.sections || []).join(', '))}"></label>
+        <label>Página de la plantilla que se exporta<input name="page" type="number" min="1" max="50" value="${esc(B.page || 1)}"></label>`}
+        <label>Hashtags en redes<input name="hashtags" value="${esc(B.hashtags || '')}"></label>
+        <button class="btn small primary">Guardar</button></form>
+      <p class="muted small">En la plantilla de Canva, los campos de datos deben llamarse <b>HEADLINE</b> (titular), <b>SUMMARY</b> (entradilla), <b>PHOTO</b> (foto)${isMain ? ' y <b>SECTION</b>' : ' y, si tiene, <b>SECTION</b>'}.</p></section>
+    <section class="panel"><h2>Redacción con IA</h2>
       <p>${h.ai_configured ? `Redacta ${{ openai: 'ChatGPT', anthropic: 'Claude', gemini: 'Gemini (gratis)' }[h.ai_provider] || h.ai_provider}.` : 'Sin IA: los borradores se preparan a partir de la fuente. Añade GEMINI_API_KEY (gratis) en Railway.'}</p>
       <p class="muted small">${h.paid_ai_allowed ? 'Las IA de pago están permitidas.' : 'Modo sin coste: ChatGPT y Claude están desactivados aunque tengan clave.'}</p>
       <button class="btn small" id="aiCheck">Comprobar ahora</button><div id="aiOut"></div></section>
@@ -375,32 +417,35 @@ async function settings(v) {
       <button class="btn small" id="photoCheck">Comprobar fotos</button><div id="photoOut"></div></section>
     <section class="panel"><h2>Canva</h2><p>${caps.canva_connected ? 'Conectado. Las imágenes usan tu plantilla de noticias.' : caps.canva_configured ? 'Falta autorizar la conexión.' : 'Faltan las credenciales de Canva en Railway.'}</p>
       ${caps.canva_configured ? `<button class="btn small" id="canvaConn">${caps.canva_connected ? 'Volver a conectar' : 'Conectar Canva'}</button>` : ''}</section>
-    <section class="panel"><h2>Redes sociales</h2>
-      <p class="muted small">Solo se publica cuando pulsas «Publicar». Se usa la imagen de Canva (o el carrusel, si lo has creado) y el texto de la noticia.</p>
+    <section class="panel"><h2>Redes sociales de ${esc(B.name)}</h2>
+      <p class="muted small">Solo se publica cuando pulsas «Publicar» o a la hora programada. Se usa la imagen de Canva (o el carrusel, si lo has creado) y el texto de la noticia.</p>
       <div class="netrow"><b>Instagram</b>
         <p>${nets.instagram && nets.instagram.connected ? 'Conectado: @' + esc(nets.instagram.name || 'cuenta') + '. Se publica automático al pulsar «Publicar».' : nets.instagram_login ? 'Sin conectar.' : 'Faltan INSTAGRAM_APP_ID e INSTAGRAM_APP_SECRET en Railway.'}</p>
         ${nets.instagram_login ? `<div class="row wrap"><button class="btn small" id="igConn">${nets.instagram && nets.instagram.direct ? 'Volver a conectar' : 'Conectar Instagram'}</button>${nets.instagram && nets.instagram.direct ? '<button class="link" id="igOff">Desconectar</button>' : ''}</div>` : ''}
         ${nets.instagram_callback ? `<p class="muted small">Dirección de retorno para «Instagram → Configuración de la API con inicio de sesión de Instagram»: <code>${esc(nets.instagram_callback)}</code></p>` : ''}</div>
       <div class="netrow"><b>Facebook</b>
-        ${nets.facebook && nets.facebook.connected ? `<p>Página: ${esc(nets.facebook.name || 'conectada')}. Se publica automático.</p><button class="link" id="metaOff">Desconectar página</button>` : '<p>Tu cuenta personal no se toca. Meta no permite publicar en perfiles personales de forma automática, así que en cada noticia tienes el botón <b>«Compartir en Facebook»</b>: deja la imagen y el texto listos y solo tienes que pulsar «Publicar» en Facebook.</p>'}
+        ${nets.facebook && nets.facebook.connected ? `<p>Página: ${esc(nets.facebook.name || 'conectada')}. Se publica automático.</p><button class="link" id="metaOff">Desconectar página</button>` : !isMain ? `<p>Sin conectar. Conecta la página de Facebook de ${esc(B.name)} (tienes que ser administrador).</p>
+          ${nets.meta_login ? `<button class="btn small" id="metaConn">Conectar página de Facebook</button>
+          <details class="alts"><summary>Si el botón da error: pegar un token</summary><form id="metaTok" class="stack"><input name="token" placeholder="Token del Explorador de la API Graph" autocomplete="off"><button class="btn small">Conectar con este token</button></form></details>` : '<p class="muted small">Faltan META_APP_ID y META_APP_SECRET en Railway.</p>'}` : '<p>Tu cuenta personal no se toca. Meta no permite publicar en perfiles personales de forma automática, así que en cada noticia tienes el botón <b>«Compartir en Facebook»</b>: deja la imagen y el texto listos y solo tienes que pulsar «Publicar» en Facebook.</p>'}
         ${(nets.pages || []).length > 1 ? `<label>Página<select id="pagePick">${nets.pages.map(p => `<option value="${esc(p.id)}" ${p.name === nets.facebook.name ? 'selected' : ''}>${esc(p.name)}</option>`).join('')}</select></label>` : ''}
-        ${nets.meta_login && !(nets.facebook && nets.facebook.connected) ? `<details class="alts"><summary>Solo si algún día creas una página de Facebook</summary><button class="btn small" id="metaConn">Conectar página de Facebook</button>
+        ${isMain && nets.meta_login && !(nets.facebook && nets.facebook.connected) ? `<details class="alts"><summary>Solo si algún día creas una página de Facebook</summary><button class="btn small" id="metaConn">Conectar página de Facebook</button>
           <form id="metaTok" class="stack"><input name="token" placeholder="O pega el token del Explorador de la API Graph" autocomplete="off"><button class="btn small">Conectar con este token</button></form></details>` : ''}</div>
       <div class="netrow"><b>TikTok</b>
         <p>${nets.tiktok && nets.tiktok.connected ? 'Conectado' + (nets.tiktok.name ? ': ' + esc(nets.tiktok.name) : '') + '.' : nets.tiktok_configured ? 'Sin conectar.' : 'Faltan TIKTOK_CLIENT_KEY y TIKTOK_CLIENT_SECRET en Railway.'}</p>
         ${nets.tiktok_configured ? `<div class="row wrap"><button class="btn small" id="ttConn">${nets.tiktok && nets.tiktok.connected ? 'Volver a conectar' : 'Conectar TikTok'}</button>${nets.tiktok && nets.tiktok.connected ? '<button class="link" id="ttOff">Desconectar</button>' : ''}</div>` : ''}
         ${nets.tiktok_callback ? `<p class="muted small">Dirección de retorno para la app de TikTok: <code>${esc(nets.tiktok_callback)}</code><br>Prefijo de URL que hay que verificar en TikTok: <code>${esc(nets.tiktok_url_prefix)}</code><br>Condiciones de uso: <code>${esc(nets.terms_url)}</code><br>Política de privacidad: <code>${esc(nets.privacy_url)}</code></p>` : ''}</div>
       ${nets.public_url_ok === false ? '<p class="error small">Falta PUBLIC_BASE_URL (https://…) en Railway: las redes no podrían descargar la imagen.</p>' : ''}</section>
-    <section class="panel"><h2>Web</h2><p>${h.auto_publish ? '«Aprobar y publicar» envía la noticia a infolinense.com.' : 'La publicación en infolinense.com no está configurada: «Aprobar y publicar» solo aprueba.'}</p></section>
-    <section class="panel"><h2>Fuentes</h2>
-      <div class="sources">${srcs.map(s => `<div class="srcrow"><label class="switch"><input type="checkbox" ${s.active ? 'checked' : ''} onchange="toggleSource(${s.id})"> ${esc(s.name)}</label>${s.last_error ? `<span class="error small">Error</span>` : `<span class="muted small">${s.items_added ?? 0} nuevas</span>`}</div>`).join('')}</div>
+    <section class="panel"><h2>Web de ${esc(B.name)}</h2><p>${B.web && B.web.enabled ? `«Publicar» envía la noticia a la web${B.web.host ? ' (' + esc(B.web.host) + ')' : ''}.` : `La web de ${esc(B.name)} no está configurada: «Publicar» solo la publica en redes.`}</p>
+      ${isMain ? '' : `<p class="muted small">Para conectarla, en Railway → Variables añade <code>${B.env_prefix}WEBHOOK_URL</code> y <code>${B.env_prefix}WEBHOOK_SECRET</code> (web hecha con Lovable u otra), o <code>${B.env_prefix}WORDPRESS_URL</code>, <code>${B.env_prefix}WORDPRESS_USERNAME</code> y <code>${B.env_prefix}WORDPRESS_APP_PASSWORD</code> (WordPress).</p>`}</section>
+    <section class="panel"><h2>Fuentes de ${esc(B.name)}</h2>
+      <div class="sources">${srcs.map(s => `<div class="srcrow"><label class="switch"><input type="checkbox" ${s.active ? 'checked' : ''} onchange="toggleSource(${s.id})"> ${esc(s.name)}</label>${s.last_error ? `<span class="error small" title="${esc(s.last_error)}" onclick="toast(this.title)">Error</span>` : `<span class="muted small">${s.items_added ?? 0} nuevas</span>`}</div>`).join('') || '<p class="muted small">Ninguna todavía.</p>'}</div>
       <form id="addSrc" class="stack"><input name="name" placeholder="Nombre del medio o página" required><input name="url" type="url" placeholder="https://… (RSS, portada, Facebook o Instagram)" required>
       <select name="kind"><option value="rss">RSS</option><option value="html">Portada web</option><option value="social">Facebook / Instagram</option></select><button class="btn small">Añadir fuente</button></form></section>
     <section class="panel"><h2>Páginas y grupos de Facebook vigilados</h2><p class="muted small">Solo lo público. Se buscan quejas, propuestas y asociaciones.</p>
       <div class="sources" id="fbList"></div>
       <form id="addFb" class="stack"><input name="name" placeholder="Nombre (p. ej. AVV La Atunara)" required><input name="url" type="url" placeholder="https://www.facebook.com/groups/…" required><button class="btn small">Vigilar</button></form></section>
     <button class="btn" onclick="logout()">Salir</button>`;
-  api('/api/social').then(d => { $('#fbList').innerHTML = d.watched.map(s => `<div class="srcrow"><label class="switch"><input type="checkbox" ${s.active ? 'checked' : ''} onchange="toggleSource(${s.id})"> ${esc(s.name)}</label></div>`).join('') || '<p class="muted small">Ninguna todavía.</p>' }).catch(() => { });
+  api('/api/social').then(d => { $('#fbList').innerHTML = d.watched.filter(x => (x.brand || 'infolinense') === SB).map(s => `<div class="srcrow"><label class="switch"><input type="checkbox" ${s.active ? 'checked' : ''} onchange="toggleSource(${s.id})"> ${esc(s.name)}</label></div>`).join('') || '<p class="muted small">Ninguna todavía.</p>' }).catch(() => { });
   $('#addFb').onsubmit = async e => { e.preventDefault(); const d = Object.fromEntries(new FormData(e.target)); try { await api('/api/sources', { method: 'POST', body: JSON.stringify({ ...d, kind: 'social', priority: 60, local_scope: true }) }); toast('Ahora se vigila'); render() } catch (er) { toast(er.message) } };
   $('#aiCheck').onclick = async e => {
     e.target.disabled = true; e.target.textContent = 'Comprobando…';
@@ -412,18 +457,25 @@ async function settings(v) {
     try { const r = await api('/api/photos/check'); $('#photoOut').innerHTML = r.providers.map(p => `<p class="${p.count ? 'ok' : p.count === null ? 'muted' : 'error'}"><b>${esc(p.name)}</b>: ${p.count === null ? 'sin configurar' : p.count + ' fotos'}</p>`).join('') }
     catch (er) { $('#photoOut').innerHTML = `<p class="error">${esc(er.message)}</p>` } finally { e.target.disabled = false; e.target.textContent = 'Comprobar fotos' }
   };
-  const conn = async net => { try { location.href = (await api(`/api/networks/${net}/connect`)).url } catch (e) { toast(e.message) } };
-  const off = async net => { if (!confirm('¿Desconectar?')) return; try { await api(`/api/networks/${net}/disconnect`, { method: 'POST' }); render() } catch (e) { toast(e.message) } };
+  const conn = async net => { try { location.href = (await api(`/api/networks/${net}/connect` + q)).url } catch (e) { toast(e.message) } };
+  const off = async net => { if (!confirm('¿Desconectar?')) return; try { await api(`/api/networks/${net}/disconnect` + q, { method: 'POST' }); render() } catch (e) { toast(e.message) } };
+  v.querySelectorAll('[data-sb]').forEach(b => b.onclick = () => { settingsBrand = b.dataset.sb; render() });
+  $('#brandForm').onsubmit = async e => {
+    e.preventDefault(); const d = Object.fromEntries(new FormData(e.target));
+    const body = { templates: { main: d.main, '1': d.t1, '2': d.t2, '4': d.t4 }, hashtags: d.hashtags };
+    if (!isMain) { body.sections = d.sections; body.page = Number(d.page || 1) }
+    try { await api('/api/brands/' + SB, { method: 'PUT', body: JSON.stringify(body) }); await loadBrands(); toast('Guardado'); render() } catch (er) { toast(er.message) }
+  };
   if ($('#metaConn')) $('#metaConn').onclick = () => conn('meta');
-  if ($('#metaTok')) $('#metaTok').onsubmit = async e => { e.preventDefault(); const b = e.target.querySelector('button'); b.disabled = true; b.textContent = 'Conectando…'; try { const r = await api('/api/networks/meta/token', { method: 'POST', body: JSON.stringify({ token: e.target.token.value }) }); toast('Conectado: ' + r.name + (r.instagram ? ' · @' + r.instagram : '')); render() } catch (er) { toast(er.message); b.disabled = false; b.textContent = 'Conectar con este token' } };
+  if ($('#metaTok')) $('#metaTok').onsubmit = async e => { e.preventDefault(); const b = e.target.querySelector('button'); b.disabled = true; b.textContent = 'Conectando…'; try { const r = await api('/api/networks/meta/token' + q, { method: 'POST', body: JSON.stringify({ token: e.target.token.value }) }); toast('Conectado: ' + r.name + (r.instagram ? ' · @' + r.instagram : '')); render() } catch (er) { toast(er.message); b.disabled = false; b.textContent = 'Conectar con este token' } };
   if ($('#ttConn')) $('#ttConn').onclick = () => conn('tiktok');
   if ($('#igConn')) $('#igConn').onclick = () => conn('instagram');
   if ($('#igOff')) $('#igOff').onclick = () => off('instagram');
   if ($('#metaOff')) $('#metaOff').onclick = () => off('meta');
   if ($('#ttOff')) $('#ttOff').onclick = () => off('tiktok');
-  if ($('#pagePick')) $('#pagePick').onchange = async e => { try { const r = await api('/api/networks/meta/page', { method: 'POST', body: JSON.stringify({ page_id: e.target.value }) }); toast('Página: ' + r.name); render() } catch (er) { toast(er.message) } };
+  if ($('#pagePick')) $('#pagePick').onchange = async e => { try { const r = await api('/api/networks/meta/page' + q, { method: 'POST', body: JSON.stringify({ page_id: e.target.value }) }); toast('Página: ' + r.name); render() } catch (er) { toast(er.message) } };
   const cc = $('#canvaConn'); if (cc) cc.onclick = async () => { try { location.href = (await api('/api/canva/connect')).url } catch (e) { toast(e.message) } };
-  $('#addSrc').onsubmit = async e => { e.preventDefault(); const d = Object.fromEntries(new FormData(e.target)); try { await api('/api/sources', { method: 'POST', body: JSON.stringify({ ...d, priority: 60 }) }); toast('Fuente añadida'); render() } catch (er) { toast(er.message) } };
+  $('#addSrc').onsubmit = async e => { e.preventDefault(); const d = Object.fromEntries(new FormData(e.target)); try { await api('/api/sources', { method: 'POST', body: JSON.stringify({ ...d, priority: 60, brand: SB }) }); toast('Fuente añadida'); render() } catch (er) { toast(er.message) } };
 }
 window.toggleSource = async id => { try { await api(`/api/sources/${id}/toggle`, { method: 'POST' }) } catch (e) { toast(e.message) } };
 window.go = go; window.download = download; window.logout = logout; window.render = render;

@@ -488,7 +488,14 @@ def style_guide():
 def draft(candidate, source_text='', research='', quick=False):
     if not AI_ENABLED:
         return free_draft(candidate, source_text)
-    prompt = f'''Redacta la noticia siguiendo al pie de la letra la guía de estilo de InfoLinense.
+    from . import brands
+    b = brands.settings(candidate.get('brand'))
+    other = b['slug'] != brands.DEFAULT
+    sections = ', '.join(b['sections']) if other else SECTIONS
+    guide = 'elige la que mejor encaje' if other else SECTION_GUIDE
+    medium = (f"MEDIO: escribes para {b['name']}, {b['about']}. Mismo rigor y estilo que InfoLinense, con el vocabulario propio "
+              f"de ese mundo (sin explicar lo que su público ya sabe).\n") if other else ''
+    prompt = f'''{medium}Redacta la noticia siguiendo al pie de la letra la guía de estilo de InfoLinense.
 Usa SOLO la información de las fuentes de abajo, pero aprovecha TODO el TEXTO FUENTE, no solo el titular: incorpora todos los datos útiles que contiene (cifras, fechas, plazos, lugares, nombres de calles y barrios, empresas, requisitos, antecedentes, declaraciones relevantes).
 Extensión del TEXTO: entre 1.800 y 2.200 caracteres con espacios. Solo si el texto fuente es muy corto (menos de 600 caracteres) puede quedar más breve, sin inventar ni rellenar.
 Párrafos de 2 a 4 frases separados por una línea en blanco.
@@ -505,7 +512,7 @@ HECHOS Y CONTEXTO: {_facts_for_draft(research)[:8000]}
 
 Devuelve la entrega (SECCIÓN, TITULAR, SUBTÍTULO, TEXTO) como JSON válido, sin markdown, con exactamente estas claves:
 focus (ENFOQUE PRINCIPAL: la verdadera noticia en una frase),
-section (exactamente una de: {SECTIONS}. Guía: {SECTION_GUIDE}),
+section (exactamente una de: {sections}. Guía: {guide}),
 headline (TITULAR: breve, directo, cuenta la noticia, máximo 80 caracteres porque va tal cual en la imagen),
 subtitle (SUBTÍTULO o ENTRADILLA: aporta información nueva, nunca repite el titular, máximo 160 caracteres porque va tal cual en la imagen),
 body (TEXTO: la noticia completa, entre 1.800 y 2.200 caracteres, en 5 a 8 párrafos),
@@ -528,7 +535,11 @@ photo_query (búsqueda de imágenes en internet de 3 a 6 palabras que describa l
             data['headline_options'] = alternate_headlines(data)
         except AIProviderError:
             pass
-    data['section'] = layout.normalize_section(data.get('section'), data.get('headline', '') + ' ' + data.get('body', '')[:400])
+    if other:
+        sec = str(data.get('section') or '').strip().upper()
+        data['section'] = sec if sec in b['sections'] else (b['sections'][0] if b['sections'] else sec or 'NOTICIAS')
+    else:
+        data['section'] = layout.normalize_section(data.get('section'), data.get('headline', '') + ' ' + data.get('body', '')[:400])
     # La imagen usa exactamente el titular y la entradilla de la noticia (no textos aparte).
     data['image_headline'] = ''
     data['graphic_summary'] = data.get('subtitle') or ''

@@ -86,6 +86,7 @@ def draft_candidate(cid):
         json.dumps(draft.get('headline_options') or [], ensure_ascii=False),
         json.dumps(draft.get('missing_data') or [], ensure_ascii=False),
         draft.get('provider') or '', None, workflow, 'draft', draft.get('image_headline') or '', str(draft.get('focus') or '')[:300], str(draft.get('photo_query') or '')[:120]))
+    db.exec_('UPDATE articles SET brand=? WHERE id=?', (c.get('brand') or 'infolinense', aid))
     db.exec_('UPDATE candidates SET status=?,section=? WHERE id=?', ('draft', draft.get('section', 'CIUDAD'), cid))
     db.log('pipeline', f'Candidata {cid} -> borrador')
     return aid

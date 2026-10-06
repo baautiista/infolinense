@@ -99,6 +99,9 @@ def init_db():
     existing_articles={r[1] for r in c.execute('PRAGMA table_info(articles)')}
     for name,ddl in {
         'carousel_suitable':'INTEGER NOT NULL DEFAULT 0',
+        'scheduled_at':'TEXT',
+        'scheduled_networks':'TEXT',
+        'schedule_error':'TEXT',
         'carousel_reason':'TEXT',
         'carousel_json':'TEXT',
         'headline_options_json':'TEXT',
@@ -142,8 +145,9 @@ def init_db():
       ('Edictos · sede municipal indexada',news('"La Línea de la Concepción" site:sedeelectronica.lalinea.es/edictos/ when:7d'),'rss',84,1,0),
       ('Anuncios · BOJA y BOP indexados',news('"La Línea de la Concepción" (site:juntadeandalucia.es/boja/ OR site:bopcadiz.es) when:7d'),'rss',80,1,0),
       ('Medios nacionales',news('"La Línea de la Concepción" (site:elpais.com OR site:elmundo.es OR site:abc.es OR site:rtve.es OR site:lavanguardia.com OR site:elconfidencial.com OR site:20minutos.es OR site:eldiario.es OR site:elespanol.com OR site:larazon.es OR site:antena3.com OR site:telecinco.es OR site:cope.es OR site:ondacero.es OR site:efe.com OR site:lasexta.com) when:2d'),'rss',80,0,0),
-      ('Nacionales adaptables · Gibraltar y frontera',news('Gibraltar (frontera OR tratado OR acuerdo OR "trabajadores transfronterizos" OR verja OR Schengen) when:2d'),'rss',78,0,1),
-      ('Nacionales adaptables · Campo de Gibraltar',news('"Campo de Gibraltar" when:2d'),'rss',72,0,1),
+      ('Nacionales adaptables · Gibraltar y frontera',news('Gibraltar (frontera OR tratado OR acuerdo OR "trabajadores transfronterizos" OR verja OR Schengen) when:2d'),'rss',78,0,0),
+      ('Gibraltar · rellenos, obras, eventos y elecciones',news('Gibraltar (relleno OR obras OR construcción OR proyecto OR festival OR concierto OR elecciones OR "Día Nacional") when:3d'),'rss',70,0,0),
+      ('Nacionales adaptables · Campo de Gibraltar',news('"Campo de Gibraltar" when:2d'),'rss',72,0,0),
       ('Licitaciones · BOP y plataforma estatal',news('("La Línea de la Concepción" OR "Ayuntamiento de La Línea") (licitación OR adjudicación OR contrato OR obras) when:7d'),'rss',95,1,0),
       ('Facebook · publicaciones indexadas',news('"La Línea de la Concepción" site:facebook.com when:3d'),'rss',55,0,0),
       ('Instagram · publicaciones indexadas',news('"La Línea de la Concepción" site:instagram.com when:3d'),'rss',55,0,0),
@@ -162,6 +166,11 @@ def init_db():
                  created_at TEXT DEFAULT CURRENT_TIMESTAMP)''')
     c.execute('CREATE INDEX IF NOT EXISTS idx_links_cand ON candidate_links(candidate_id)')
     # El tablón de edictos es fuente prioritaria: se reactiva una vez (5.6)
+    # Solo La Línea (5.7): «Campo de Gibraltar» trae otros municipios; Gibraltar pasa por el filtro de temas
+    if not c.execute("SELECT 1 FROM settings WHERE key='solo_linea_57'").fetchone():
+        c.execute("UPDATE sources SET active=0 WHERE name='Nacionales adaptables · Campo de Gibraltar'")
+        c.execute("UPDATE sources SET local_scope=0 WHERE name LIKE 'Nacionales adaptables%'")
+        c.execute("INSERT INTO settings(key,value) VALUES('solo_linea_57',datetime('now'))")
     if not c.execute("SELECT 1 FROM settings WHERE key='edictos_on_56'").fetchone():
         c.execute("UPDATE sources SET active=1,priority=99,last_error=NULL WHERE kind='edictos' OR url LIKE 'https://www.sedeelectronica.lalinea.es/edictos/%'")
         c.execute("UPDATE sources SET active=1 WHERE name='Edictos · sede municipal indexada'")

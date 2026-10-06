@@ -22,7 +22,7 @@ _scan_lock = threading.Lock()
 # La Línea de la Concepción (la ciudad), no «la línea 1 del metro», «línea de alta velocidad», etc.
 _CITY = re.compile(r'(La\s+L[ií]nea\s+de\s+la\s+Concepci[oó]n|\blinens[ea]s?\b|\bLa\s+L[ií]nea\b)', re.I)
 _CITY_STRONG = re.compile(r'(l[ií]nea\s+de\s+la\s+concepci[oó]n|\blinens[ea]s?\b|\batunara\b|real\s+balompédica|\bbalona\b|'
-                          r'san\s+bernardo|santa\s+margarita|\bel\s+zabal\b|la\s+colonia|junquillos|campo\s+de\s+gibraltar)', re.I)
+                          r'san\s+bernardo|santa\s+margarita|\bel\s+zabal\b|junquillos)', re.I)
 _CONTEXT = re.compile(r'(gibraltar|c[aá]diz|algeciras|san\s+roque|frontera|verja|ayuntamiento|juan\s+franco|poniente|levante|'
                       r'alcaidesa|cruz\s+herrera|parque\s+princesa\s+sof[ií]a|feria|velada|campo\s+de\s+gibraltar)', re.I)
 _UNRELATED = re.compile(r'\bl[ií]neas?\s+(?:\d+|[a-z]\d*\b|de\s+metro|del\s+metro|ferroviaria|de\s+tren|de\s+alta|el[eé]ctrica|a[eé]rea|editorial|'
@@ -30,8 +30,23 @@ _UNRELATED = re.compile(r'\bl[ií]neas?\s+(?:\d+|[a-z]\d*\b|de\s+metro|del\s+met
                         r'de\s+flotaci[oó]n|del\s+horizonte|de\s+producci[oó]n|de\s+negocio|de\s+investigaci[oó]n|de\s+trabajo|'
                         r'argumental|sucesoria|de\s+banda|de\s+cercan[ií]as|de\s+costa|blanca|caliente|directa|de\s+fondo)', re.I)
 _LOCAL = _CITY
+# Otros municipios: no interesan salvo que la noticia sea de La Línea
+_OTHER_TOWNS = re.compile(r'\b(algeciras|san\s+roque|los\s+barrios|tarifa|jimena|castellar|c[aá]diz|jerez|chiclana|el\s+puerto\s+de\s+santa\s+mar[ií]a|'
+                          r'puerto\s+real|san\s+fernando|rota|chipiona|sanl[uú]car|barbate|vejer|conil|arcos|ubrique|grazalema|medina\s+sidonia|'
+                          r'paterna|bornos|villamart[ií]n|olvera|prado\s+del\s+rey|trebujena|benalup|alcal[aá]\s+de\s+los\s+gazules|estepona|marbella|'
+                          r'm[aá]laga|sevilla|ceuta|sotogrande|guadiaro|pueblo\s+nuevo|taraguilla|palmones|manilva|casares)\b', re.I)
+# Gibraltar solo si toca rellenos, obras, eventos, elecciones o la frontera
+_GIB = re.compile(r'\bgibraltar\b|\bpe[ñn][oó]n\b|\bllanit[oa]s?\b|gibraltare[ñn]', re.I)
+_GIB_TOPIC = re.compile(r'(relleno|ganad[oa]s?\s+al\s+mar|ganar\s+terreno|reclamation|reclaimed|\bobras?\b|construcci[oó]n|construction|\bworks\b|'
+                        r'proyecto|project|development|edificio|rascacielos|urbaniz|t[uú]nel|tunnel|aeropuerto|airport|carretera|'
+                        r'evento|festival|concierto|concert|feria|fiesta|d[ií]a\s+nacional|national\s+day|calentita|carnaval|carnival|'
+                        r'elecci[oó]n|elecciones|electoral|votaci[oó]n|election|vote|'
+                        r'frontera|verja|tratado|acuerdo|schengen|transfronteriz|frontier|border|treaty|colas)', re.I)
+_LA_LINEA_ENTITY = re.compile(r'l[ií]nea\s+de\s+la\s+concepci[oó]n|ayuntamiento\s+de\s+la\s+l[ií]nea|\blinens[ea]s?\b', re.I)
+_TOWN_HALL = re.compile(r'(ayuntamiento|alcald[ií]a|consistorio)\s+de\s+([a-záéíóúñ ]{3,40}?)(?=[.,:;\-–(]|$)', re.I)
 
-_MONTHS = {'ene': 1, 'feb': 2, 'mar': 3, 'abr': 4, 'may': 5, 'jun': 6, 'jul': 7, 'ago': 8, 'sep': 9, 'set': 9, 'oct': 10, 'nov': 11, 'dic': 12}
+_MONTHS = {'ene': 1, 'feb': 2, 'mar': 3, 'abr': 4, 'may': 5, 'jun': 6, 'jul': 7, 'ago': 8, 'sep': 9, 'set': 9, 'oct': 10, 'nov': 11, 'dic': 12,
+           'jan': 1, 'apr': 4, 'aug': 8, 'dec': 12}
 
 
 def parse_es_date(text, now=None):
@@ -42,7 +57,7 @@ def parse_es_date(text, now=None):
     if m:
         try: return datetime(int(m.group(3)), int(m.group(2)), int(m.group(1)), 9, tzinfo=timezone.utc).isoformat()
         except ValueError: pass
-    m = re.search(r'\b(\d{1,2})\s+(?:de\s+)?(ene|feb|mar|abr|may|jun|jul|ago|sep|set|oct|nov|dic)[a-z]*\.?(?:\s+(?:de\s+)?(\d{4}))?', t)
+    m = re.search(r'\b(\d{1,2})\s+(?:de\s+)?(ene|feb|mar|abr|may|jun|jul|ago|sep|set|oct|nov|dic|jan|apr|aug|dec)[a-z]*\.?(?:\s+(?:de\s+)?(\d{4}))?', t)
     if m:
         year = int(m.group(3) or now.year)
         try:
@@ -165,7 +180,7 @@ def parse_bop(source):
         for a in bsoup.select('a[href]'):
             title = clean(a.get_text(' ', strip=True))
             match = re.match(r'^(\d{2,3}\.\d{3})\s*\.?\s*-', title)
-            if not match or not exact_locality(title): continue
+            if not match or not tender_ok(title): continue
             doc = urljoin(link, a.get('href', ''))
             base, fragment = urldefrag(doc)
             permalink = base + '#' + (fragment + '&' if fragment else '') + 'anuncio=' + match.group(1).replace('.', '')
@@ -190,7 +205,7 @@ def parse_procurement(source):
         if cell is not None and str(cell.get('data-sort-value', '')).isdigit():
             published = datetime.fromtimestamp(int(cell['data-sort-value']), timezone.utc).isoformat()
         dates = [publication_datetime(parse_es_date(m.group(0))) for m in re.finditer(
-            r'\b\d{1,2}[/.-]\d{1,2}[/.-]\d{4}\b|\b\d{1,2}\s+(?:de\s+)?(?:ene|feb|mar|abr|may|jun|jul|ago|sep|oct|nov|dic)[a-z]*\.?\s+(?:de\s+)?\d{4}', text.lower())]
+            r'\b\d{1,2}[/.-]\d{1,2}[/.-]\d{4}\b|\b\d{1,2}\s+(?:de\s+)?(?:ene|feb|mar|abr|may|jun|jul|ago|sep|oct|nov|dic|jan|apr|aug|dec)[a-z]*\.?\s+(?:de\s+)?\d{4}', text.lower())]
         dates = [d for d in dates if d]
         if not published and dates:
             published = min(dates).isoformat()  # la fecha más antigua de la fila es la de publicación
@@ -216,7 +231,22 @@ def _dmy(value):
 _EXPIRED = re.compile(r'sesi[oó]n ha expirado|vuelva a iniciar sesi[oó]n|espere un momento por favor', re.I)
 
 
-def fetch_edictos_html(url):
+_sede = {'session': None, 'at': 0}
+
+
+def sede_get(url):
+    """GET en la sede electrónica con sesión (cookie) reutilizada; la renueva si caduca."""
+    if _sede['session'] is None or time.time() - _sede['at'] > 900:
+        fetch_edictos_html('https://www.sedeelectronica.lalinea.es/edictos/edicto/buscar-edictos-filtro-pub?primeraBusqueda=true', keep=True)
+    r = _sede['session'].get(url, timeout=30)
+    if not r.ok or _EXPIRED.search(r.text[:20000] if 'text' in (r.headers.get('content-type') or 'text') else ''):
+        fetch_edictos_html('https://www.sedeelectronica.lalinea.es/edictos/edicto/buscar-edictos-filtro-pub?primeraBusqueda=true', keep=True)
+        r = _sede['session'].get(url, timeout=30)
+    r.raise_for_status()
+    return r
+
+
+def fetch_edictos_html(url, keep=False):
     """La sede pide una sesión (cookie): se abre primero el tablón, se siguen sus redirecciones y luego se lee el listado."""
     s = requests.Session()
     s.headers.update({'User-Agent': UA, 'Accept-Language': 'es-ES,es;q=0.9',
@@ -229,6 +259,7 @@ def fetch_edictos_html(url):
         try:
             last = s.get(url, timeout=30, headers={'Referer': base})
             if last.ok and not _EXPIRED.search(last.text[:20000]):
+                if keep: _sede.update(session=s, at=time.time())
                 return last.text
         except requests.RequestException:
             if attempt == 2: raise
@@ -296,6 +327,31 @@ def exact_locality(text):
     if _UNRELATED.search(text):
         return False
     return bool(_CONTEXT.search(text))
+
+def gibraltar_topic(text):
+    """Gibraltar interesa solo con rellenos, obras, eventos, elecciones o frontera."""
+    t = re.sub(r'campo\s+de\s+gibraltar|estrecho\s+de\s+gibraltar|bah[ií]a\s+de\s+(algeciras|gibraltar)', ' ', text or '', flags=re.I)
+    return bool(_GIB.search(t) and _GIB_TOPIC.search(t))
+
+
+def place_ok(text, extra=''):
+    """¿Interesa a InfoLinense? Solo La Línea; de Gibraltar, lo que afecta (rellenos, obras, eventos, elecciones, frontera)."""
+    text = text or ''
+    if exact_locality(text):
+        return True
+    return gibraltar_topic(text + ' ' + (extra or ''))
+
+
+def tender_ok(title, excerpt=''):
+    """Edicto o licitación: tiene que ser de La Línea, no de otro ayuntamiento."""
+    head = (title or '') + ' ' + (excerpt or '')[:300]
+    if not _LA_LINEA_ENTITY.search(head):
+        return False
+    for m in _TOWN_HALL.finditer(title or ''):  # «Ayuntamiento de Algeciras…» en el titular
+        if not re.search(r'la\s+l[ií]nea', m.group(2), re.I):
+            return False
+    return True
+
 
 def publication_datetime(value):
     if not value: return None
@@ -488,7 +544,13 @@ def add_candidate(title, url, excerpt, source_name, source_id=None, published_at
     tender = source_meta.get('kind') in ('procurement', 'bop', 'edictos') or bool(re.search(r'licitaci|adjudica|edicto|contrataci', title, re.I))
     window = WINDOW_DAYS['Licitaciones y edictos'] if tender else None
     if not title or not url or not recent_enough(published_at, window): return None
-    if not exact_locality(title + ' ' + excerpt + ' ' + local_angle) and not source_meta.get('local_scope'): return None
+    if not source_meta.get('local_scope'):
+        if tender:
+            if not tender_ok(title, excerpt): return None  # edictos y licitaciones de otros ayuntamientos, fuera
+        elif not place_ok(title + ' ' + excerpt, source_name):
+            return None
+    if _OTHER_TOWNS.search(title) and not exact_locality(title) and not gibraltar_topic(title):
+        return None  # titular de otro municipio (Algeciras, San Roque…)
     if url and (db.row('SELECT 1 FROM candidates WHERE url=?', (url,)) or db.row('SELECT 1 FROM candidate_links WHERE url=?', (url,))):
         return None
     if similar_to_published(title): return None
@@ -593,12 +655,29 @@ def scan_all():
                         db.exec_('UPDATE candidates SET scope=? WHERE id=?', (scope[:20], cid))
             except Exception as exc: errors.append('Descubrimiento web IA: ' + str(exc)[:250])
         merged = merge_duplicates()
+        archive_off_topic()
         added = [a for a in added if (db.row('SELECT status FROM candidates WHERE id=?', (a,)) or {}).get('status') != 'merged']
         archived = archive_stale()
         db.log('scan', f'Escaneo: {len(added)} nuevas; {merged} unidas por repetidas; {archived} antiguas retiradas; {len(errors)} errores')
         return {'added': added, 'errors': errors, 'sources_checked': len(active), 'busy': False}
     finally:
         _scan_lock.release()
+
+def archive_off_topic():
+    """Retira del radar lo que no es de La Línea (ni de Gibraltar con interés) y nadie ha marcado."""
+    n = 0
+    for r in db.rows("""SELECT c.id,c.title,c.excerpt,c.source_name,s.local_scope FROM candidates c LEFT JOIN sources s ON s.id=c.source_id
+                        WHERE c.status IN ('new','researched','needs_config') AND c.editorial_priority IN ('undecided','')
+                        AND c.social_type IS NULL"""):
+        title, excerpt = r['title'] or '', r['excerpt'] or ''
+        tender = bool(_TENDER.search(title))
+        bad = (_OTHER_TOWNS.search(title) and not exact_locality(title) and not gibraltar_topic(title))
+        if not r.get('local_scope'):
+            bad = bad or (not tender_ok(title, excerpt) if tender else not place_ok(title + ' ' + excerpt, r.get('source_name')))
+        if bad:
+            db.exec_("UPDATE candidates SET status='archived',reason='Fuera de La Línea' WHERE id=?", (r['id'],)); n += 1
+    return n
+
 
 def archive_stale():
     """Retira del radar lo que ya no es actual y nadie ha marcado como útil."""
@@ -624,12 +703,27 @@ def fetch_article_text(url):
         if 'news.google.com' in (url or ''):
             from .photos import resolve_google_news
             url = resolve_google_news(url)  # Google News solo es un enlace intermedio: se lee la noticia original
-        r = fetch(url, timeout=30); r.raise_for_status()
+        base_url, fragment = urldefrag(url or '')
+        if 'sedeelectronica.lalinea.es' in base_url:
+            r = sede_get(base_url)  # la sede exige sesión también para ver cada edicto
+        else:
+            r = fetch(base_url, timeout=30); r.raise_for_status()
         if 'pdf' in (r.headers.get('content-type') or '').lower() or r.content[:4] == b'%PDF':
             from io import BytesIO
             from pypdf import PdfReader
             reader = PdfReader(BytesIO(r.content))
-            return clean(' '.join((page.extract_text() or '') for page in reader.pages[:8]))[:18000]
+            # Boletín (BOP): solo las páginas del anuncio, no todo el boletín
+            page = re.search(r'page=(\d+)', fragment or '')
+            start = max(0, int(page.group(1)) - (1 if int(page.group(1)) > 0 else 0)) if page else 0
+            text = clean(' '.join((pg.extract_text() or '') for pg in reader.pages[start:start + 4]))
+            num = re.search(r'anuncio=(\d{5,6})', fragment or '')
+            if num:
+                code = num.group(1)[:-3] + '.' + num.group(1)[-3:]
+                at = text.find(code)
+                if at >= 0:
+                    nxt = re.search(r'\b\d{2,3}\.\d{3}\s*\.?\s*-', text[at + len(code):])
+                    text = text[at:at + len(code) + (nxt.start() if nxt else 8000)]
+            return text[:18000]
         soup = BeautifulSoup(r.text, 'html.parser')
         for node in soup(['script', 'style', 'nav', 'footer', 'header', 'aside', 'form', 'figure', 'noscript']): node.decompose()
         # El bloque con más párrafos largos es el cuerpo de la noticia.

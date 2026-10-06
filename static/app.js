@@ -185,13 +185,27 @@ async function publishView(v) {
       <div class="meta">${secBadge(r.section)}<span class="st st-${r.status}">${STATUS[r.status]}</span><span>${r.canva_exported ? 'Imagen lista' : r.has_photo ? 'Con foto' : 'Sin foto'}</span></div>
       <h3><a href="#editor/${r.id}">${esc(r.headline)}</a></h3>
       ${r.status === 'published' ? `<div class="row wrap">${r.publish_url ? `<a class="net ok" href="${safeUrl(r.publish_url)}" target="_blank" rel="noopener">Web ✓</a>` : ''}${netStatus(r)}${r.canva_exported ? `<button class="net" onclick="shareFb(${r.id},this)">Compartir en Facebook</button>` : ''}</div>` :
-        `<div class="row wrap"><input type="datetime-local" value="${esc(String(r.planned_at || '').slice(0, 16))}" onchange="setTime(${r.candidate_id},'${r.editorial_priority || 'today'}',this.value)">
-         <button class="btn small primary" onclick="publishNow(${r.id},this)">Publicar</button>${r.canva_exported ? `<button class="btn small" onclick="shareFb(${r.id},this)">Compartir en Facebook</button>` : ''}</div>`}</div></article>`;
+        r.scheduled_at ? `<div class="sched"><b>⏰ Se publica sola ${esc(whenText(r.scheduled_at))}</b> · ${schedNets(r)}</div>
+         <div class="row wrap"><button class="btn small" onclick="publishNow(${r.id},this)">Publicar ahora</button><button class="link" onclick="unschedule(${r.id})">Cancelar programación</button></div>` :
+        `${r.schedule_error ? `<p class="error small">No se pudo publicar a su hora: ${esc(r.schedule_error)}</p>` : ''}<div class="row wrap"><input type="datetime-local" id="when-${r.id}" value="${esc(defaultWhen(r.planned_at))}">
+         <button class="btn small primary" onclick="scheduleNow(${r.id},this)">Programar</button><button class="btn small" onclick="publishNow(${r.id},this)">Publicar ahora</button>${r.canva_exported ? `<button class="btn small" onclick="shareFb(${r.id},this)">Compartir en Facebook</button>` : ''}</div>`}</div></article>`;
   const todayRows = rows.filter(isTodayRow), later = rows.filter(r => !isTodayRow(r));
   v.innerHTML = rows.length ? `${picker}<h2 class="day">Hoy</h2><div class="list">${todayRows.map(row).join('') || '<p class="muted">Nada para hoy.</p>'}</div>
     ${later.length ? `<h2 class="day">Próximos días</h2><div class="list">${later.map(row).join('')}</div>` : ''}`
     : `<p class="empty">Aún no hay noticias revisadas.</p>${nextPhase('Ir a Revisar', 'review')}`;
 }
+// Programar: la noticia se publica sola a esa hora (web + redes marcadas). Facebook personal se comparte a mano.
+function madridNow() { return new Date().toLocaleString('sv-SE', { timeZone: 'Europe/Madrid' }).replace(' ', 'T').slice(0, 16) }
+function defaultWhen(planned) { const p = String(planned || '').slice(0, 16); const now = madridNow(); return p && p > now ? p : now.slice(0, 11) + String(Math.min(23, +now.slice(11, 13) + 1)).padStart(2, '0') + ':00' }
+function whenText(iso) { const d = String(iso).slice(0, 10), t = String(iso).slice(11, 16); const today = madridNow().slice(0, 10); const tomorrow = new Date(Date.now() + 864e5).toLocaleDateString('sv-SE', { timeZone: 'Europe/Madrid' }); return (d === today ? 'hoy' : d === tomorrow ? 'mañana' : 'el ' + d.slice(8, 10) + '/' + d.slice(5, 7)) + ' a las ' + t }
+function schedNets(r) { let n = []; try { n = JSON.parse(r.scheduled_networks || '[]') } catch (e) { } return ['Web', ...n.map(x => NET_NAMES[x])].join(' + ') }
+window.scheduleNow = async (id, b) => {
+  const at = ($('#when-' + id) || {}).value; if (!at) return toast('Elige día y hora');
+  b.disabled = true; b.textContent = 'Programando…';
+  try { const r = await api(`/api/articles/${id}/schedule`, { method: 'POST', body: JSON.stringify({ at, networks: pickedNets() || [] }) }); toast('Programada: se publicará sola ' + whenText(r.scheduled_at)); render(); counts() }
+  catch (e) { toast(e.message); b.disabled = false; b.textContent = 'Programar' }
+};
+window.unschedule = async id => { try { await api(`/api/articles/${id}/unschedule`, { method: 'POST' }); toast('Programación cancelada'); render() } catch (e) { toast(e.message) } };
 window.setTime = async (id, p, value) => { if (!value) return; try { await api(`/api/candidates/${id}/triage`, { method: 'POST', body: JSON.stringify({ priority: p, planned_at: value + ':00' }) }); toast('Hora fijada'); render() } catch (e) { toast(e.message) } };
 function pickedNets() { const boxes = document.querySelectorAll('.netpick input'); if (boxes.length) return [...boxes].filter(i => i.checked).map(i => i.value); let saved = null; try { saved = JSON.parse(localStorage.getItem('nets') || 'null') } catch (e) { } return saved }
 function publishReport(r) { const lines = (r.results || []).filter(x => x.message).map(x => (x.ok ? '✓ ' : '✗ ') + x.message); toast(lines.join(' · ') || (r.published ? 'Publicada' : r.message || 'Aprobada')) }

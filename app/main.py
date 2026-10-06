@@ -13,7 +13,7 @@ from . import db, sources, pipeline, publishers, photos, canva, ai, planner, lay
 from .auth import login, require_auth
 from .config import BASE_DIR, RENDER_DIR, UPLOAD_DIR, SCAN_INTERVAL_MINUTES, AUTO_PIPELINE, OPENAI_API_KEY, ADMIN_PASSWORD, JWT_SECRET, PUBLISH_MODE, CORS_ORIGINS, PUBLIC_BASE_URL, AUTO_PUBLISH
 
-VERSION='5.6.1'
+VERSION='5.7.0'
 app=FastAPI(title='InfoLinense Desk',version=VERSION)
 app.add_middleware(CORSMiddleware,allow_origins=CORS_ORIGINS,allow_credentials=False,allow_methods=['*'],allow_headers=['Authorization','Content-Type'])
 db.init_db()
@@ -21,6 +21,7 @@ social_publish.init_tables()
 
 class LoginIn(BaseModel): password:str
 class PublishIn(BaseModel): networks:list[str]|None=None
+class ScheduleIn(BaseModel): at:str; networks:list[str]|None=None
 class PageIn(BaseModel): page_id:str
 class TokenIn(BaseModel): token:str
 class SourceIn(BaseModel):
@@ -263,7 +264,7 @@ def mark_ready(aid:int):
 @app.get('/api/to-publish',dependencies=[Depends(require_auth)])
 def to_publish():
     rows=db.rows("""SELECT a.id,a.headline,a.section,a.status,a.image_local,a.publish_url,c.planned_at,c.editorial_priority,c.id candidate_id,
-                      d.exported canva_exported FROM articles a LEFT JOIN candidates c ON c.id=a.candidate_id
+                      a.scheduled_at,a.scheduled_networks,a.schedule_error,d.exported canva_exported FROM articles a LEFT JOIN candidates c ON c.id=a.candidate_id
                       LEFT JOIN canva_designs d ON d.article_id=a.id
                       WHERE a.status IN ('review_ready','approved') OR (a.status='published' AND a.updated_at>=date('now'))""")
     for r in rows: r['has_photo']=bool(r.pop('image_local',None))
@@ -649,12 +650,17 @@ def research_more(aid:int):
     db.exec_('DELETE FROM articles WHERE id=?',(aid,)); db.exec_("UPDATE candidates SET status='new' WHERE id=?",(a['candidate_id'],))
     new_aid=pipeline.process_candidate(a['candidate_id'],force_research=True)
     return db.row('SELECT * FROM articles WHERE id=?',(new_aid,))
-@app.post('/api/articles/{aid}/publish',dependencies=[Depends(require_auth)])
-def publish(aid:int,body:PublishIn|None=None):
-    """«Publicar»: aprueba la noticia y la publica en la web y en las redes elegidas (solo al pulsar el botón)."""
+def _ready_to_publish(a,nets):
+    if not (a.get('headline') or '').strip() or not (a.get('body') or '').strip(): raise HTTPException(400,'Falta el titular o el texto')
+    if not a.get('image_local') or not Path(a['image_local']).is_file(): raise HTTPException(400,'Elige una foto antes de publicar')
+    if nets:
+        try: social_publish.article_images(a)
+        except social_publish.SocialError as e: raise HTTPException(400,str(e))
+
+def do_publish(aid,nets):
+    """Publica en la web y en las redes indicadas. Lo usan el botón «Publicar» y la publicación programada."""
     a=db.row('SELECT a.*,c.url source_url,c.source_name,c.outlet FROM articles a LEFT JOIN candidates c ON c.id=a.candidate_id WHERE a.id=?',(aid,))
     if not a: raise HTTPException(404)
-    nets=social_publish.connected_networks() if body is None or body.networks is None else [n for n in body.networks if n in social_publish.NETWORKS]
     results=[]
     web={'network':'web','ok':a['status']=='published','url':a.get('publish_url') or ''}
     if a['status']!='published':
@@ -679,8 +685,69 @@ def publish(aid:int,body:PublishIn|None=None):
         db.exec_("UPDATE articles SET status='published',updated_at=CURRENT_TIMESTAMP WHERE id=?",(aid,))
         db.exec_("UPDATE candidates SET status='published' WHERE id=?",(a['candidate_id'],))
     published=any(r['ok'] for r in results)
+    if published: db.exec_("UPDATE articles SET scheduled_at=NULL,schedule_error=NULL WHERE id=?",(aid,))
     summary='; '.join(r.get('message') or '' for r in results if r.get('message'))
     return {'ok':True,'published':published,'url':web.get('url') or '','results':results,'message':summary or 'Aprobada'}
+
+@app.post('/api/articles/{aid}/publish',dependencies=[Depends(require_auth)])
+def publish(aid:int,body:PublishIn|None=None):
+    """«Publicar ahora»: publica en la web y en las redes elegidas (solo al pulsar el botón)."""
+    nets=social_publish.connected_networks() if body is None or body.networks is None else [n for n in body.networks if n in social_publish.NETWORKS]
+    return do_publish(aid,nets)
+
+MADRID=ZoneInfo('Europe/Madrid')
+
+@app.post('/api/articles/{aid}/schedule',dependencies=[Depends(require_auth)])
+def schedule_article(aid:int,body:ScheduleIn):
+    """«Programar»: se publicará sola en la web y en las redes elegidas a la hora indicada (hora de España)."""
+    a=db.row('SELECT * FROM articles WHERE id=?',(aid,))
+    if not a: raise HTTPException(404)
+    if a['status']=='published': raise HTTPException(400,'Ya está publicada')
+    try:
+        when=datetime.fromisoformat(body.at.strip().replace('Z','+00:00'))
+    except ValueError: raise HTTPException(400,'Elige día y hora')
+    if when.tzinfo is None: when=when.replace(tzinfo=MADRID)
+    if when<datetime.now(timezone.utc)-timedelta(minutes=2): raise HTTPException(400,'Esa hora ya ha pasado: elige una hora futura o pulsa «Publicar ahora»')
+    nets=[n for n in (body.networks or []) if n in social_publish.NETWORKS]
+    _ready_to_publish(a,nets)
+    local=when.astimezone(MADRID).isoformat(timespec='minutes')
+    db.exec_("UPDATE articles SET status='approved',scheduled_at=?,scheduled_networks=?,schedule_error=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=?",
+             (local,json.dumps(nets),aid))
+    db.exec_("UPDATE candidates SET planned_at=?,plan_locked=1 WHERE id=?",(local,a['candidate_id']))
+    db.log('schedule',f'Noticia {aid} programada para {local}')
+    return {'ok':True,'scheduled_at':local,'networks':nets}
+
+@app.post('/api/articles/{aid}/unschedule',dependencies=[Depends(require_auth)])
+def unschedule_article(aid:int):
+    db.exec_("UPDATE articles SET scheduled_at=NULL,schedule_error=NULL WHERE id=?",(aid,)); return {'ok':True}
+
+def publish_due():
+    """Publica lo programado cuya hora ya ha llegado."""
+    now=datetime.now(timezone.utc); done=[]
+    for a in db.rows("SELECT id,scheduled_at,scheduled_networks FROM articles WHERE scheduled_at IS NOT NULL AND status!='published' AND status!='rejected'"):
+        try: when=datetime.fromisoformat(a['scheduled_at'])
+        except ValueError: continue
+        if when.tzinfo is None: when=when.replace(tzinfo=MADRID)
+        if when>now: continue
+        try: nets=[n for n in json.loads(a['scheduled_networks'] or '[]') if n in social_publish.NETWORKS]
+        except ValueError: nets=[]
+        try:
+            r=do_publish(a['id'],nets)
+            if not r['published']:
+                db.exec_("UPDATE articles SET scheduled_at=NULL,schedule_error=? WHERE id=?",(r['message'][:400],a['id']))
+            db.log('schedule',f"Noticia {a['id']} publicada a su hora: {r['message']}"[:400]); done.append(a['id'])
+        except HTTPException as e:
+            db.exec_("UPDATE articles SET scheduled_at=NULL,schedule_error=? WHERE id=?",(str(e.detail)[:400],a['id']))
+        except Exception as e:
+            db.exec_("UPDATE articles SET scheduled_at=NULL,schedule_error=? WHERE id=?",(('Error: '+str(e))[:400],a['id']))
+    return done
+
+def publish_loop():
+    time.sleep(20)
+    while True:
+        try: publish_due()
+        except Exception as e: db.log('schedule_error',str(e)[:250])
+        time.sleep(30)
 
 @app.post('/api/articles/{aid}/networks/{network}',dependencies=[Depends(require_auth)])
 def publish_network(aid:int,network:str):
@@ -887,5 +954,6 @@ def scheduler_loop():
 def startup():
     if os.getenv('DISABLE_SCHEDULER','false').lower() not in {'1','true','yes'}:
         threading.Thread(target=scheduler_loop,daemon=True).start()
+        threading.Thread(target=publish_loop,daemon=True).start()
         try: pipeline.queue_useful_pending()
         except Exception as e: db.log('auto_draft_error',str(e)[:250])

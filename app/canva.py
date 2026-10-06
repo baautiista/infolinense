@@ -218,12 +218,34 @@ def design_fields(article, strict=True):
         b = brands.settings(article.get('brand'))
         sec = brands.find_section(b['slug'], article.get('section')) or (article.get('section') or '').strip()
         label = sec
-        if b.get('free_title_section') and sec == b['free_title_section'] and (article.get('section_label') or '').strip():
-            label = article['section_label'].strip()  # «General» con título propio
+        if b.get('free_title_section') and sec == b['free_title_section']:
+            label = (article.get('section_label') or '').strip() or brands.holy_week_label()  # «General» con título propio
         return {'HEADLINE': headline, 'SUMMARY': summary, 'SECTION': label,
                 'page': _page_for(article), 'template': template_for(headline, article.get('brand'))}
     return {'HEADLINE': headline, 'SUMMARY': summary, 'SECTION': family[0], 'page': family[1],
             'template': template_for(headline)}
+
+
+# Tamaño de letra según la longitud: la plantilla puede tener, en el mismo sitio, cuadros con letra
+# más grande (…_L) y más pequeña (…_S). Se rellena el que corresponde y los demás se dejan en blanco.
+SIZE_RULES = {'HEADLINE': (40, 80), 'SECTION': (12, 18)}   # hasta N1 caracteres: grande; más de N2: pequeña
+BLANK = ' '
+
+
+def size_variants(schema, texts):
+    out = {}
+    for key, (big, small) in SIZE_RULES.items():
+        text = texts.get(key) or ''
+        has_l = schema.get(key + '_L', {}).get('type') == 'text'
+        has_s = schema.get(key + '_S', {}).get('type') == 'text'
+        if not (has_l or has_s) or not text:
+            continue
+        has_n = schema.get(key, {}).get('type') == 'text'
+        pick = key + '_L' if has_l and len(text) <= big else key + '_S' if has_s and len(text) > small else key if has_n else key + ('_S' if has_s else '_L')
+        for k in (key, key + '_L', key + '_S'):
+            if schema.get(k, {}).get('type') == 'text':
+                out[k] = {'type': 'text', 'text': text if k == pick else BLANK}
+    return out
 
 
 def _export_png(article, design_id, output_suffix=None, mark_main=True, page=None):
@@ -318,6 +340,7 @@ def create_design(article, store=True, title_suffix='', output_suffix=None, stri
     for opt in ('SECTION', 'SUMMARY'):  # plantillas sin sección o sin entradilla
         if schema.get(opt, {}).get('type') != 'text' or not texts[opt]:
             fields.pop(opt)
+    fields.update(size_variants(schema, texts))
     name = brand['name'] + ' · ' + (article.get('headline') or '')[:100]
     if title_suffix:
         name += ' · ' + str(title_suffix)[:40]

@@ -45,6 +45,16 @@ _KEYWORDS = {
 }
 
 
+_OLD_SECTIONS = [['HERMANDADES', 'SEMANA SANTA', 'CULTOS', 'GLORIAS', 'PATRIMONIO', 'AGENDA']]
+
+
+def holy_week_label(now=None):
+    """«Semana Santa 2027»: la próxima (después de mayo ya se habla de la del año siguiente)."""
+    from datetime import datetime
+    now = now or datetime.now()
+    return 'Semana Santa %s' % (now.year + 1 if now.month >= 5 else now.year)
+
+
 def valid(slug):
     return slug if slug in BRANDS else DEFAULT
 
@@ -82,6 +92,8 @@ def settings(slug):
         saved = json.loads(row['data']) if row else {}
     except Exception:
         saved = {}
+    if saved.get('sections') in _OLD_SECTIONS:  # secciones de prueba antiguas: se usan las nuevas
+        saved.pop('sections')
     for k in ('hashtags', 'sections', 'page', 'about', 'page_mode', 'carousel_page'):
         if saved.get(k) not in (None, '', []):
             base[k] = saved[k]

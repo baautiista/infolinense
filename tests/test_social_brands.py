@@ -64,6 +64,23 @@ class BrandTests(unittest.TestCase):
         self.assertEqual(brands.find_section('cofrade', 'Esperanza y Concepción (Silencio)'), 'Esperanza y Concepción')
         self.assertEqual(brands.find_section('cofrade', 'Misericordia y Amargura'), 'Misericordia y Amargura')
 
+    def test_text_size_variants(self):
+        schema = {k: {'type': 'text'} for k in ('HEADLINE', 'HEADLINE_L', 'HEADLINE_S', 'SECTION', 'SECTION_S')}
+        v = canva.size_variants(schema, {'HEADLINE': 'Corto', 'SECTION': 'Esperanza y Concepción'})
+        self.assertEqual((v['HEADLINE_L']['text'], v['HEADLINE']['text'], v['HEADLINE_S']['text']), ('Corto', ' ', ' '))
+        self.assertEqual((v['SECTION_S']['text'], v['SECTION']['text']), ('Esperanza y Concepción', ' '))
+        v = canva.size_variants(schema, {'HEADLINE': 'x' * 90, 'SECTION': 'Rocío'})
+        self.assertEqual(v['HEADLINE_S']['text'], 'x' * 90)
+        self.assertEqual(v['SECTION']['text'], 'Rocío')
+        self.assertEqual(canva.size_variants({'HEADLINE': {'type': 'text'}}, {'HEADLINE': 'x'}), {})  # plantilla sin variantes
+
+    def test_general_label_defaults_to_holy_week(self):
+        f = canva.design_fields({'brand': 'cofrade', 'headline': 'H', 'subtitle': '', 'section': 'General'})
+        self.assertTrue(f['SECTION'].startswith('Semana Santa 20'))
+        db.exec_("INSERT OR REPLACE INTO brand_settings(slug,data) VALUES('cofrade',?)",
+                 ('{"sections": ["HERMANDADES", "SEMANA SANTA", "CULTOS", "GLORIAS", "PATRIMONIO", "AGENDA"]}',))
+        self.assertEqual(brands.settings('cofrade')['sections'][0], 'Entrada Triunfal y Alegría')
+
     def test_accounts_are_separate_per_brand(self):
         with sp.use_brand('cofrade'):
             sp._save_account('instagram', {'access_token': 'C', 'username': 'elcofradelinense', 'expires_at': 9e12, 'obtained_at': 9e12})

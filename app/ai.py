@@ -497,8 +497,9 @@ def draft(candidate, source_text='', research='', quick=False):
         guide = ('si la noticia es de una hermandad concreta, su nombre tal cual; si trata de varias o de la Semana Santa en general, '
                  f"«{b.get('free_title_section') or 'General'}»; pregones, pregoneros, carteles, salidas extraordinarias o "
                  'aniversarios, «Ocasiones especiales»')
-    label_key = (f"section_label (solo si section es «{b['free_title_section']}»: título corto de 1 a 3 palabras para la etiqueta, "
-                 "p. ej. «Consejo de Hermandades», «Semana Santa», «Cuaresma»),\n") if other and b.get('free_title_section') else ''
+    label_key = (f"section_label (solo si section es «{b['free_title_section']}»: la etiqueta de la imagen es el nombre de la hermandad, "
+                 "banda u organización protagonista, corto y tal cual se conoce, p. ej. «Banda Santa Bárbara», «Consejo de Hermandades», "
+                 f"«Agrupación Parroquial…»; si no hay una protagonista clara, «{brands.holy_week_label()}»),\n") if other and b.get('free_title_section') else ''
     medium = (f"MEDIO: escribes para {b['name']}, {b['about']}. Mismo rigor y estilo que InfoLinense, con el vocabulario propio "
               f"de ese mundo (sin explicar lo que su público ya sabe).\n") if other else ''
     prompt = f'''{medium}Redacta la noticia siguiendo al pie de la letra la guía de estilo de InfoLinense.
@@ -547,7 +548,8 @@ photo_query (búsqueda de imágenes en internet de 3 a 6 palabras que describa l
         sec = src or brands.find_section(b['slug'], data.get('section'))  # página de la hermandad: su sección, siempre
         free = b.get('free_title_section') or ''
         data['section'] = sec or free or (b['sections'][0] if b['sections'] else 'Noticias')
-        data['section_label'] = str(data.get('section_label') or '').strip()[:40] if data['section'] == free else ''
+        label = str(data.get('section_label') or '').strip()[:40]
+        data['section_label'] = (label or brands.holy_week_label()) if data['section'] == free else ''
     else:
         data['section'] = layout.normalize_section(data.get('section'), data.get('headline', '') + ' ' + data.get('body', '')[:400])
     # La imagen usa exactamente el titular y la entradilla de la noticia (no textos aparte).

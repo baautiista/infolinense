@@ -119,17 +119,26 @@ $('#scanBtn').onclick = async () => {
     toast(r.busy ? 'Ya hay una búsqueda en marcha' : `${r.added.length + sr.added.length} nuevas`); render(); counts();
   } catch (e) { toast(e.message) } finally { b.disabled = false; b.textContent = 'Buscar' }
 };
-let queue = [];
+let queue = [], groups = BLOCKS;
+// Cofrade y Carnaval se ordenan por sus fuentes (cada hermandad, cada web…), no por los bloques de InfoLinense.
+const ownBrand = () => BRAND !== 'all' && BRAND !== 'infolinense';
 async function sortView(v) {
-  queue = await api('/api/sort-queue');
+  const [q, srcs] = await Promise.all([api('/api/sort-queue'), ownBrand() ? api('/api/sources').catch(() => []) : Promise.resolve([])]);
+  queue = q;
+  if (ownBrand()) {
+    const names = srcs.filter(x => (x.brand || 'infolinense') === BRAND && x.active).map(x => x.name);
+    queue.forEach(n => { n.group = names.includes(n.source_name) ? n.source_name : 'Otras fuentes' });
+    groups = [...names, 'Otras fuentes'];
+  } else groups = BLOCKS;
   drawSort(v);
 }
 function drawSort(v = $('#view')) {
   const count = g => queue.filter(n => n.group === g).length;
-  if (!block || !count(block)) block = BLOCKS.find(count) || BLOCKS[0];
+  if (!block || !groups.includes(block) || !count(block)) block = groups.find(count) || groups[0];
   const items = queue.filter(n => n.group === block);
   const n = items[0];
-  v.innerHTML = `<div class="chips scroll blocks">${BLOCKS.map(g => `<button class="chip ${g === block ? 'on' : ''}" data-g="${esc(g)}" ${count(g) ? '' : 'disabled'}>${esc(g)} <b>${count(g)}</b></button>`).join('')}</div>
+  const shown = ownBrand() ? [...groups.filter(count), ...groups.filter(g => !count(g))] : groups;  // primero las que tienen noticias
+  v.innerHTML = `<div class="chips scroll blocks">${shown.map(g => `<button class="chip ${g === block ? 'on' : ''}" data-g="${esc(g)}" ${count(g) ? '' : 'disabled'}>${esc(g)} <b>${count(g)}</b></button>`).join('')}</div>
     ${n ? `<p class="progress">${esc(block)}: quedan ${items.length}</p>${focusCard(n)}
       ${items.length > 1 ? `<details class="peek"><summary>Ver las ${items.length - 1} siguientes</summary>${items.slice(1, 15).map(x => `<p class="peeki">${esc(x.title)}</p>`).join('')}</details>` : ''}`
     : queue.length ? '' : `<p class="empty">Todo ordenado. Pulsa «Buscar» para traer noticias nuevas.</p>${nextPhase('Ir a Redacción', 'writing', 'Las noticias marcadas se están redactando solas.')}`}`;

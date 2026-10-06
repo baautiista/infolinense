@@ -328,8 +328,26 @@ def _tiktok(path, body):
         raise SocialError('TikTok no responde: %s' % str(exc)[:150])
     err = data.get('error') or {}
     if err.get('code') not in (None, '', 'ok'):
-        raise SocialError('TikTok: %s' % (err.get('message') or err.get('code'))[:300])
+        code = err.get('code')
+        raise SocialError('TikTok: %s' % (TIKTOK_ERRORS.get(code) or '%s (%s)' % (err.get('message') or '', code))[:400])
     return data.get('data') or {}
+
+
+# Errores de TikTok explicados en castellano
+TIKTOK_ERRORS = {
+    'unaudited_client_can_only_post_to_private_accounts':
+        'mientras TikTok no apruebe tu app, solo deja publicar si tu cuenta de TikTok es PRIVADA. '
+        'En la app de TikTok: Perfil → ☰ → Ajustes y privacidad → Privacidad → activa «Cuenta privada». '
+        'Cuando TikTok apruebe la app podrás volver a ponerla pública.',
+    'url_ownership_unverified': 'TikTok no tiene verificado el prefijo de las imágenes. En developers.tiktok.com → tu app → '
+                                'URL properties, verifica el prefijo que sale en Ajustes → Redes sociales (termina en /p/).',
+    'spam_risk_too_many_posts': 'TikTok ha limitado las publicaciones de hoy. Prueba más tarde.',
+    'spam_risk_user_banned_from_posting': 'TikTok ha bloqueado las publicaciones de esta cuenta por ahora.',
+    'privacy_level_option_mismatch': 'la privacidad elegida no está permitida para tu cuenta. Vuelve a intentarlo.',
+    'reached_active_user_cap': 'la app ha llegado al límite de usuarios diarios de TikTok. Prueba mañana.',
+    'scope_not_authorized': 'falta el permiso video.publish. Actívalo en la app de TikTok y pulsa «Volver a conectar».',
+    'access_token_invalid': 'la conexión ha caducado. Pulsa «Volver a conectar» en Ajustes → Redes sociales.',
+}
 
 
 # ---------- imágenes públicas para las redes ----------

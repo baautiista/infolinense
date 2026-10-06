@@ -190,7 +190,7 @@ def _is_default(article):
 def _page_for(article):
     if not _is_default(article):  # otros medios: página de su sección o la indicada en Ajustes → Medios
         from . import brands
-        return brands.section_page(article.get('brand'), article.get('section'), bool(article.get('_carousel')))
+        return brands.section_page(article.get('brand'), article.get('section'), bool(article.get('_carousel')), article.get('headline') or '')
     return layout.family_for(article.get('section'), article.get('headline'))[1]
 
 
@@ -216,7 +216,8 @@ def design_fields(article, strict=True):
     if not _is_default(article):
         from . import brands
         b = brands.settings(article.get('brand'))
-        sec = brands.find_section(b['slug'], article.get('section')) or (article.get('section') or '').strip()
+        sec = brands.find_section(b['slug'], article.get('section')) \
+            or brands.detect_section(b['slug'], article.get('headline') or '') or (article.get('section') or '').strip()
         label = sec
         if b.get('free_title_section') and sec == b['free_title_section']:
             label = (article.get('section_label') or '').strip() or brands.holy_week_label()  # «General» con título propio

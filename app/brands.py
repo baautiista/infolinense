@@ -203,13 +203,47 @@ def find_section(slug, value):
     return best
 
 
-def section_page(slug, section, carousel=False):
+# Cómo se nombra cada hermandad en la calle (para reconocerla en el titular o el texto)
+ALIASES = {
+    'Entrada Triunfal y Alegría': ['entrada triunfal', 'borriquita'],
+    'Flagelación y Estrella': ['flagelacion', 'virgen de la estrella'],
+    'Esperanza y Concepción': ['silencio', 'esperanza y concepcion'],
+    'Penas y Dolores': ['penas y dolores', 'senor de las penas', 'cristo de las penas'],
+    'Abandono y Mayor Dolor': ['abandono', 'mayor dolor'],
+    'Cautivo y Trinidad': ['cautivo', 'medinaceli', 'trinidad'],
+    'Oración y Amor': ['oracion en el huerto', 'oracion y amor', 'hermandad de la oracion', 'el huerto'],
+    'Gran Poder y Ángeles': ['gran poder', 'virgen de los angeles'],
+    'Almas y Angustias': ['hermandad de las almas', 'cristo de las almas', 'virgen de las angustias', 'las almas'],
+    'Perdón y Salud': ['cristo del perdon', 'san pedro', 'virgen de la salud'],
+    'Amor y Esperanza': ['amor y esperanza'],
+    'Misericordia y Amargura': ['amargura', 'misericordia'],
+    'Cristo del Mar y Luz': ['cristo del mar', 'virgen de la luz'],
+    'Santo Entierro y Soledad': ['santo entierro', 'virgen de la soledad'],
+    'Inmaculada Concepción': ['inmaculada'],
+    'Hermandad del Rocío': ['rocio'],
+}
+
+
+def detect_section(slug, text):
+    """Hermandad que protagoniza un titular o texto («La Amargura saldrá…» → Misericordia y Amargura), o ''."""
+    if valid(slug) != 'cofrade':
+        return ''
+    t = ' %s ' % _norm(text)
+    hits = []
+    for sec, names in ALIASES.items():
+        pos = [t.find(' %s ' % n) for n in names if ' %s ' % n in t]
+        if pos:
+            hits.append((min(pos), sec))
+    return sorted(hits)[0][1] if hits else ''  # la que se nombra antes
+
+
+def section_page(slug, section, carousel=False, headline=''):
     """Página de la plantilla para una sección (modo «section») o la fija."""
     s = settings(slug)
     if carousel and s.get('carousel_page'):
         return int(s['carousel_page'])
     if s.get('page_mode') == 'section':
-        sec = find_section(slug, section)
+        sec = find_section(slug, section) or detect_section(slug, headline)
         if sec:
             return s['sections'].index(sec) + 1
         free = s.get('free_title_section')

@@ -74,6 +74,13 @@ class BrandTests(unittest.TestCase):
         self.assertEqual(v['SECTION']['text'], 'Rocío')
         self.assertEqual(canva.size_variants({'HEADLINE': {'type': 'text'}}, {'HEADLINE': 'x'}), {})  # plantilla sin variantes
 
+    def test_hermandad_detected_from_headline(self):
+        f = canva.design_fields({'brand': 'cofrade', 'headline': 'La Amargura saldrá desde su casa hermandad en la Semana Santa de 2027',
+                                 'subtitle': '', 'section': 'SEMANA SANTA'})
+        self.assertEqual((f['SECTION'], f['page']), ('Misericordia y Amargura', 12))
+        self.assertEqual(brands.detect_section('cofrade', 'El Cautivo de Medinaceli estrena túnica'), 'Cautivo y Trinidad')
+        self.assertEqual(brands.detect_section('cofrade', 'La Banda Santa Bárbara graba su primer disco'), '')
+
     def test_general_label_defaults_to_holy_week(self):
         f = canva.design_fields({'brand': 'cofrade', 'headline': 'H', 'subtitle': '', 'section': 'General'})
         self.assertTrue(f['SECTION'].startswith('Semana Santa 20'))

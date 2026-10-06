@@ -545,8 +545,10 @@ photo_query (búsqueda de imágenes en internet de 3 a 6 palabras que describa l
             pass
     if other:
         src = brands.find_section(b['slug'], candidate.get('source_name') or '') or brands.find_section(b['slug'], candidate.get('outlet') or '')
-        sec = src or brands.find_section(b['slug'], data.get('section'))  # página de la hermandad: su sección, siempre
         free = b.get('free_title_section') or ''
+        sec = src or brands.find_section(b['slug'], data.get('section'))  # página de la hermandad: su sección, siempre
+        if not src and sec in ('', free):  # la IA no la reconoció: se busca la hermandad en el titular y el texto
+            sec = brands.detect_section(b['slug'], (data.get('headline') or '') + ' ' + (data.get('body') or '')[:600]) or sec
         data['section'] = sec or free or (b['sections'][0] if b['sections'] else 'Noticias')
         label = str(data.get('section_label') or '').strip()[:40]
         data['section_label'] = (label or brands.holy_week_label()) if data['section'] == free else ''

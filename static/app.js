@@ -124,10 +124,11 @@ function special(n) { const t = `${n.title} ${n.excerpt || ''} ${n.source_name |
 function focusCard(n) {
   const sp = special(n);
   return `<article class="focuscard" id="fc">
-    <div class="meta">${n.social_type ? `<span class="kind ${n.social_type}">${KIND[n.social_type] || ''}</span>` : ''}${sp ? `<span class="flag">${sp}</span>` : ''}<span class="src">${esc(n.outlet || n.source_name || host(n.url))}</span><span>${n.date_iso ? ago(n.date_iso) : 'fecha no indicada'}</span></div>
+    <div class="meta">${n.social_type ? `<span class="kind ${n.social_type}">${KIND[n.social_type] || ''}</span>` : ''}${sp ? `<span class="flag">${sp}</span>` : ''}<span class="src">${esc(n.outlet || n.source_name || host(n.url))}${(n.links || []).length ? ` +${n.links.length} ${n.links.length === 1 ? 'fuente' : 'fuentes'}` : ''}</span><span>${n.date_iso ? ago(n.date_iso) : 'fecha no indicada'}</span></div>
     <h2>${esc(n.title)}</h2>
     ${n.local_angle ? `<p class="angle">${esc(n.local_angle)}</p>` : n.excerpt && n.excerpt !== n.title ? `<p class="angle">${esc(n.excerpt.slice(0, 260))}</p>` : ''}
     <a class="link" href="${safeUrl(n.url)}" target="_blank" rel="noopener noreferrer">Ver la fuente</a>
+    ${(n.links || []).length ? `<p class="muted small">También la cuentan: ${n.links.map(l => `<a href="${safeUrl(l.url)}" target="_blank" rel="noopener noreferrer">${esc(l.outlet || l.source_name || host(l.url))}</a>`).join(' · ')}. Se combinan al redactar.</p>` : ''}
     <div class="decide">${PRIO.map(([k, t]) => `<button class="btn ${k === 'urgent' ? 'urgent' : k === 'today' ? 'primary' : ''}" onclick="decide(${n.id},'${k}')">${t}</button>`).join('')}
       <button class="btn no" onclick="decide(${n.id},'no_interest')">No interesa</button></div></article>`;
 }

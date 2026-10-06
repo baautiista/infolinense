@@ -3,6 +3,8 @@ import difflib
 import html
 import re
 import threading
+import time
+import unicodedata
 import xml.etree.ElementTree as ET
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, timezone
@@ -211,25 +213,75 @@ def _dmy(value):
     return datetime(int(m.group(3)), int(m.group(2)), int(m.group(1)), 9, 0, tzinfo=timezone.utc).isoformat()
 
 
+_EXPIRED = re.compile(r'sesi[oó]n ha expirado|vuelva a iniciar sesi[oó]n|espere un momento por favor', re.I)
+
+
+def fetch_edictos_html(url):
+    """La sede pide una sesión (cookie): se abre primero el tablón, se siguen sus redirecciones y luego se lee el listado."""
+    s = requests.Session()
+    s.headers.update({'User-Agent': UA, 'Accept-Language': 'es-ES,es;q=0.9',
+                      'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'})
+    parsed = urlparse(url)
+    root = '%s://%s/' % (parsed.scheme, parsed.netloc)
+    base = url.split('/edicto/')[0].rstrip('/') + '/' if '/edicto/' in url else root
+    last = None
+    for attempt in range(3):
+        try:
+            last = s.get(url, timeout=30, headers={'Referer': base})
+            if last.ok and not _EXPIRED.search(last.text[:20000]):
+                return last.text
+        except requests.RequestException:
+            if attempt == 2: raise
+        for warm in (root, base):  # conseguir la cookie de sesión como haría un navegador
+            try:
+                w = s.get(warm, timeout=30)
+                m = re.search(r"""(?:location(?:\.href)?\s*=\s*|location\.replace\(\s*|http-equiv=["']?refresh["']?[^>]*url=)["']?([^"'\s;>)]+)""", w.text, re.I)
+                if m:
+                    s.get(urljoin(w.url, html.unescape(m.group(1))), timeout=30, headers={'Referer': warm})
+            except requests.RequestException:
+                pass
+        time.sleep(1.5 * (attempt + 1))
+    if last is not None and _EXPIRED.search(last.text[:20000]):
+        raise ValueError('La sede electrónica no dejó leer el tablón (pide sesión). Se vuelve a intentar en el próximo escaneo; '
+                         'mientras tanto entran los edictos indexados por Google.')
+    if last is not None: last.raise_for_status()
+    return last.text if last is not None else ''
+
+
 def parse_edictos(source):
     """Tablón de edictos de la sede electrónica: tabla con fecha de publicación, fin, título y enlace."""
-    r = fetch(source['url'], timeout=30); r.raise_for_status()
-    soup = BeautifulSoup(r.text, 'html.parser')
-    out = []
+    page = fetch_edictos_html(source['url'])
+    soup = BeautifulSoup(page, 'html.parser')
+    out, seen = [], set()
+
+    def add(title, href, published):
+        href = re.sub(r';jsessionid=[^?#]+', '', href, flags=re.I)
+        url = urljoin(source['url'], href)
+        if not title or not published or url in seen: return
+        if not recent_enough(published, WINDOW_DAYS['Licitaciones y edictos']): return
+        seen.add(url)
+        out.append({'title': 'Edicto: ' + title[:240], 'url': url, 'excerpt': title, 'published_at': published})
+
     for row in soup.select('tr'):
         cells = row.find_all('td')
         if len(cells) < 3: continue
-        link = row.find('a', href=re.compile(r'codigo='))
+        link = row.find('a', href=re.compile(r'codigo=|edicto', re.I))
+        if not link: continue
         title = ''
         for c in cells:
             text = clean(c.get_text(' ', strip=True))
-            if len(text) > len(title) and not re.fullmatch(r'[\d/ :]+', text): title = text
-        published = _dmy(row.get_text(' ', strip=True))  # la primera fecha de la fila es la de publicación
-        if not title or not link or not published: continue
-        href = re.sub(r';jsessionid=[^?]+', '', link['href'])
-        if not recent_enough(published, WINDOW_DAYS['Licitaciones y edictos']): continue
-        out.append({'title': 'Edicto: ' + title[:240], 'url': urljoin(source['url'], href),
-                    'excerpt': title, 'published_at': published})
+            if len(text) > len(title) and not re.fullmatch(r'[\d/ :.-]+', text): title = text
+        add(title, link['href'], _dmy(row.get_text(' ', strip=True)))  # la primera fecha de la fila es la de publicación
+    if not out:  # formato sin tabla: bloques con enlace y fecha
+        for link in soup.find_all('a', href=re.compile(r'codigo=|ver-?edicto|detalle', re.I)):
+            block = link
+            for _ in range(4):
+                if block.parent is None or _dmy(block.get_text(' ', strip=True)): break
+                block = block.parent
+            title = clean(link.get_text(' ', strip=True))
+            if len(title) < 15:
+                title = clean(re.sub(r'\d{1,2}/\d{1,2}/\d{4}(\s+\d{1,2}:\d{2}(:\d{2})?)?', ' ', block.get_text(' ', strip=True)))
+            add(title, link['href'], _dmy(block.get_text(' ', strip=True)))
     return out
 
 
@@ -277,7 +329,8 @@ def heuristic_score(title, excerpt, source):
     return max(0, min(100, score))
 
 def is_duplicate(title, url):
-    if url and db.row('SELECT id FROM candidates WHERE url=?', (url,)): return True
+    if url and (db.row('SELECT id FROM candidates WHERE url=?', (url,)) or db.row('SELECT id FROM candidate_links WHERE url=?', (url,))): return True
+    if _TENDER.search(title or ''): return False  # edictos y licitaciones: cada documento es distinto aunque se parezcan
     normalized = re.sub(r'\W+', ' ', re.sub(r'\s+[-–|]\s+[^-–|]{3,35}$', '', title).lower()).strip()
     if len(normalized) < 28: return False
     for item in db.rows('SELECT title FROM candidates ORDER BY id DESC LIMIT 300'):
@@ -341,6 +394,93 @@ def similar_to_published(title):
     return False
 
 
+_STORY_STOP = set('''para como pero desde hasta sobre entre tras ante bajo contra durante mediante segun este esta estos estas
+ese esos esas aquel todo toda todos todas otro otra otros otras nuestro nueva nuevo nuevas nuevos donde cuando quien quienes cual
+cuales tambien muy mas menos han hay ser sido sera fue son estan tiene tienen hace hacen linea concepcion linense linenses
+ayuntamiento municipal ciudad vecinos edicto licitacion noticia hoy ayer manana tras'''.split())
+_TENDER = re.compile(r'licitaci|adjudica|edicto|contrataci', re.I)
+
+
+def _story_tokens(title):
+    t = re.sub(r'\s+[-–|]\s+[^-–|]{3,40}$', '', title or '')  # quita « - Europa Sur»
+    t = unicodedata.normalize('NFD', t.lower())
+    t = ''.join(c for c in t if unicodedata.category(c) != 'Mn')
+    out = set()
+    for w in re.findall(r'[a-z0-9ñ]+', t):
+        if w.isdigit():
+            if not re.fullmatch(r'20[12]\d', w): out.add(w)  # las cifras distinguen noticias; los años no
+        elif len(w) >= 4 and w not in _STORY_STOP:
+            out.add(w[:6])
+    return out
+
+
+def same_story(a, b):
+    """¿Dos titulares cuentan la misma noticia? (palabras clave en común, sin contar «La Línea», años, etc.)"""
+    ta, tb = _story_tokens(a), _story_tokens(b)
+    if min(len(ta), len(tb)) < 3: return False
+    shared = len(ta & tb)
+    if shared >= 3 and shared / min(len(ta), len(tb)) >= 0.6:
+        return True
+    norm = lambda t: ' '.join(sorted(_story_tokens(t)))
+    return difflib.SequenceMatcher(None, norm(a), norm(b)).ratio() >= 0.85
+
+
+def find_story(title, exclude=None, days=4):
+    """Noticia abierta del radar (últimos días) que cuenta lo mismo."""
+    if _TENDER.search(title or ''): return None  # cada edicto o licitación es un documento distinto
+    since = (datetime.now(timezone.utc) - timedelta(days=days)).strftime('%Y-%m-%d %H:%M:%S')
+    for c in db.rows("""SELECT id,title FROM candidates WHERE status NOT IN ('archived','rejected','merged')
+                        AND created_at>=? ORDER BY id""", (since,)):
+        if c['id'] != exclude and not _TENDER.search(c['title'] or '') and same_story(title, c['title']):
+            return c['id']
+    return None
+
+
+def attach_link(cid, title, url, excerpt='', source_name='', outlet='', published_at=''):
+    """Añade otra fuente a una noticia ya existente."""
+    db.exec_('INSERT OR IGNORE INTO candidate_links(candidate_id,source_name,outlet,url,title,excerpt,published_at) VALUES(?,?,?,?,?,?,?)',
+             (cid, source_name, clean(outlet)[:120], url, clean(title)[:260], clean(excerpt)[:4000], published_at or ''))
+    n = db.row('SELECT COUNT(*) n FROM candidate_links WHERE candidate_id=?', (cid,))['n']
+    # varias fuentes cuentan lo mismo: es más relevante
+    db.exec_("""UPDATE candidates SET score=MIN(100,score+3),
+                relevance=CASE WHEN MIN(100,score+3)>=70 THEN 'high' WHEN MIN(100,score+3)>=50 THEN 'medium' ELSE relevance END
+                WHERE id=? AND ?<=5""", (cid, n))
+
+
+def links_for(ids):
+    if not ids: return {}
+    out = {}
+    q = 'SELECT * FROM candidate_links WHERE candidate_id IN (%s) ORDER BY id' % ','.join('?' * len(ids))
+    for r in db.rows(q, tuple(ids)):
+        out.setdefault(r['candidate_id'], []).append({'source_name': r['source_name'], 'outlet': r['outlet'], 'url': r['url'],
+                                                      'title': r['title'], 'published_at': r['published_at']})
+    return out
+
+
+def merge_duplicates(days=7):
+    """Une en una sola tarjeta las noticias del radar que son la misma historia contada por distintas fuentes."""
+    since = (datetime.now(timezone.utc) - timedelta(days=days)).strftime('%Y-%m-%d %H:%M:%S')
+    rows = db.rows("""SELECT c.*,(SELECT id FROM articles a WHERE a.candidate_id=c.id AND a.status!='rejected') article_id
+                      FROM candidates c WHERE c.status NOT IN ('archived','rejected','merged') AND c.created_at>=? ORDER BY c.id""", (since,))
+    rows = [r for r in rows if not _TENDER.search(r['title'] or '') and r.get('social_type') in (None, '')]
+    rank = lambda r: (1 if r.get('article_id') else 0, 1 if (r.get('editorial_priority') or 'undecided') not in ('undecided', '') else 0, -r['id'])
+    gone, merged = set(), 0
+    for i, a in enumerate(rows):
+        if a['id'] in gone: continue
+        for b in rows[i + 1:]:
+            if b['id'] in gone or not same_story(a['title'], b['title']): continue
+            keep, drop = (a, b) if rank(a) >= rank(b) else (b, a)
+            if drop.get('article_id') or drop['status'] not in ('new', 'needs_config', 'researched'):
+                continue  # algo ya en redacción no se toca
+            attach_link(keep['id'], drop['title'], drop['url'], drop.get('excerpt') or '', drop.get('source_name') or '',
+                        drop.get('outlet') or '', drop.get('published_at') or '')
+            db.exec_('UPDATE candidate_links SET candidate_id=? WHERE candidate_id=?', (keep['id'], drop['id']))
+            db.exec_("UPDATE candidates SET status='merged',merged_into=? WHERE id=?", (keep['id'], drop['id']))
+            gone.add(drop['id']); merged += 1
+            if drop is a: break
+    return merged
+
+
 def add_candidate(title, url, excerpt, source_name, source_id=None, published_at='', source_meta=None, local_angle='', outlet='', image=''):
     source_meta = source_meta or {'priority': 60, 'official': 0, 'local_scope': 0}
     title, excerpt = clean(title)[:260], clean(excerpt)[:4000]
@@ -349,7 +489,14 @@ def add_candidate(title, url, excerpt, source_name, source_id=None, published_at
     window = WINDOW_DAYS['Licitaciones y edictos'] if tender else None
     if not title or not url or not recent_enough(published_at, window): return None
     if not exact_locality(title + ' ' + excerpt + ' ' + local_angle) and not source_meta.get('local_scope'): return None
-    if is_duplicate(title, url) or similar_to_published(title): return None
+    if url and (db.row('SELECT 1 FROM candidates WHERE url=?', (url,)) or db.row('SELECT 1 FROM candidate_links WHERE url=?', (url,))):
+        return None
+    if similar_to_published(title): return None
+    same = None if tender else find_story(title)
+    if same:  # la misma noticia desde otra fuente: se une a la que ya hay
+        attach_link(same, title, url, excerpt, source_name, outlet, published_at)
+        return None
+    if is_duplicate(title, url): return None
     score = heuristic_score(title, excerpt + ' ' + local_angle, source_meta)
     if tender:
         score = min(100, score + 30)  # licitaciones y edictos, prioridad alta
@@ -406,7 +553,8 @@ def scan_all():
                 source = jobs[job]
                 try:
                     items = job.result(); count = 0
-                    items = [i for i in items if not db.row('SELECT 1 FROM candidates WHERE url=?', (i['url'],))]
+                    items = [i for i in items if not db.row('SELECT 1 FROM candidates WHERE url=?', (i['url'],))
+                             and not db.row('SELECT 1 FROM candidate_links WHERE url=?', (i['url'],))]
                     # Solo noticias actuales: si la lista no trae fecha, se lee de la propia página.
                     undated = [i for i in items if not i.get('published_at') and source['kind'] not in ('procurement', 'edictos')][:40]
                     if undated:
@@ -444,8 +592,10 @@ def scan_all():
                         scope = str(item.get('scope') or '').lower()
                         db.exec_('UPDATE candidates SET scope=? WHERE id=?', (scope[:20], cid))
             except Exception as exc: errors.append('Descubrimiento web IA: ' + str(exc)[:250])
+        merged = merge_duplicates()
+        added = [a for a in added if (db.row('SELECT status FROM candidates WHERE id=?', (a,)) or {}).get('status') != 'merged']
         archived = archive_stale()
-        db.log('scan', f'Escaneo: {len(added)} nuevas; {archived} antiguas retiradas; {len(errors)} errores')
+        db.log('scan', f'Escaneo: {len(added)} nuevas; {merged} unidas por repetidas; {archived} antiguas retiradas; {len(errors)} errores')
         return {'added': added, 'errors': errors, 'sources_checked': len(active), 'busy': False}
     finally:
         _scan_lock.release()

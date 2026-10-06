@@ -29,6 +29,10 @@ def investigate_candidate(cid):
     src_text = sources.fetch_article_text(c.get('url', ''))
     if len(src_text or '') < 300 and len(c.get('excerpt') or '') > len(src_text or ''):
         src_text = c.get('excerpt') or src_text  # si la página no se deja leer, al menos el resumen completo de la fuente
+    extra = sources.links_for([cid]).get(cid, [])[:3]  # la misma noticia en otras fuentes: se combinan
+    for link in extra:
+        other = sources.fetch_article_text(link['url']) or link.get('title') or ''
+        src_text = (src_text or '') + '\n\n--- OTRA FUENTE: %s (%s) ---\n%s' % (link.get('outlet') or link.get('source_name') or '', link['url'], other[:6000])
     try:
         research_data = ai.research(c, src_text)
     except ai.AIProviderError as e:
@@ -36,6 +40,9 @@ def investigate_candidate(cid):
         research_data = ai._source_research(c, src_text)
         research_data['caveats'].append('No se pudo completar la investigación con IA: ' + str(e)[:250])
         research_data['ai_error'] = e.as_dict()
+    known = {x.get('url') for x in research_data.get('sources') or []}
+    research_data.setdefault('sources', []).extend({'name': l.get('outlet') or l.get('source_name') or 'Otra fuente', 'url': l['url']}
+                                                   for l in extra if l['url'] not in known)
     db.exec_("UPDATE candidates SET status='researched',raw_text=?,research_json=? WHERE id=?",
              (src_text, json.dumps(research_data, ensure_ascii=False), cid))
     db.log('investigation', f'Candidata {cid} investigada; pendiente de redacción')

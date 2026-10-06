@@ -92,7 +92,8 @@ def init_db():
         'outlet':'TEXT',
         'scope':'TEXT',
         'social_type':'TEXT',
-        'image_hint':'TEXT'
+        'image_hint':'TEXT',
+        'merged_into':'INTEGER'
     }.items():
         if name not in existing_candidates: c.execute(f'ALTER TABLE candidates ADD COLUMN {name} {ddl}')
     existing_articles={r[1] for r in c.execute('PRAGMA table_info(articles)')}
@@ -155,6 +156,16 @@ def init_db():
     c.execute("UPDATE sources SET local_scope=1 WHERE url='https://lalinea.es/feed/'")
     c.execute("UPDATE sources SET local_scope=1,kind='edictos',priority=99 WHERE url LIKE 'https://www.sedeelectronica.lalinea.es/edictos/%'")
     c.execute("UPDATE sources SET priority=97 WHERE kind='procurement'")
+    # Otras fuentes de la misma noticia (se unen en una sola tarjeta)
+    c.execute('''CREATE TABLE IF NOT EXISTS candidate_links(id INTEGER PRIMARY KEY AUTOINCREMENT, candidate_id INTEGER NOT NULL,
+                 source_name TEXT, outlet TEXT, url TEXT UNIQUE, title TEXT, excerpt TEXT, published_at TEXT,
+                 created_at TEXT DEFAULT CURRENT_TIMESTAMP)''')
+    c.execute('CREATE INDEX IF NOT EXISTS idx_links_cand ON candidate_links(candidate_id)')
+    # El tablón de edictos es fuente prioritaria: se reactiva una vez (5.6)
+    if not c.execute("SELECT 1 FROM settings WHERE key='edictos_on_56'").fetchone():
+        c.execute("UPDATE sources SET active=1,priority=99,last_error=NULL WHERE kind='edictos' OR url LIKE 'https://www.sedeelectronica.lalinea.es/edictos/%'")
+        c.execute("UPDATE sources SET active=1 WHERE name='Edictos · sede municipal indexada'")
+        c.execute("INSERT INTO settings(key,value) VALUES('edictos_on_56',datetime('now'))")
     # Las búsquedas indexadas de Facebook/Instagram pasan al panel Redes (allí se filtran ventas y publicidad).
     c.execute("UPDATE sources SET active=0 WHERE name IN ('Facebook · publicaciones indexadas','Instagram · publicaciones indexadas','Instagram · Turismo local')")
     # Empezar de cero (una sola vez, versión 3.5): se archiva todo lo pendiente; lo publicado se conserva.

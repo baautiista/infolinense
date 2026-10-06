@@ -374,10 +374,7 @@ class Sources(unittest.TestCase):
           <td><a href="/edictos/edicto/descarga.action;jsessionid=ABC?codigo=2026-179627">Ver</a></td></tr>
           <tr><td>01/01/2020</td><td>01/02/2020</td><td>Edicto antiguo</td><td><a href="/x?codigo=1">Ver</a></td></tr></table>'''
 
-        class R:
-            text = html
-            def raise_for_status(self): pass
-        with patch.object(sources, 'fetch', return_value=R()):
+        with patch.object(sources, 'fetch_edictos_html', return_value=html):
             items = sources.parse_edictos({'url': 'https://www.sedeelectronica.lalinea.es/edictos/edicto/buscar-edictos-filtro-pub'})
         self.assertEqual(len(items), 1)
         self.assertEqual(items[0]['url'], 'https://www.sedeelectronica.lalinea.es/edictos/edicto/descarga.action?codigo=2026-179627')

@@ -13,7 +13,7 @@ from . import db, sources, pipeline, publishers, photos, canva, ai, planner, lay
 from .auth import login, require_auth
 from .config import BASE_DIR, RENDER_DIR, UPLOAD_DIR, SCAN_INTERVAL_MINUTES, AUTO_PIPELINE, OPENAI_API_KEY, ADMIN_PASSWORD, JWT_SECRET, PUBLISH_MODE, CORS_ORIGINS, PUBLIC_BASE_URL, AUTO_PUBLISH
 
-VERSION='5.5.0'
+VERSION='5.6.0'
 app=FastAPI(title='InfoLinense Desk',version=VERSION)
 app.add_middleware(CORSMiddleware,allow_origins=CORS_ORIGINS,allow_credentials=False,allow_methods=['*'],allow_headers=['Authorization','Content-Type'])
 db.init_db()
@@ -207,6 +207,8 @@ def candidates(status:str='new'):
         days=sources.WINDOW_DAYS.get(r['group'],sources.MAX_CANDIDATE_AGE_DAYS)
         if not keep and d and d<now-timedelta(days=days): continue  # antigua: no se muestra
         out.append(r)
+    links=sources.links_for([r['id'] for r in out])
+    for r in out: r['links']=links.get(r['id'],[])
     order={g:i for i,g in enumerate(sources.BLOCKS)}
     out.sort(key=lambda r:r.get('date_iso') or '',reverse=True)  # lo más reciente primero
     out.sort(key=lambda r:order.get(r['group'],9))

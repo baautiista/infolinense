@@ -88,6 +88,7 @@ function go(target, fromHash) {
   const [v, id] = target.split('/');
   if (view !== 'editor' && v === 'editor') editorFrom = view === 'settings' ? 'review' : view;
   view = ['sort', 'writing', 'review', 'publish', 'settings', 'editor'].includes(v) ? v : 'sort';
+  document.body.classList.toggle('wide', view === 'review');
   editorId = view === 'editor' ? Number(id) : null;
   if (!fromHash) location.hash = currentHash();
   document.querySelectorAll('.tabs button').forEach(b => b.classList.toggle('on', b.dataset.view === (view === 'editor' ? editorFrom : view)));
@@ -184,14 +185,90 @@ async function writingView(v) {
 window.retry = async id => { try { await api(`/api/candidates/${id}/write?wait=0`, { method: 'POST' }); render() } catch (e) { toast(e.message) } };
 
 /* ---------- Fase 3: Revisar ---------- */
+// Planificación por días y franjas (mañana, tarde, noche). Se puede arrastrar, mover y eliminar.
 let reviewIds = [];
+const SLOTS = [['morning', 'Mañana', '☀️', '09:00'], ['afternoon', 'Tarde', '🌤️', '17:00'], ['night', 'Noche', '🌙', '21:00']];
+const madridDate = (d = new Date()) => d.toLocaleDateString('sv-SE', { timeZone: 'Europe/Madrid' });
+const addDays = (iso, n) => { const d = new Date(iso + 'T12:00:00Z'); d.setUTCDate(d.getUTCDate() + n); return d.toISOString().slice(0, 10) };
+function dayTitle(iso) {
+  const today = madridDate(), d = new Date(iso + 'T12:00:00Z');
+  const wd = d.toLocaleDateString('es-ES', { weekday: 'long', timeZone: 'UTC' }), dm = d.toLocaleDateString('es-ES', { day: 'numeric', month: 'long', timeZone: 'UTC' });
+  const rel = iso === today ? 'Hoy' : iso === addDays(today, 1) ? 'Mañana' : iso === addDays(today, -1) ? 'Ayer' : wd.charAt(0).toUpperCase() + wd.slice(1);
+  return [rel, (rel === 'Hoy' || rel === 'Mañana' || rel === 'Ayer' ? wd + ' ' : '') + dm];
+}
+function slotOf(planned) { const h = +String(planned || '').slice(11, 13); return !planned ? '' : h < 14 ? 'morning' : h < 20 ? 'afternoon' : 'night' }
+function placeOf(r) {
+  const today = madridDate();
+  if (r.planned_at) { const d = String(r.planned_at).slice(0, 10); return [d < today ? today : d, slotOf(r.planned_at)] }
+  return (r.editorial_priority === 'urgent' || r.editorial_priority === 'today') ? [today, ''] : ['later', ''];
+}
 async function reviewView(v) {
   const rows = (await api('/api/drafting')).filter(r => r.state === 'ready');
-  reviewIds = rows.map(r => r.article_id);
-  v.innerHTML = rows.length ? `<p class="progress">${rows.length} por revisar. Corrige texto, foto e imagen y pulsa «Revisada».</p>
-    <div class="list">${rows.map(r => `<a class="item" href="#editor/${r.article_id}"><div class="meta">${brandBadge(r.brand)}<span>${esc(PRIO_LABEL[r.editorial_priority] || '')}</span>${r.planned_at ? `<span>${esc(String(r.planned_at).slice(11, 16))}</span>` : ''}</div><h3>${esc(r.headline || r.title)}</h3></a>`).join('')}</div>`
+  const today = madridDate();
+  const days = [...new Set([today, addDays(today, 1), ...rows.map(r => placeOf(r)[0])])].sort((a, b) => a === 'later' ? 1 : b === 'later' ? -1 : a.localeCompare(b));
+  const card = r => `<article class="rv-card" draggable="true" data-aid="${r.article_id}" style="--bc:${brandOf(r.brand).color}">
+      <div class="meta">${brandBadge(r.brand)}${r.section ? secBadge(r.section, r.brand) : ''}${r.planned_at ? `<span class="rv-time">${esc(String(r.planned_at).slice(11, 16))}</span>` : ''}${r.editorial_priority === 'urgent' ? '<span class="flag">Urgente</span>' : ''}${r.has_photo ? '' : '<span class="muted small">sin foto</span>'}</div>
+      <h3><a href="#editor/${r.article_id}">${esc(r.headline || r.title)}</a></h3>
+      ${r.subtitle ? `<p class="rv-sub">${esc(r.subtitle)}</p>` : ''}
+      <div class="rv-actions"><button class="btn small primary" onclick="go('editor/${r.article_id}')">Revisar</button><button class="btn small" onclick="moveSheet(${r.article_id})">Mover</button><button class="btn small danger icon" title="Eliminar" aria-label="Eliminar" onclick="removeArticle(${r.article_id})">🗑</button></div></article>`;
+  const ordered = [];
+  const daysHtml = days.map(d => {
+    const inDay = rows.filter(r => placeOf(r)[0] === d);
+    if (d === 'later' && !inDay.length) return '';
+    const [rel, long] = d === 'later' ? ['Más adelante', 'sin fecha fijada'] : dayTitle(d);
+    const unslotted = inDay.filter(r => !placeOf(r)[1]);
+    const slots = d === 'later' ? '' : SLOTS.map(([k, name, icon]) => {
+      const list = inDay.filter(r => placeOf(r)[1] === k).sort((a, b) => String(a.planned_at).localeCompare(String(b.planned_at)));
+      ordered.push(...list);
+      return `<div class="rv-slot" data-date="${d}" data-slot="${k}"><h3><span>${icon}</span> ${name} <b>${list.length || ''}</b></h3>${list.map(card).join('') || '<p class="rv-empty">Arrastra aquí o usa «Mover»</p>'}</div>`;
+    }).join('');
+    ordered.push(...unslotted);
+    return `<section class="rv-day ${d === today ? 'today' : ''}"><header><h2>${esc(rel)}</h2><span>${esc(long)}</span><b>${inDay.length} ${inDay.length === 1 ? 'noticia' : 'noticias'}</b></header>
+      ${unslotted.length ? `<div class="rv-slot rv-loose" data-date="${d === 'later' ? '' : d}" data-slot=""><h3>${d === 'later' ? '🗓️ Sin día' : '⏳ Sin hora'} <b>${unslotted.length}</b></h3>${unslotted.map(card).join('')}</div>` : ''}
+      ${slots ? `<div class="rv-slots">${slots}</div>` : ''}</section>`;
+  }).join('');
+  reviewIds = ordered.map(r => r.article_id);
+  v.innerHTML = rows.length ? `<div class="rv-intro"><p><b>${rows.length}</b> por revisar. Abre cada una, corrige texto, foto e imagen y pulsa «Revisada».</p><p class="muted small">Arrastra las tarjetas para cambiarlas de día o de franja. Si cambias el día, «hoy», «mañana», «ayer»… se ajustan solos en el texto.</p></div>${daysHtml}`
     : `<p class="empty">No queda nada por revisar.</p>${nextPhase('Ir a Publicar', 'publish')}`;
+  // arrastrar y soltar (ordenador)
+  v.querySelectorAll('.rv-card').forEach(c => c.ondragstart = e => { e.dataTransfer.setData('text/plain', c.dataset.aid); c.classList.add('dragging') });
+  v.querySelectorAll('.rv-card').forEach(c => c.ondragend = () => c.classList.remove('dragging'));
+  v.querySelectorAll('.rv-slot[data-slot]:not(.rv-loose)').forEach(z => {
+    z.ondragover = e => { e.preventDefault(); z.classList.add('over') };
+    z.ondragleave = () => z.classList.remove('over');
+    z.ondrop = e => { e.preventDefault(); z.classList.remove('over'); const aid = +e.dataTransfer.getData('text/plain'); if (aid) moveTo(aid, z.dataset.date, z.dataset.slot) };
+  });
 }
+async function moveTo(aid, date, slot, time) {
+  toast('Moviendo…');
+  try { const r = await api(`/api/articles/${aid}/move`, { method: 'POST', body: JSON.stringify({ date, slot, time: time || null }) }); toast(r.message); render(); counts() }
+  catch (e) { toast(e.message) }
+}
+window.moveSheet = aid => {
+  const today = madridDate();
+  const opts = Array.from({ length: 8 }, (_, i) => addDays(today, i));
+  const sheet = document.createElement('div'); sheet.className = 'sheet-bg';
+  sheet.innerHTML = `<div class="sheet" role="dialog" aria-label="Mover noticia"><h2>Mover a…</h2>
+    <p class="muted small">Día</p><div class="chips wrapc">${opts.map((d, i) => `<button class="chip ${i === 0 ? 'on' : ''}" data-d="${d}">${esc(dayTitle(d)[0])}${i > 1 ? ' ' + new Date(d + 'T12:00:00Z').getUTCDate() : ''}</button>`).join('')}</div>
+    <p class="muted small">Franja</p><div class="chips wrapc">${SLOTS.map(([k, n, i], j) => `<button class="chip ${j === 0 ? 'on' : ''}" data-s="${k}">${i} ${n}</button>`).join('')}</div>
+    <label class="small">Hora exacta (opcional)<input type="time" id="mvTime"></label>
+    <div class="row"><button class="btn" id="mvCancel">Cancelar</button><button class="btn primary" id="mvOk">Mover</button></div></div>`;
+  document.body.appendChild(sheet);
+  let d = opts[0], sl = 'morning';
+  sheet.querySelectorAll('[data-d]').forEach(b => b.onclick = () => { d = b.dataset.d; sheet.querySelectorAll('[data-d]').forEach(x => x.classList.toggle('on', x === b)) });
+  sheet.querySelectorAll('[data-s]').forEach(b => b.onclick = () => { sl = b.dataset.s; sheet.querySelectorAll('[data-s]').forEach(x => x.classList.toggle('on', x === b)) });
+  sheet.onclick = e => { if (e.target === sheet) sheet.remove() };
+  sheet.querySelector('#mvCancel').onclick = () => sheet.remove();
+  sheet.querySelector('#mvOk').onclick = () => {
+    const t = sheet.querySelector('#mvTime').value;
+    if (t) { const h = +t.slice(0, 2); sl = h < 14 ? 'morning' : h < 20 ? 'afternoon' : 'night' }
+    sheet.remove(); moveTo(aid, d, sl, t);
+  };
+};
+window.removeArticle = async aid => {
+  if (!confirm('¿Eliminar esta noticia? No se publicará y no volverá a salir.')) return;
+  try { await api(`/api/articles/${aid}`, { method: 'DELETE' }); toast('Eliminada'); render(); counts() } catch (e) { toast(e.message) }
+};
 
 /* ---------- Fase 4: Publicar ---------- */
 const NET_NAMES = { web: 'Web', instagram: 'Instagram', facebook: 'Facebook', tiktok: 'TikTok' };

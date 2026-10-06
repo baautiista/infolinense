@@ -576,6 +576,45 @@ def photo_query(article):
     return re.sub(r'\s+', ' ', str((data or {}).get('q') or '')).strip()[:120]
 
 
+_DIAS = ['lunes', 'martes', 'miércoles', 'jueves', 'viernes', 'sábado', 'domingo']
+_MESES = ['enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio', 'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre']
+
+
+def _fecha(d):
+    return '%s %s de %s de %s' % (_DIAS[d.weekday()], d.day, _MESES[d.month - 1], d.year)
+
+
+TIME_WORDS = re.compile(r'\b(hoy|mañana|ayer|anoche|anteayer|pasado mañana|esta (mañana|tarde|noche|semana)|este (lunes|martes|miércoles|'
+                        r'jueves|viernes|sábado|domingo|fin de semana|mes)|el próximo|la próxima|el pasado|la pasada|'
+                        r'lunes|martes|miércoles|jueves|viernes|sábado|domingo)\b', re.I)
+
+
+def retime(article, old_date, new_date):
+    """Ajusta las referencias de tiempo (hoy, mañana, ayer, este viernes…) a la nueva fecha de publicación.
+    Devuelve {'headline','subtitle','body','changed'}; si no hay nada que ajustar, no gasta IA."""
+    fields = {k: article.get(k) or '' for k in ('headline', 'subtitle', 'body')}
+    if old_date == new_date or not any(TIME_WORDS.search(v) for v in fields.values()):
+        return dict(fields, changed=False)
+    if not AI_ENABLED:
+        raise AIProviderError('Sin IA no se pueden ajustar las fechas del texto: revisa «hoy», «mañana»… a mano.', kind='config')
+    prompt = f'''Este texto se escribió para publicarse el {_fecha(old_date)}. Ahora se publicará el {_fecha(new_date)}.
+Ajusta SOLO las referencias de tiempo relativas para que sean correctas leídas el {_fecha(new_date)}: «hoy», «mañana», «ayer», «esta tarde»,
+«este viernes», «el próximo lunes», «la semana que viene», tiempos verbales que dependan de ello («se celebra» → «se celebró» si ya habrá pasado), etc.
+Si una referencia relativa queda confusa, cámbiala por el día de la semana o la fecha («el viernes 9»).
+No cambies nada más: ni datos, ni estilo, ni orden, ni longitud (el titular no puede pasar de {max(80, len(fields['headline']) + 5)} caracteres).
+Devuelve JSON con exactamente estas claves: headline, subtitle, body.
+TITULAR: {fields['headline']}
+ENTRADILLA: {fields['subtitle']}
+TEXTO: {fields['body'][:4000]}'''
+    data, _, _ = ask_json(SYSTEM, prompt, max_tokens=4000)
+    if not isinstance(data, dict) or not data.get('headline') or not data.get('body'):
+        raise AIProviderError('La IA no devolvió el texto ajustado. Revisa las fechas a mano.', kind='empty')
+    out = {k: clean_meta(str(data.get(k) or '')) or fields[k] for k in fields}
+    out['body'] = out['body'][:2200]
+    out['changed'] = any(out[k] != fields[k] for k in fields)
+    return out
+
+
 def alternate_headlines(article):
     if not AI_ENABLED:
         raise AIProviderError('Para proponer titulares hace falta una clave de IA en Railway.', kind='config')

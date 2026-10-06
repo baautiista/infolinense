@@ -103,6 +103,7 @@ def init_db():
         'carousel_suitable':'INTEGER NOT NULL DEFAULT 0',
         'scheduled_at':'TEXT',
         'section_label':'TEXT',
+        'time_ref':'TEXT',
         'brand':"TEXT NOT NULL DEFAULT 'infolinense'",
         'scheduled_networks':'TEXT',
         'schedule_error':'TEXT',

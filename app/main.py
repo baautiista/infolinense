@@ -13,7 +13,7 @@ from . import db, sources, pipeline, publishers, photos, canva, ai, planner, lay
 from .auth import login, require_auth
 from .config import BASE_DIR, RENDER_DIR, UPLOAD_DIR, SCAN_INTERVAL_MINUTES, AUTO_PIPELINE, OPENAI_API_KEY, ADMIN_PASSWORD, JWT_SECRET, PUBLISH_MODE, CORS_ORIGINS, PUBLIC_BASE_URL, AUTO_PUBLISH
 
-VERSION='5.9.9'
+VERSION='6.0.0'
 app=FastAPI(title='InfoLinense Desk',version=VERSION)
 app.add_middleware(CORSMiddleware,allow_origins=CORS_ORIGINS,allow_credentials=False,allow_methods=['*'],allow_headers=['Authorization','Content-Type'])
 db.init_db()
@@ -23,6 +23,7 @@ brands.init_tables()
 class LoginIn(BaseModel): password:str
 class PublishIn(BaseModel): networks:list[str]|None=None
 class ScheduleIn(BaseModel): at:str; networks:list[str]|None=None
+class MoveIn(BaseModel): date:str; slot:str='morning'; time:str|None=None
 class PageIn(BaseModel): page_id:str
 class TokenIn(BaseModel): token:str
 class SourceIn(BaseModel):
@@ -230,7 +231,7 @@ def _sort_queue(brand=''):
     return rows
 
 def _drafting(brand=''):
-    rows=db.rows("""SELECT c.id,c.brand,c.title,c.source_name,c.outlet,c.editorial_priority,c.planned_at,c.work_state,c.work_step,c.work_error,
+    rows=db.rows("""SELECT c.id,c.brand,c.title,a.section,a.subtitle,a.section_label,a.image_local IS NOT NULL AND a.image_local!='' has_photo,c.source_name,c.outlet,c.editorial_priority,c.planned_at,c.work_state,c.work_step,c.work_error,
                       a.id article_id,a.status article_status,a.headline
                       FROM candidates c LEFT JOIN articles a ON a.candidate_id=c.id AND a.status!='rejected'
                       WHERE c.status NOT IN ('archived','published') AND c.editorial_priority IN ('urgent','today','this_week','future')
@@ -259,6 +260,55 @@ def sort_queue(brand:str=''):
 @app.get('/api/drafting',dependencies=[Depends(require_auth)])
 def drafting(brand:str=''):
     return _drafting(brand)
+
+SLOT_TIMES={'morning':'09:00','afternoon':'17:00','night':'21:00'}
+SLOT_NAMES={'morning':'mañana','afternoon':'tarde','night':'noche'}
+
+@app.post('/api/articles/{aid}/move',dependencies=[Depends(require_auth)])
+def move_article(aid:int,m:MoveIn):
+    """Cambia la noticia de día y franja (mañana, tarde, noche). Si cambia el día, la IA ajusta «hoy», «mañana», «ayer»…"""
+    a=db.row('SELECT a.*,c.planned_at FROM articles a LEFT JOIN candidates c ON c.id=a.candidate_id WHERE a.id=?',(aid,))
+    if not a: raise HTTPException(404)
+    if a['status']=='published': raise HTTPException(400,'Ya está publicada')
+    if m.slot not in SLOT_TIMES: raise HTTPException(400,'Franja no válida')
+    try: day=datetime.fromisoformat(m.date[:10]).date()
+    except ValueError: raise HTTPException(400,'Fecha no válida')
+    hhmm=(m.time or '').strip() or SLOT_TIMES[m.slot]
+    if not re.fullmatch(r'\d{2}:\d{2}',hhmm): raise HTTPException(400,'Hora no válida')
+    when=datetime.fromisoformat(f'{day.isoformat()}T{hhmm}').replace(tzinfo=MADRID).isoformat(timespec='minutes')
+    today=datetime.now(MADRID).date()
+    prio='today' if day<=today else 'this_week' if (day-today).days<=6 else 'future'
+    db.exec_('UPDATE candidates SET planned_at=?,plan_locked=1,editorial_priority=CASE WHEN editorial_priority=? THEN editorial_priority ELSE ? END WHERE id=?',
+             (when,'urgent' if day<=today else '',prio,a['candidate_id']))
+    if a.get('scheduled_at'): db.exec_('UPDATE articles SET scheduled_at=? WHERE id=?',(when,aid))  # si estaba programada, a la nueva hora
+    old_ref=(a.get('time_ref') or str(a.get('planned_at') or '')[:10] or str(a.get('created_at') or '')[:10] or today.isoformat())[:10]
+    try: old_day=datetime.fromisoformat(old_ref).date()
+    except ValueError: old_day=today
+    result={'ok':True,'planned_at':when,'retimed':False,'message':f'Movida al {day.strftime("%d/%m")} por la {SLOT_NAMES[m.slot]}'}
+    if old_day!=day:
+        try:
+            r=ai.retime(a,old_day,day)
+            if r['changed']:
+                db.exec_('UPDATE articles SET headline=?,subtitle=?,body=?,social_text=?,render_path=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=?',
+                         (r['headline'],r['subtitle'],r['body'],r['body'],aid))
+                db.exec_('UPDATE canva_designs SET exported=0 WHERE article_id=?',(aid,))
+                result.update(retimed=True,headline=r['headline'],message=result['message']+'. He ajustado «hoy», «mañana»… en el texto: vuelve a crear la imagen en Canva')
+            db.exec_('UPDATE articles SET time_ref=? WHERE id=?',(day.isoformat(),aid))
+        except ai.AIProviderError as e:
+            result['message']+='. '+str(e)
+    db.log('move',f'Noticia {aid} → {when}')
+    return result
+
+@app.delete('/api/articles/{aid}',dependencies=[Depends(require_auth)])
+def delete_article(aid:int):
+    """Eliminar de la planificación: no se publica y no vuelve a aparecer en Ordenar."""
+    a=db.row('SELECT id,candidate_id,status FROM articles WHERE id=?',(aid,))
+    if not a: raise HTTPException(404)
+    if a['status']=='published': raise HTTPException(400,'Ya está publicada; bórrala desde la web o las redes')
+    db.exec_("UPDATE articles SET status='rejected',scheduled_at=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=?",(aid,))
+    db.exec_("UPDATE candidates SET status='archived',editorial_priority='no_interest',planned_at=NULL WHERE id=?",(a['candidate_id'],))
+    db.log('delete',f'Noticia {aid} eliminada')
+    return {'ok':True}
 
 @app.post('/api/articles/{aid}/ready',dependencies=[Depends(require_auth)])
 def mark_ready(aid:int):

@@ -295,6 +295,7 @@ async function editor(v) {
       ${a.focus ? `<p class="focus"><b>Enfoque:</b> ${esc(a.focus)}</p>` : ''}
       ${BRANDS.length > 1 ? `<label>Medio<select id="f-brand">${BRANDS.map(b => `<option value="${b.slug}" ${b.slug === (a.brand || 'infolinense') ? 'selected' : ''}>${esc(b.name)}</option>`).join('')}</select></label>` : ''}
       <label>Sección<select id="f-section">${sectionOptions(a.brand, a.section)}</select></label>
+      <label id="labelBox" ${freeSection(a.brand) && a.section === freeSection(a.brand) ? '' : 'hidden'}>Título de la etiqueta en la imagen<input id="f-section_label" maxlength="40" value="${esc(a.section_label || '')}" placeholder="Ej.: Consejo de Hermandades"></label>
       <label>Titular <span class="muted" id="fit"></span><textarea id="f-headline" rows="2">${esc(a.headline)}</textarea></label>
       ${options.length ? `<details class="alts"><summary>7 titulares alternativos</summary>${options.map((h, i) => `<button class="alt" data-i="${i}">${esc(h)}</button>`).join('')}<button class="link" id="moreHeads">Proponer otros 7</button></details>` : `<button class="link" id="moreHeads">Proponer 7 titulares</button>`}
       <label>Entradilla <span class="muted" id="sub"></span><textarea id="f-subtitle" rows="3">${esc(a.subtitle)}</textarea></label>
@@ -313,6 +314,7 @@ async function editor(v) {
   const fit = () => { const n = lines(f('headline').value); $('#fit').textContent = n <= 4 ? `${n} de 4 líneas en la imagen` : `${n} líneas: no cabe en la imagen, acórtalo`; $('#fit').className = n <= 4 ? 'muted' : 'error' };
   const sub = () => { const n = f('subtitle').value.trim().length; $('#sub').textContent = n <= 165 ? `${n} / 165` : `${n} / 165: no cabe en la imagen, acórtala`; $('#sub').className = n <= 165 ? 'muted' : 'error' };
   const count = () => $('#count').textContent = `${f('body').value.length} / 2.200`;
+  f('section').onchange = () => { const fs = freeSection(f('brand') ? f('brand').value : a.brand); $('#labelBox').hidden = !(fs && f('section').value === fs) };
   if (f('brand')) f('brand').onchange = async e => { const b = e.target.value; f('section').innerHTML = sectionOptions(b, ''); try { await saveArticle(); toast('Ahora es de ' + brandOf(b).name + ': crea la imagen con su plantilla'); render() } catch (er) { toast(er.message) } };
   f('headline').oninput = fit; f('subtitle').oninput = sub; f('body').oninput = count; fit(); sub(); count();
   v.querySelectorAll('.alt').forEach(b => b.onclick = () => { f('headline').value = options[b.dataset.i]; fit(); toast('Titular cambiado') });
@@ -326,7 +328,8 @@ function sectionOptions(brand, current) {
   const all = current && !list.includes(current) ? [current, ...list] : list;
   return all.map(s => `<option ${s === current ? 'selected' : ''}>${esc(s)}</option>`).join('');
 }
-function values() { const o = {}; ['section', 'headline', 'subtitle', 'body', 'brand'].forEach(k => { const el = $(`#f-${k}`); if (el) o[k] = el.value }); return o }
+function freeSection(brand) { return brand && brand !== 'infolinense' ? brandOf(brand).free_title_section || '' : '' }
+function values() { const o = {}; ['section', 'headline', 'subtitle', 'body', 'brand', 'section_label'].forEach(k => { const el = $(`#f-${k}`); if (el) o[k] = el.value }); return o }
 async function saveArticle(say) { await api(`/api/articles/${editorId}`, { method: 'PUT', body: JSON.stringify(values()) }); if (say) toast('Guardado') }
 window.save = s => saveArticle(s).catch(e => toast(e.message));
 window.copyText = async () => { const o = values(); await navigator.clipboard.writeText([o.headline, o.subtitle, o.body].filter(Boolean).join('\n\n')); toast('Texto copiado') };
@@ -404,8 +407,10 @@ async function settings(v) {
           <label>Titular de 1 línea<input name="t1" value="${esc(T['1'] || '')}"></label>
           <label>Titular de 2 líneas<input name="t2" value="${esc(T['2'] || '')}"></label>
           <label>Titular de 4 líneas<input name="t4" value="${esc(T['4'] || '')}"></label></details>
-        ${isMain ? '' : `<label>Secciones (separadas por comas)<input name="sections" value="${esc((B.sections || []).join(', '))}"></label>
-        <label>Página de la plantilla que se exporta<input name="page" type="number" min="1" max="50" value="${esc(B.page || 1)}"></label>`}
+        ${isMain ? '' : `<label>Secciones (una por línea${B.page_mode === 'section' ? '; cada una es una página de la plantilla, en este orden' : ''})<textarea name="sections" rows="${Math.min(20, (B.sections || []).length + 1)}">${esc((B.sections || []).join('\n'))}</textarea></label>
+        <label><input type="checkbox" name="by_section" ${B.page_mode === 'section' ? 'checked' : ''}> Cada sección tiene su página en la plantilla</label>
+        <label>Página para los carruseles (0 = la de la noticia)<input name="carousel_page" type="number" min="0" max="50" value="${esc(B.carousel_page || 0)}"></label>
+        <label>Página que se exporta si no va por secciones<input name="page" type="number" min="1" max="50" value="${esc(B.page || 1)}"></label>`}
         <label>Hashtags en redes<input name="hashtags" value="${esc(B.hashtags || '')}"></label>
         <button class="btn small primary">Guardar</button></form>
       <p class="muted small">En la plantilla de Canva, los campos de datos deben llamarse <b>HEADLINE</b> (titular), <b>SUMMARY</b> (entradilla), <b>PHOTO</b> (foto)${isMain ? ' y <b>SECTION</b>' : ' y, si tiene, <b>SECTION</b>'}.</p></section>
@@ -463,7 +468,7 @@ async function settings(v) {
   $('#brandForm').onsubmit = async e => {
     e.preventDefault(); const d = Object.fromEntries(new FormData(e.target));
     const body = { templates: { main: d.main, '1': d.t1, '2': d.t2, '4': d.t4 }, hashtags: d.hashtags };
-    if (!isMain) { body.sections = d.sections; body.page = Number(d.page || 1) }
+    if (!isMain) { body.sections = d.sections; body.page = Number(d.page || 1); body.page_mode = d.by_section ? 'section' : 'fixed'; body.carousel_page = Number(d.carousel_page || 0) }
     try { await api('/api/brands/' + SB, { method: 'PUT', body: JSON.stringify(body) }); await loadBrands(); toast('Guardado'); render() } catch (er) { toast(er.message) }
   };
   if ($('#metaConn')) $('#metaConn').onclick = () => conn('meta');

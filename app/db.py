@@ -102,6 +102,7 @@ def init_db():
     for name,ddl in {
         'carousel_suitable':'INTEGER NOT NULL DEFAULT 0',
         'scheduled_at':'TEXT',
+        'section_label':'TEXT',
         'brand':"TEXT NOT NULL DEFAULT 'infolinense'",
         'scheduled_networks':'TEXT',
         'schedule_error':'TEXT',

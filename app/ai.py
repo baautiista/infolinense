@@ -491,8 +491,14 @@ def draft(candidate, source_text='', research='', quick=False):
     from . import brands
     b = brands.settings(candidate.get('brand'))
     other = b['slug'] != brands.DEFAULT
-    sections = ', '.join(b['sections']) if other else SECTIONS
+    sections = ' | '.join(b['sections']) if other else SECTIONS
     guide = 'elige la que mejor encaje' if other else SECTION_GUIDE
+    if other and b.get('page_mode') == 'section':
+        guide = ('si la noticia es de una hermandad concreta, su nombre tal cual; si trata de varias o de la Semana Santa en general, '
+                 f"«{b.get('free_title_section') or 'General'}»; pregones, pregoneros, carteles, salidas extraordinarias o "
+                 'aniversarios, «Ocasiones especiales»')
+    label_key = (f"section_label (solo si section es «{b['free_title_section']}»: título corto de 1 a 3 palabras para la etiqueta, "
+                 "p. ej. «Consejo de Hermandades», «Semana Santa», «Cuaresma»),\n") if other and b.get('free_title_section') else ''
     medium = (f"MEDIO: escribes para {b['name']}, {b['about']}. Mismo rigor y estilo que InfoLinense, con el vocabulario propio "
               f"de ese mundo (sin explicar lo que su público ya sabe).\n") if other else ''
     prompt = f'''{medium}Redacta la noticia siguiendo al pie de la letra la guía de estilo de InfoLinense.
@@ -513,6 +519,7 @@ HECHOS Y CONTEXTO: {_facts_for_draft(research)[:8000]}
 Devuelve la entrega (SECCIÓN, TITULAR, SUBTÍTULO, TEXTO) como JSON válido, sin markdown, con exactamente estas claves:
 focus (ENFOQUE PRINCIPAL: la verdadera noticia en una frase),
 section (exactamente una de: {sections}. Guía: {guide}),
+{label_key}
 headline (TITULAR: breve, directo, cuenta la noticia, máximo 80 caracteres porque va tal cual en la imagen),
 subtitle (SUBTÍTULO o ENTRADILLA: aporta información nueva, nunca repite el titular, máximo 160 caracteres porque va tal cual en la imagen),
 body (TEXTO: la noticia completa, entre 1.800 y 2.200 caracteres, en 5 a 8 párrafos),
@@ -536,8 +543,11 @@ photo_query (búsqueda de imágenes en internet de 3 a 6 palabras que describa l
         except AIProviderError:
             pass
     if other:
-        sec = str(data.get('section') or '').strip().upper()
-        data['section'] = sec if sec in b['sections'] else (b['sections'][0] if b['sections'] else sec or 'NOTICIAS')
+        src = brands.find_section(b['slug'], candidate.get('source_name') or '') or brands.find_section(b['slug'], candidate.get('outlet') or '')
+        sec = src or brands.find_section(b['slug'], data.get('section'))  # página de la hermandad: su sección, siempre
+        free = b.get('free_title_section') or ''
+        data['section'] = sec or free or (b['sections'][0] if b['sections'] else 'Noticias')
+        data['section_label'] = str(data.get('section_label') or '').strip()[:40] if data['section'] == free else ''
     else:
         data['section'] = layout.normalize_section(data.get('section'), data.get('headline', '') + ' ' + data.get('body', '')[:400])
     # La imagen usa exactamente el titular y la entradilla de la noticia (no textos aparte).

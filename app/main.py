@@ -13,7 +13,7 @@ from . import db, sources, pipeline, publishers, photos, canva, ai, planner, lay
 from .auth import login, require_auth
 from .config import BASE_DIR, RENDER_DIR, UPLOAD_DIR, SCAN_INTERVAL_MINUTES, AUTO_PIPELINE, OPENAI_API_KEY, ADMIN_PASSWORD, JWT_SECRET, PUBLISH_MODE, CORS_ORIGINS, PUBLIC_BASE_URL, AUTO_PUBLISH
 
-VERSION='5.8.0'
+VERSION='5.9.0'
 app=FastAPI(title='InfoLinense Desk',version=VERSION)
 app.add_middleware(CORSMiddleware,allow_origins=CORS_ORIGINS,allow_credentials=False,allow_methods=['*'],allow_headers=['Authorization','Content-Type'])
 db.init_db()
@@ -34,7 +34,7 @@ class SourceIn(BaseModel):
     local_scope:bool=False
     brand:str='infolinense'
 class EditArticle(BaseModel):
-    section:str|None=None; headline:str|None=None; subtitle:str|None=None; body:str|None=None; graphic_summary:str|None=None; image_headline:str|None=None; brand:str|None=None
+    section:str|None=None; headline:str|None=None; subtitle:str|None=None; body:str|None=None; graphic_summary:str|None=None; image_headline:str|None=None; brand:str|None=None; section_label:str|None=None
 class PhotoChoice(BaseModel): url:str; source:str=''; license:str=''; author:str=''; confirm_permission:bool=False
 class TriageIn(BaseModel): priority:str; planned_at:str|None=None
 class CarouselPhoto(BaseModel): url:str; source:str=''; license:str=''; author:str=''; publish_safe:bool=False
@@ -525,12 +525,14 @@ def edit_article(aid:int,body:EditArticle):
     brand=body.brand if body.brand in brands.BRANDS else original.get('brand') or brands.DEFAULT
     def norm_section(v):
         if brand==brands.DEFAULT: return layout.normalize_section(v)
-        return re.sub(r'\s+',' ',str(v or '')).strip().upper()[:30] or (brands.settings(brand)['sections'] or ['NOTICIAS'])[0]
+        return brands.find_section(brand,v) or re.sub(r'\s+',' ',str(v or '')).strip()[:60] or (brands.settings(brand)['sections'] or ['Noticias'])[0]
     for k,v in body.model_dump(exclude_none=True).items():
         if k=='brand':
             if v not in brands.BRANDS: continue
         if k=='section':
             v=norm_section(v)
+        if k=='section_label':
+            v=re.sub(r'\s+',' ',v).strip()[:40]
         if k=='body':
             v=v[:2200]
             fields.append('social_text=?'); vals.append(v)
@@ -539,7 +541,7 @@ def edit_article(aid:int,body:EditArticle):
         # La imagen de Canva solo se invalida si cambia algo que aparece en ella (titular, entradilla, sección).
         changes=body.model_dump(exclude_none=True)
         if 'section' in changes: changes['section']=norm_section(changes['section'])
-        image_changed=any(k in changes and (changes[k] or '')!=(original.get(k) or '') for k in ('headline','subtitle','section','brand'))
+        image_changed=any(k in changes and (changes[k] or '')!=(original.get(k) or '') for k in ('headline','subtitle','section','brand','section_label'))
         db.exec_(f"UPDATE articles SET {','.join(fields)}{',render_path=NULL' if image_changed else ''},updated_at=CURRENT_TIMESTAMP WHERE id=?",tuple(vals+[aid]))
         if image_changed: db.exec_('UPDATE canva_designs SET exported=0 WHERE article_id=?',(aid,))
         if 'brand' in changes and changes['brand']!=original.get('brand'):
@@ -891,6 +893,7 @@ def networks_disconnect(network:str,brand:str='infolinense'):
     return {'ok':True}
 class BrandIn(BaseModel):
     templates:dict|None=None; hashtags:str|None=None; sections:list[str]|str|None=None; page:int|None=None
+    page_mode:str|None=None; carousel_page:int|None=None
 @app.get('/api/brands',dependencies=[Depends(require_auth)])
 def brands_list(): return brands.all_public()
 @app.put('/api/brands/{slug}',dependencies=[Depends(require_auth)])

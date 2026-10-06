@@ -19,7 +19,15 @@ BRANDS = {
     'cofrade': {'name': 'El Cofrade Linense', 'short': 'Cofrade', 'color': '#5B2A86', 'text': '#FFFFFF', 'env': 'COFRADE_',
                 'about': 'medio cofrade de La Línea de la Concepción: hermandades, cofradías, Semana Santa, glorias y cultos',
                 'hashtags': '#ElCofradeLinense #SemanaSantaLaLínea #LaLínea',
-                'sections': ['HERMANDADES', 'SEMANA SANTA', 'CULTOS', 'GLORIAS', 'PATRIMONIO', 'AGENDA']},
+                # Plantilla de 19 páginas: una por hermandad (en este orden), General (título libre),
+                # Ocasiones especiales (pregoneros, carteles, extraordinarias…) y la 19 para carruseles.
+                'sections': ['Entrada Triunfal y Alegría', 'Flagelación y Estrella', 'Esperanza y Concepción', 'Penas y Dolores',
+                             'Abandono y Mayor Dolor', 'Cautivo y Trinidad', 'Oración y Amor', 'Gran Poder y Ángeles',
+                             'Almas y Angustias', 'Perdón y Salud', 'Amor y Esperanza', 'Misericordia y Amargura',
+                             'Cristo del Mar y Luz', 'Santo Entierro y Soledad', 'Inmaculada Concepción', 'Hermandad del Rocío',
+                             'General', 'Ocasiones especiales'],
+                'templates': {'main': 'EAHXQHp9uXw'}, 'page_mode': 'section', 'carousel_page': 19,
+                'free_title_section': 'General'},
     'carnaval': {'name': 'Carnavalinense', 'short': 'Carnaval', 'color': '#E72E79', 'text': '#FFFFFF', 'env': 'CARNAVAL_',
                  'about': 'medio del Carnaval de La Línea de la Concepción: agrupaciones, concurso, coplas, cabalgata y fiesta',
                  'hashtags': '#Carnavalinense #CarnavalLaLínea #LaLínea',
@@ -64,14 +72,17 @@ def settings(slug):
     slug = valid(slug)
     base = dict(BRANDS[slug])
     base['slug'] = slug
-    base['templates'] = {'main': '', '1': '', '2': '', '4': ''}
+    base['templates'] = {'main': '', '1': '', '2': '', '4': '', **BRANDS[slug].get('templates', {})}
     base['page'] = 1
+    base.setdefault('page_mode', 'fixed')       # 'section': cada sección es una página de la plantilla, en orden
+    base.setdefault('carousel_page', 0)         # página para las diapositivas del carrusel (0 = la normal)
+    base.setdefault('free_title_section', '')   # sección cuyo título se escribe en cada noticia
     try:
         row = db.row('SELECT data FROM brand_settings WHERE slug=?', (slug,))
         saved = json.loads(row['data']) if row else {}
     except Exception:
         saved = {}
-    for k in ('hashtags', 'sections', 'page', 'about'):
+    for k in ('hashtags', 'sections', 'page', 'about', 'page_mode', 'carousel_page'):
         if saved.get(k) not in (None, '', []):
             base[k] = saved[k]
     base['templates'].update({k: v for k, v in (saved.get('templates') or {}).items() if v})
@@ -90,7 +101,7 @@ def save_settings(slug, data):
     slug = valid(slug)
     cur = settings(slug)
     out = {'templates': dict(cur['templates']), 'hashtags': cur['hashtags'], 'sections': cur['sections'],
-           'page': cur['page'], 'about': cur['about']}
+           'page': cur['page'], 'about': cur['about'], 'page_mode': cur['page_mode'], 'carousel_page': cur['carousel_page']}
     for k, v in (data.get('templates') or {}).items():
         if k in ('main', '1', '2', '4'):
             tid = template_id(v)
@@ -100,8 +111,16 @@ def save_settings(slug, data):
     if 'hashtags' in data:
         out['hashtags'] = re.sub(r'\s+', ' ', str(data['hashtags'] or '')).strip()[:300]
     if 'sections' in data:
-        secs = data['sections'] if isinstance(data['sections'], list) else str(data['sections'] or '').split(',')
-        out['sections'] = [s.strip().upper()[:30] for s in secs if s.strip()][:16]
+        raw = str(data['sections'] or '')
+        secs = data['sections'] if isinstance(data['sections'], list) else raw.split('\n' if '\n' in raw else ',')
+        out['sections'] = [re.sub(r'\s+', ' ', s).strip()[:60] for s in secs if s.strip()][:40]
+    if data.get('page_mode') in ('section', 'fixed'):
+        out['page_mode'] = data['page_mode']
+    if 'carousel_page' in data:
+        try:
+            out['carousel_page'] = max(0, min(50, int(data['carousel_page'] or 0)))
+        except (TypeError, ValueError):
+            pass
     if 'page' in data:
         try:
             out['page'] = max(1, min(50, int(data['page'])))
@@ -141,9 +160,50 @@ def public(slug):
     w = web_config(slug)
     return {'slug': s['slug'], 'name': s['name'], 'short': s['short'], 'color': s['color'], 'text': s['text'],
             'hashtags': s['hashtags'], 'sections': s['sections'], 'templates': s['templates'], 'page': s['page'],
+            'page_mode': s['page_mode'], 'carousel_page': s['carousel_page'], 'free_title_section': s['free_title_section'],
             'web': {'enabled': web_enabled(slug), 'mode': w['mode'],
                     'host': re.sub(r'^https?://([^/]+).*$', r'\1', w['webhook_url'] or w['wp_url'] or '')},
             'env_prefix': BRANDS[s['slug']]['env']}
+
+
+def _norm(t):
+    t = unicodedata.normalize('NFD', str(t or '').lower())
+    return re.sub(r'[^a-z0-9 ]', ' ', ''.join(c for c in t if unicodedata.category(c) != 'Mn'))
+
+
+def find_section(slug, value):
+    """Sección del medio que corresponde a un texto («GRAN PODER», «Hermandad del Gran Poder»…), o ''."""
+    secs = settings(slug)['sections']
+    v = _norm(value).split()
+    if not v:
+        return ''
+    for s in secs:
+        if _norm(s).split() == v:
+            return s
+    stop = {'y', 'de', 'del', 'la', 'el', 'los', 'las', 'hermandad', 'cofradia'}
+    words = set(v) - stop
+    best, score = '', 0
+    for s in secs:
+        key = set(_norm(s).split()) - stop
+        hit = len(key & words)
+        if key and hit >= max(1, min(2, len(key))) and hit > score:
+            best, score = s, hit
+    return best
+
+
+def section_page(slug, section, carousel=False):
+    """Página de la plantilla para una sección (modo «section») o la fija."""
+    s = settings(slug)
+    if carousel and s.get('carousel_page'):
+        return int(s['carousel_page'])
+    if s.get('page_mode') == 'section':
+        sec = find_section(slug, section)
+        if sec:
+            return s['sections'].index(sec) + 1
+        free = s.get('free_title_section')
+        if free and free in s['sections']:
+            return s['sections'].index(free) + 1  # sección desconocida → General
+    return int(s.get('page') or 1)
 
 
 def all_public():

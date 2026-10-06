@@ -41,15 +41,28 @@ class BrandTests(unittest.TestCase):
         self.assertIn('Gran Poder y Ángeles', names); self.assertIn('La Línea Cofrade', names)
 
     def test_settings_and_templates(self):
-        b = brands.save_settings('cofrade', {'templates': {'main': 'https://www.canva.com/brand/brand-templates/EAHcofrade12'},
-                                             'sections': 'Hermandades, cultos'})
-        self.assertEqual(b['templates']['main'], 'EAHcofrade12')
-        self.assertEqual(b['sections'], ['HERMANDADES', 'CULTOS'])
-        self.assertEqual(canva.template_for('Titular corto', 'cofrade'), 'EAHcofrade12')
-        f = canva.design_fields({'brand': 'cofrade', 'headline': 'Besamanos', 'subtitle': 'Domingo', 'section': 'cultos'})
-        self.assertEqual((f['SECTION'], f['template'], f['page']), ('CULTOS', 'EAHcofrade12', 1))
+        self.assertEqual(canva.template_for('Titular', 'cofrade'), 'EAHXQHp9uXw')  # plantilla publicada por defecto
+        b = brands.save_settings('carnaval', {'templates': {'main': 'https://www.canva.com/brand/brand-templates/EAHcarnav12'},
+                                              'sections': 'Agrupaciones, Concurso'})
+        self.assertEqual(b['templates']['main'], 'EAHcarnav12')
+        self.assertEqual(b['sections'], ['Agrupaciones', 'Concurso'])
+        f = canva.design_fields({'brand': 'carnaval', 'headline': 'Final', 'subtitle': 'Sábado', 'section': 'concurso'})
+        self.assertEqual((f['SECTION'], f['template'], f['page']), ('Concurso', 'EAHcarnav12', 1))
         with self.assertRaises(ValueError):
             brands.save_settings('carnaval', {'templates': {'main': 'no es una plantilla'}})
+
+    def test_cofrade_pages_by_hermandad(self):
+        page = lambda sec, **kw: canva.design_fields(dict({'brand': 'cofrade', 'headline': 'H', 'subtitle': 'S', 'section': sec}, **kw))
+        self.assertEqual(page('Entrada Triunfal y Alegría')['page'], 1)
+        self.assertEqual(page('GRAN PODER')['page'], 8)
+        self.assertEqual(page('Hermandad del Rocío')['page'], 16)
+        g = page('General', section_label='Consejo de Hermandades')
+        self.assertEqual((g['page'], g['SECTION']), (17, 'Consejo de Hermandades'))
+        self.assertEqual(page('Ocasiones especiales')['page'], 18)
+        self.assertEqual(page('algo raro')['page'], 17)  # sin sección conocida: General
+        self.assertEqual(canva._page_for({'brand': 'cofrade', 'section': 'Gran Poder y Ángeles', '_carousel': True}), 19)
+        self.assertEqual(brands.find_section('cofrade', 'Esperanza y Concepción (Silencio)'), 'Esperanza y Concepción')
+        self.assertEqual(brands.find_section('cofrade', 'Misericordia y Amargura'), 'Misericordia y Amargura')
 
     def test_accounts_are_separate_per_brand(self):
         with sp.use_brand('cofrade'):

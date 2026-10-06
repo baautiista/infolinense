@@ -177,6 +177,8 @@ def permission_status():
 
 def _content_hash(article):
     fields = [article.get(k) or '' for k in ('headline', 'subtitle', 'section', 'image_url')]
+    if article.get('section_label') or article.get('brand') not in (None, '', 'infolinense'):
+        fields += [article.get('section_label') or '', article.get('brand') or '']
     return hashlib.sha256(json.dumps(fields, ensure_ascii=False).encode()).hexdigest()
 
 
@@ -186,9 +188,9 @@ def _is_default(article):
 
 
 def _page_for(article):
-    if not _is_default(article):  # otros medios: la página indicada en Ajustes → Medios (normalmente la 1)
+    if not _is_default(article):  # otros medios: página de su sección o la indicada en Ajustes → Medios
         from . import brands
-        return int(brands.settings(article.get('brand'))['page'] or 1)
+        return brands.section_page(article.get('brand'), article.get('section'), bool(article.get('_carousel')))
     return layout.family_for(article.get('section'), article.get('headline'))[1]
 
 
@@ -199,7 +201,7 @@ def design_fields(article, strict=True):
     family = layout.family_for(article.get('section'), article.get('headline'))
     headline = re.sub(r'\s+', ' ', article.get('headline') or '').strip()
     summary = re.sub(r'\s+', ' ', article.get('subtitle') or '').strip()
-    if strict:
+    if strict and _is_default(article):
         lines = len(layout.headline_lines(headline))
         if lines > layout.HEADLINE_MAX_LINES:
             raise ValueError('El titular ocupa %s líneas en la imagen y caben %s. Acórtalo en Revisar y vuelve a crear la imagen.'
@@ -207,12 +209,18 @@ def design_fields(article, strict=True):
         if len(summary) > layout.SUMMARY_MAX:
             raise ValueError('La entradilla tiene %s caracteres y en la imagen caben %s. Acórtala en Revisar y vuelve a crear la imagen.'
                              % (len(summary), layout.SUMMARY_MAX))
-    else:
+    elif _is_default(article):
         if not layout.headline_fits(headline):
             headline = layout.fit_headline(headline)
         summary = layout.fit_summary(summary)
     if not _is_default(article):
-        return {'HEADLINE': headline, 'SUMMARY': summary, 'SECTION': (article.get('section') or '').strip().upper(),
+        from . import brands
+        b = brands.settings(article.get('brand'))
+        sec = brands.find_section(b['slug'], article.get('section')) or (article.get('section') or '').strip()
+        label = sec
+        if b.get('free_title_section') and sec == b['free_title_section'] and (article.get('section_label') or '').strip():
+            label = article['section_label'].strip()  # «General» con título propio
+        return {'HEADLINE': headline, 'SUMMARY': summary, 'SECTION': label,
                 'page': _page_for(article), 'template': template_for(headline, article.get('brand'))}
     return {'HEADLINE': headline, 'SUMMARY': summary, 'SECTION': family[0], 'page': family[1],
             'template': template_for(headline)}
@@ -282,9 +290,9 @@ def create_design(article, store=True, title_suffix='', output_suffix=None, stri
     if not template_id:
         raise ValueError('Falta la plantilla de Canva de %s. Pégala en Ajustes → Medios.' % brand['name'])
     schema = _api('GET', '/brand-templates/' + template_id + '/dataset').get('dataset', {})
-    expected = {'HEADLINE': 'text', 'SUMMARY': 'text', 'PHOTO': 'image'}
+    expected = {'HEADLINE': 'text', 'PHOTO': 'image'}
     if _is_default(article):
-        expected['SECTION'] = 'text'
+        expected.update(SECTION='text', SUMMARY='text')
     missing = [key for key, kind in expected.items() if schema.get(key, {}).get('type') != kind]
     if missing:
         raise ValueError('A la plantilla de Canva de %s le faltan los campos de datos: %s. En Canva, en la plantilla, '
@@ -307,8 +315,9 @@ def create_design(article, store=True, title_suffix='', output_suffix=None, stri
         'SECTION': {'type': 'text', 'text': texts['SECTION']},
         'PHOTO': {'type': 'image', 'asset_id': asset['id']},
     }
-    if schema.get('SECTION', {}).get('type') != 'text' or not texts['SECTION']:
-        fields.pop('SECTION')  # plantilla sin cuadro de sección
+    for opt in ('SECTION', 'SUMMARY'):  # plantillas sin sección o sin entradilla
+        if schema.get(opt, {}).get('type') != 'text' or not texts[opt]:
+            fields.pop(opt)
     name = brand['name'] + ' · ' + (article.get('headline') or '')[:100]
     if title_suffix:
         name += ' · ' + str(title_suffix)[:40]
@@ -366,6 +375,7 @@ def create_carousel_designs(article, slides, selected_photos):
             raise ValueError('No se pudo descargar la foto de la diapositiva %s' % index) from exc
         page = dict(article)
         page.update({
+            '_carousel': True,
             'headline': slide.get('title') or '',
             'image_headline': '',
             'graphic_summary': slide.get('text') or '',

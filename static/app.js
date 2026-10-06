@@ -443,7 +443,8 @@ async function settings(v) {
     <section class="panel"><h2>Web de ${esc(B.name)}</h2><p>${B.web && B.web.enabled ? `«Publicar» envía la noticia a la web${B.web.host ? ' (' + esc(B.web.host) + ')' : ''}.` : `La web de ${esc(B.name)} no está configurada: «Publicar» solo la publica en redes.`}</p>
       ${isMain ? '' : `<p class="muted small">Para conectarla, en Railway → Variables añade <code>${B.env_prefix}WEBHOOK_URL</code> y <code>${B.env_prefix}WEBHOOK_SECRET</code> (web hecha con Lovable u otra), o <code>${B.env_prefix}WORDPRESS_URL</code>, <code>${B.env_prefix}WORDPRESS_USERNAME</code> y <code>${B.env_prefix}WORDPRESS_APP_PASSWORD</code> (WordPress).</p>`}</section>
     <section class="panel"><h2>Fuentes de ${esc(B.name)}</h2>
-      <div class="sources">${srcs.map(s => `<div class="srcrow"><label class="switch"><input type="checkbox" ${s.active ? 'checked' : ''} onchange="toggleSource(${s.id})"> ${esc(s.name)}</label>${s.last_error ? `<span class="error small" title="${esc(s.last_error)}" onclick="toast(this.title)">Error</span>` : `<span class="muted small">${s.items_added ?? 0} nuevas</span>`}</div>`).join('') || '<p class="muted small">Ninguna todavía.</p>'}</div>
+      <div class="sources">${srcs.map(s => `<div class="srcrow"><label class="switch"><input type="checkbox" ${s.active ? 'checked' : ''} onchange="toggleSource(${s.id})"> ${esc(s.name)}</label>${s.last_error ? `<button class="link error small" onclick="checkSource(${s.id},this)">Error · comprobar</button>` : `<span class="muted small">${s.items_added ?? 0} nuevas</span>`}</div>
+        ${s.last_error ? `<p class="srcerr small"><span class="error">${esc(s.last_error.slice(0, 220))}</span><br><span class="muted">${esc(s.url.slice(0, 90))}</span></p>` : ''}`).join('') || '<p class="muted small">Ninguna todavía.</p>'}</div>
       <form id="addSrc" class="stack"><input name="name" placeholder="Nombre del medio o página" required><input name="url" type="url" placeholder="https://… (RSS, portada, Facebook o Instagram)" required>
       <select name="kind"><option value="rss">RSS</option><option value="html">Portada web</option><option value="social">Facebook / Instagram</option></select><button class="btn small">Añadir fuente</button></form></section>
     <section class="panel"><h2>Páginas y grupos de Facebook vigilados</h2><p class="muted small">Solo lo público. Se buscan quejas, propuestas y asociaciones.</p>
@@ -482,6 +483,7 @@ async function settings(v) {
   const cc = $('#canvaConn'); if (cc) cc.onclick = async () => { try { location.href = (await api('/api/canva/connect')).url } catch (e) { toast(e.message) } };
   $('#addSrc').onsubmit = async e => { e.preventDefault(); const d = Object.fromEntries(new FormData(e.target)); try { await api('/api/sources', { method: 'POST', body: JSON.stringify({ ...d, priority: 60, brand: SB }) }); toast('Fuente añadida'); render() } catch (er) { toast(er.message) } };
 }
+window.checkSource = async (id, b) => { b.disabled = true; b.textContent = 'Comprobando…'; try { const r = await api(`/api/sources/${id}/check`, { method: 'POST' }); toast(r.ok ? `Funciona: ${r.items_seen} elementos` : 'Sigue fallando: ' + r.error); render() } catch (e) { toast(e.message); b.disabled = false } };
 window.toggleSource = async id => { try { await api(`/api/sources/${id}/toggle`, { method: 'POST' }) } catch (e) { toast(e.message) } };
 window.go = go; window.download = download; window.logout = logout; window.render = render;
 

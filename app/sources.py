@@ -279,9 +279,31 @@ def fetch_edictos_html(url, keep=False):
     return last.text if last is not None else ''
 
 
+def edictos_from_search():
+    """Plan B si la sede no deja entrar: edictos de la sede que encuentra el buscador (últimos 20 días)."""
+    from . import social
+    out, seen = [], set()
+    for q in ('site:sedeelectronica.lalinea.es edicto', 'site:sedeelectronica.lalinea.es/edictos'):
+        for it in social.web_search(q, days=20, limit=20):
+            url = re.sub(r';jsessionid=[^?#]+', '', it.get('url') or '', flags=re.I)
+            if 'sedeelectronica.lalinea.es' not in url or url in seen: continue
+            seen.add(url)
+            title = clean(re.sub(r'\s*[-|·]\s*Sede electr[oó]nica.*$', '', it.get('title') or '', flags=re.I))
+            date = parse_es_date(it.get('snippet') or '') or datetime.now(timezone.utc).replace(hour=9, minute=0, second=0, microsecond=0).isoformat()
+            if title and recent_enough(date, WINDOW_DAYS['Licitaciones y edictos']):
+                out.append({'title': 'Edicto: ' + title[:240], 'url': url, 'excerpt': clean(it.get('snippet') or title), 'published_at': date})
+    return out
+
+
 def parse_edictos(source):
     """Tablón de edictos de la sede electrónica: tabla con fecha de publicación, fin, título y enlace."""
-    page = fetch_edictos_html(source['url'])
+    try:
+        page = fetch_edictos_html(source['url'])
+    except Exception as exc:
+        found = edictos_from_search()
+        if found:
+            return found
+        raise ValueError('La sede no deja leer el tablón desde el servidor (%s) y el buscador no muestra edictos recientes.' % str(exc)[:120])
     soup = BeautifulSoup(page, 'html.parser')
     out, seen = [], set()
 
@@ -576,6 +598,8 @@ def add_candidate(title, url, excerpt, source_name, source_id=None, published_at
                     (source_id, source_name, title, url, published_at, excerpt, score, relevance, 'new', local_angle, clean(outlet)[:120], image or '', brand))
 
 def read_source(source):
+    if 'sedeelectronica.lalinea.es/edictos' in (source.get('url') or ''):
+        return parse_edictos(source)  # el tablón siempre con su lector (sesión + plan B), se haya añadido como se haya añadido
     if source['kind'] == 'rss': return parse_rss(source)
     if source['kind'] == 'bop': return parse_bop(source)
     if source['kind'] == 'procurement': return parse_procurement(source)

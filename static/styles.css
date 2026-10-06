@@ -178,3 +178,5 @@ label{display:grid;gap:6px;font-weight:700;font-size:14px}
 .bchip.on{background:var(--c);color:#fff}
 .brandpick .chips{display:flex;flex-wrap:wrap;gap:6px}
 .brand{display:inline-block;border-radius:6px;padding:1px 7px;font-size:.72rem;font-weight:700;letter-spacing:.02em}
+
+.srcerr{margin:-4px 0 8px;padding:6px 8px;background:#fff3f4;border-radius:8px;word-break:break-word}

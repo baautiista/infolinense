@@ -157,6 +157,7 @@ def status():
         'tiktok_url_prefix': PUBLIC_BASE_URL + '/p/' if PUBLIC_BASE_URL else '',
         'privacy_url': PUBLIC_BASE_URL + '/privacidad' if PUBLIC_BASE_URL else '',
         'terms_url': PUBLIC_BASE_URL + '/terminos' if PUBLIC_BASE_URL else '',
+        'delete_url': PUBLIC_BASE_URL + '/eliminar-datos' if PUBLIC_BASE_URL else '',
     }
 
 

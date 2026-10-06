@@ -13,7 +13,7 @@ from . import db, sources, pipeline, publishers, photos, canva, ai, planner, lay
 from .auth import login, require_auth
 from .config import BASE_DIR, RENDER_DIR, UPLOAD_DIR, SCAN_INTERVAL_MINUTES, AUTO_PIPELINE, OPENAI_API_KEY, ADMIN_PASSWORD, JWT_SECRET, PUBLISH_MODE, CORS_ORIGINS, PUBLIC_BASE_URL, AUTO_PUBLISH
 
-VERSION='5.9.1'
+VERSION='5.9.2'
 app=FastAPI(title='InfoLinense Desk',version=VERSION)
 app.add_middleware(CORSMiddleware,allow_origins=CORS_ORIGINS,allow_credentials=False,allow_methods=['*'],allow_headers=['Authorization','Content-Type'])
 db.init_db()
@@ -785,6 +785,8 @@ def publish_network(aid:int,network:str):
 
 @app.get('/privacidad')
 def legal_privacy(): return FileResponse(BASE_DIR/'static'/'legal'/'privacidad.html',media_type='text/html')
+@app.get('/eliminar-datos')
+def legal_delete(): return FileResponse(BASE_DIR/'static'/'legal'/'eliminar-datos.html',media_type='text/html')
 @app.get('/terminos')
 def legal_terms(): return FileResponse(BASE_DIR/'static'/'legal'/'terminos.html',media_type='text/html')
 

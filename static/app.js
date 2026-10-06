@@ -321,7 +321,15 @@ async function editor(v) {
     ${published ? '<span class="muted">Publicada</span>' : a.status === 'draft' ? `<button class="btn primary" onclick="reviewed()">Revisada</button>` : `<button class="btn primary" id="pubBtn" onclick="publish()">Publicar</button>`}
   </div>`;
   const f = id => $(`#f-${id}`);
-  const fit = () => { const n = lines(f('headline').value); $('#fit').textContent = n <= 4 ? `${n} de 4 líneas en la imagen` : `${n} líneas: no cabe en la imagen, acórtalo`; $('#fit').className = n <= 4 ? 'muted' : 'error' };
+  const fit = () => {
+    const B = brandOf(f('brand') ? f('brand').value : a.brand);
+    if (B.slug !== 'infolinense' && B.headline_lines) {  // Cofrade/Carnaval: líneas de unos N caracteres
+      const c = B.line_chars || 30, want = B.headline_lines, t = f('headline').value.trim();
+      let n = 0, cur = ''; for (const w of t.split(/\s+/).filter(Boolean)) { const x = (cur + ' ' + w).trim(); if (x.length <= c || !cur) cur = x; else { n++; cur = w } } n += cur ? 1 : 0;
+      $('#fit').textContent = n === want ? `${n} líneas, perfecto` : n < want ? `${n} de ${want} líneas: alárgalo un poco` : `${n} líneas: acórtalo a ${want}`;
+      $('#fit').className = n > want ? 'error' : 'muted'; return;
+    }
+    const n = lines(f('headline').value); $('#fit').textContent = n <= 4 ? `${n} de 4 líneas en la imagen` : `${n} líneas: no cabe en la imagen, acórtalo`; $('#fit').className = n <= 4 ? 'muted' : 'error' };
   const sub = () => { const n = f('subtitle').value.trim().length; $('#sub').textContent = n <= 165 ? `${n} / 165` : `${n} / 165: no cabe en la imagen, acórtala`; $('#sub').className = n <= 165 ? 'muted' : 'error' };
   const count = () => $('#count').textContent = `${f('body').value.length} / 2.200`;
   f('section').onchange = () => { const fs = freeSection(f('brand') ? f('brand').value : a.brand); $('#labelBox').hidden = !(fs && f('section').value === fs) };
@@ -418,6 +426,8 @@ async function settings(v) {
           <label>Titular de 2 líneas<input name="t2" value="${esc(T['2'] || '')}"></label>
           <label>Titular de 4 líneas<input name="t4" value="${esc(T['4'] || '')}"></label></details>
         ${isMain ? '' : `<label>Secciones (una por línea${B.page_mode === 'section' ? '; cada una es una página de la plantilla, en este orden' : ''})<textarea name="sections" rows="${Math.min(20, (B.sections || []).length + 1)}">${esc((B.sections || []).join('\n'))}</textarea></label>
+        <div class="row wrap"><label>Líneas del titular<input name="headline_lines" type="number" min="0" max="6" value="${esc(B.headline_lines || 0)}"></label>
+        <label>Caracteres por línea<input name="line_chars" type="number" min="10" max="60" value="${esc(B.line_chars || 30)}"></label></div>
         <label><input type="checkbox" name="by_section" ${B.page_mode === 'section' ? 'checked' : ''}> Cada sección tiene su página en la plantilla</label>
         <label>Página para los carruseles (0 = la de la noticia)<input name="carousel_page" type="number" min="0" max="50" value="${esc(B.carousel_page || 0)}"></label>
         <label>Página que se exporta si no va por secciones<input name="page" type="number" min="1" max="50" value="${esc(B.page || 1)}"></label>`}
@@ -478,7 +488,7 @@ async function settings(v) {
   $('#brandForm').onsubmit = async e => {
     e.preventDefault(); const d = Object.fromEntries(new FormData(e.target));
     const body = { templates: { main: d.main, '1': d.t1, '2': d.t2, '4': d.t4 }, hashtags: d.hashtags };
-    if (!isMain) { body.sections = d.sections; body.page = Number(d.page || 1); body.page_mode = d.by_section ? 'section' : 'fixed'; body.carousel_page = Number(d.carousel_page || 0) }
+    if (!isMain) { body.sections = d.sections; body.page = Number(d.page || 1); body.page_mode = d.by_section ? 'section' : 'fixed'; body.carousel_page = Number(d.carousel_page || 0); body.headline_lines = Number(d.headline_lines || 0); body.line_chars = Number(d.line_chars || 30) }
     try { await api('/api/brands/' + SB, { method: 'PUT', body: JSON.stringify(body) }); await loadBrands(); toast('Guardado'); render() } catch (er) { toast(er.message) }
   };
   if ($('#metaConn')) $('#metaConn').onclick = () => conn('meta');

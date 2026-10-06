@@ -27,6 +27,7 @@ BRANDS = {
                              'Cristo del Mar y Luz', 'Santo Entierro y Soledad', 'Inmaculada Concepción', 'Hermandad del Rocío',
                              'General', 'Ocasiones especiales'],
                 'templates': {'main': 'EAHXQHp9uXw'}, 'page_mode': 'section', 'carousel_page': 19,
+                'headline_lines': 3, 'line_chars': 30,  # el titular ocupa normalmente 3 líneas de unos 30 caracteres
                 'free_title_section': 'General'},
     'carnaval': {'name': 'Carnavalinense', 'short': 'Carnaval', 'color': '#E72E79', 'text': '#FFFFFF', 'env': 'CARNAVAL_',
                  'about': 'medio del Carnaval de La Línea de la Concepción: agrupaciones, concurso, coplas, cabalgata y fiesta',
@@ -87,6 +88,8 @@ def settings(slug):
     base.setdefault('page_mode', 'fixed')       # 'section': cada sección es una página de la plantilla, en orden
     base.setdefault('carousel_page', 0)         # página para las diapositivas del carrusel (0 = la normal)
     base.setdefault('free_title_section', '')   # sección cuyo título se escribe en cada noticia
+    base.setdefault('headline_lines', 0)        # líneas que debe ocupar el titular (0 = reglas de InfoLinense)
+    base.setdefault('line_chars', 30)           # caracteres por línea en el recuadro del titular
     try:
         row = db.row('SELECT data FROM brand_settings WHERE slug=?', (slug,))
         saved = json.loads(row['data']) if row else {}
@@ -94,7 +97,7 @@ def settings(slug):
         saved = {}
     if saved.get('sections') in _OLD_SECTIONS:  # secciones de prueba antiguas: se usan las nuevas
         saved.pop('sections')
-    for k in ('hashtags', 'sections', 'page', 'about', 'page_mode', 'carousel_page'):
+    for k in ('hashtags', 'sections', 'page', 'about', 'page_mode', 'carousel_page', 'headline_lines', 'line_chars'):
         if saved.get(k) not in (None, '', []):
             base[k] = saved[k]
     base['templates'].update({k: v for k, v in (saved.get('templates') or {}).items() if v})
@@ -113,7 +116,8 @@ def save_settings(slug, data):
     slug = valid(slug)
     cur = settings(slug)
     out = {'templates': dict(cur['templates']), 'hashtags': cur['hashtags'], 'sections': cur['sections'],
-           'page': cur['page'], 'about': cur['about'], 'page_mode': cur['page_mode'], 'carousel_page': cur['carousel_page']}
+           'page': cur['page'], 'about': cur['about'], 'page_mode': cur['page_mode'], 'carousel_page': cur['carousel_page'],
+           'headline_lines': cur['headline_lines'], 'line_chars': cur['line_chars']}
     for k, v in (data.get('templates') or {}).items():
         if k in ('main', '1', '2', '4'):
             tid = template_id(v)
@@ -133,6 +137,12 @@ def save_settings(slug, data):
             out['carousel_page'] = max(0, min(50, int(data['carousel_page'] or 0)))
         except (TypeError, ValueError):
             pass
+    for k, lo, hi in (('headline_lines', 0, 6), ('line_chars', 10, 60)):
+        if k in data:
+            try:
+                out[k] = max(lo, min(hi, int(data[k] or 0)))
+            except (TypeError, ValueError):
+                pass
     if 'page' in data:
         try:
             out['page'] = max(1, min(50, int(data['page'])))
@@ -173,6 +183,7 @@ def public(slug):
     return {'slug': s['slug'], 'name': s['name'], 'short': s['short'], 'color': s['color'], 'text': s['text'],
             'hashtags': s['hashtags'], 'sections': s['sections'], 'templates': s['templates'], 'page': s['page'],
             'page_mode': s['page_mode'], 'carousel_page': s['carousel_page'], 'free_title_section': s['free_title_section'],
+            'headline_lines': s['headline_lines'], 'line_chars': s['line_chars'],
             'web': {'enabled': web_enabled(slug), 'mode': w['mode'],
                     'host': re.sub(r'^https?://([^/]+).*$', r'\1', w['webhook_url'] or w['wp_url'] or '')},
             'env_prefix': BRANDS[s['slug']]['env']}

@@ -13,7 +13,7 @@ from . import db, sources, pipeline, publishers, photos, canva, ai, planner, lay
 from .auth import login, require_auth
 from .config import BASE_DIR, RENDER_DIR, UPLOAD_DIR, SCAN_INTERVAL_MINUTES, AUTO_PIPELINE, OPENAI_API_KEY, ADMIN_PASSWORD, JWT_SECRET, PUBLISH_MODE, CORS_ORIGINS, PUBLIC_BASE_URL, AUTO_PUBLISH
 
-VERSION='5.9.8'
+VERSION='5.9.9'
 app=FastAPI(title='InfoLinense Desk',version=VERSION)
 app.add_middleware(CORSMiddleware,allow_origins=CORS_ORIGINS,allow_credentials=False,allow_methods=['*'],allow_headers=['Authorization','Content-Type'])
 db.init_db()
@@ -895,7 +895,7 @@ def networks_disconnect(network:str,brand:str='infolinense'):
     return {'ok':True}
 class BrandIn(BaseModel):
     templates:dict|None=None; hashtags:str|None=None; sections:list[str]|str|None=None; page:int|None=None
-    page_mode:str|None=None; carousel_page:int|None=None
+    page_mode:str|None=None; carousel_page:int|None=None; headline_lines:int|None=None; line_chars:int|None=None
 @app.get('/api/brands',dependencies=[Depends(require_auth)])
 def brands_list(): return brands.all_public()
 @app.put('/api/brands/{slug}',dependencies=[Depends(require_auth)])

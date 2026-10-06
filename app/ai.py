@@ -502,6 +502,12 @@ def draft(candidate, source_text='', research='', quick=False):
                  f"«Agrupación Parroquial…»; si no hay una protagonista clara, «{brands.holy_week_label()}»),\n") if other and b.get('free_title_section') else ''
     medium = (f"MEDIO: escribes para {b['name']}, {b['about']}. Mismo rigor y estilo que InfoLinense, con el vocabulario propio "
               f"de ese mundo (sin explicar lo que su público ya sabe).\n") if other else ''
+    if other and b.get('headline_lines'):
+        n, c = int(b['headline_lines']), int(b['line_chars'] or 30)
+        head_rule = (f'directo, cuenta la noticia y ocupa {n} líneas en la imagen: entre {c * (n - 1) + 5} y {c * n} caracteres '
+                     f'(nunca más de {c * n}), porque va tal cual en la imagen')
+    else:
+        head_rule = 'breve, directo, cuenta la noticia, máximo 80 caracteres porque va tal cual en la imagen'
     prompt = f'''{medium}Redacta la noticia siguiendo al pie de la letra la guía de estilo de InfoLinense.
 Usa SOLO la información de las fuentes de abajo, pero aprovecha TODO el TEXTO FUENTE, no solo el titular: incorpora todos los datos útiles que contiene (cifras, fechas, plazos, lugares, nombres de calles y barrios, empresas, requisitos, antecedentes, declaraciones relevantes).
 Extensión del TEXTO: entre 1.800 y 2.200 caracteres con espacios. Solo si el texto fuente es muy corto (menos de 600 caracteres) puede quedar más breve, sin inventar ni rellenar.
@@ -521,7 +527,7 @@ Devuelve la entrega (SECCIÓN, TITULAR, SUBTÍTULO, TEXTO) como JSON válido, si
 focus (ENFOQUE PRINCIPAL: la verdadera noticia en una frase),
 section (exactamente una de: {sections}. Guía: {guide}),
 {label_key}
-headline (TITULAR: breve, directo, cuenta la noticia, máximo 80 caracteres porque va tal cual en la imagen),
+headline (TITULAR: {head_rule}),
 subtitle (SUBTÍTULO o ENTRADILLA: aporta información nueva, nunca repite el titular, máximo 160 caracteres porque va tal cual en la imagen),
 body (TEXTO: la noticia completa, entre 1.800 y 2.200 caracteres, en 5 a 8 párrafos),
 headline_options (lista de EXACTAMENTE 7 titulares alternativos con los mismos criterios, distintos entre sí y del titular principal),

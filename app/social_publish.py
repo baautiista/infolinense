@@ -33,6 +33,8 @@ META_CONFIG_ID = os.getenv('META_CONFIG_ID', '').strip()
 META_GRAPH_VERSION = os.getenv('META_GRAPH_VERSION', 'v21.0').strip()
 # Alternativa sin botón: token de página permanente puesto a mano en Railway
 META_PAGE_ID = os.getenv('META_PAGE_ID', '').strip()
+# Página de Facebook de cada medio (se elige sola al conectar si administras varias)
+PREFERRED_PAGES = {'infolinense': META_PAGE_ID or '61595148391077'}
 META_PAGE_TOKEN = os.getenv('META_PAGE_TOKEN', '').strip()
 INSTAGRAM_USER_ID = os.getenv('INSTAGRAM_USER_ID', '').strip()
 # Instagram directo (sin página de Facebook): «API de Instagram con inicio de sesión de Instagram»
@@ -244,7 +246,7 @@ def meta_from_user_token(short):
                       'instagram_id': ig.get('id') or '', 'instagram_username': ig.get('username') or ''})
     if not pages:
         raise SocialError('Tu usuario de Facebook no administra ninguna página o no diste permiso a la página.')
-    chosen = next((p for p in pages if p['id'] == META_PAGE_ID and _is_default()), None) \
+    chosen = next((p for p in pages if p['id'] == PREFERRED_PAGES.get(_brand.get())), None) \
         or next((p for p in pages if p['instagram_id']), None) or pages[0]
     _save_account('meta', {'pages': pages, 'page': chosen})
     return chosen

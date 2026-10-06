@@ -224,7 +224,7 @@ window.unschedule = async id => { try { await api(`/api/articles/${id}/unschedul
 window.setTime = async (id, p, value) => { if (!value) return; try { await api(`/api/candidates/${id}/triage`, { method: 'POST', body: JSON.stringify({ priority: p, planned_at: value + ':00' }) }); toast('Hora fijada'); render() } catch (e) { toast(e.message) } };
 function pickedNets() { const boxes = document.querySelectorAll('.netpick input'); if (boxes.length) return [...boxes].filter(i => i.checked).map(i => i.value); let saved = null; try { saved = JSON.parse(localStorage.getItem('nets') || 'null') } catch (e) { } return saved }
 function publishReport(r) { const lines = (r.results || []).filter(x => x.message).map(x => (x.ok ? '✓ ' : '✗ ') + x.message); toast(lines.join(' · ') || (r.published ? 'Publicada' : r.message || 'Aprobada')) }
-window.publishNow = async (id, b) => { b.disabled = true; b.textContent = 'Publicando…'; try { const r = await api(`/api/articles/${id}/publish`, { method: 'POST', body: JSON.stringify({ networks: pickedNets() }) }); publishReport(r); render(); counts(); if (r.published) offerFacebook(id) } catch (e) { toast(e.message); b.disabled = false; b.textContent = 'Publicar' } };
+window.publishNow = async (id, b) => { b.disabled = true; b.textContent = 'Publicando…'; try { const r = await api(`/api/articles/${id}/publish`, { method: 'POST', body: JSON.stringify({ networks: pickedNets() }) }); publishReport(r); render(); counts(); if (r.published && !fbDone(r)) offerFacebook(id) } catch (e) { toast(e.message); b.disabled = false; b.textContent = 'Publicar' } };
 // Facebook personal: Meta no deja publicar en perfiles por programa, así que se comparte a mano.
 // 1.ª pulsación: prepara imagen y texto. 2.ª: abre el menú «Compartir» del móvil (o descarga la imagen y abre Facebook).
 const shareKits = {};
@@ -259,6 +259,7 @@ window.shareFb = async (id, b) => {
   } catch (e) { toast(e.message); if (b) b.textContent = label } finally { if (b) b.disabled = false }
 };
 // Tras publicar: barra fija con el botón para compartir en Facebook (la imagen se prepara mientras tanto)
+function fbDone(r) { return (r.results || []).some(x => x.network === 'facebook' && x.ok) }
 function offerFacebook(id) {
   prepareShare(id).catch(() => { });
   let bar = $('#fbbar'); if (!bar) { bar = document.createElement('div'); bar.id = 'fbbar'; document.body.appendChild(bar) }
@@ -349,7 +350,7 @@ window.reviewed = async () => {
 };
 window.publish = async () => {
   const b = $('#pubBtn'); b.disabled = true; b.textContent = 'Publicando…';
-  try { await saveArticle(); const r = await api(`/api/articles/${editorId}/publish`, { method: 'POST', body: JSON.stringify({ networks: pickedNets() }) }); publishReport(r); if (r.published) offerFacebook(editorId); render() }
+  try { await saveArticle(); const r = await api(`/api/articles/${editorId}/publish`, { method: 'POST', body: JSON.stringify({ networks: pickedNets() }) }); publishReport(r); if (r.published && !fbDone(r)) offerFacebook(editorId); render() }
   catch (e) { toast(e.message); b.disabled = false; b.textContent = 'Publicar' }
 };
 window.autoPhoto = async () => {
@@ -429,12 +430,11 @@ async function settings(v) {
         ${nets.instagram_login ? `<div class="row wrap"><button class="btn small" id="igConn">${nets.instagram && nets.instagram.direct ? 'Volver a conectar' : 'Conectar Instagram'}</button>${nets.instagram && nets.instagram.direct ? '<button class="link" id="igOff">Desconectar</button>' : ''}</div>` : ''}
         ${nets.instagram_callback ? `<p class="muted small">Dirección de retorno para «Instagram → Configuración de la API con inicio de sesión de Instagram»: <code>${esc(nets.instagram_callback)}</code></p>` : ''}</div>
       <div class="netrow"><b>Facebook</b>
-        ${nets.facebook && nets.facebook.connected ? `<p>Página: ${esc(nets.facebook.name || 'conectada')}. Se publica automático.</p><button class="link" id="metaOff">Desconectar página</button>` : !isMain ? `<p>Sin conectar. Conecta la página de Facebook de ${esc(B.name)} (tienes que ser administrador).</p>
+        ${nets.facebook && nets.facebook.connected ? `<p>Página: ${esc(nets.facebook.name || 'conectada')}. Se publica automático.</p><button class="link" id="metaOff">Desconectar página</button>` : `<p>Sin conectar. Conecta la página de Facebook de ${esc(B.name)} (tienes que ser administrador). Tu perfil personal no se toca.</p>
           ${nets.meta_login ? `<button class="btn small" id="metaConn">Conectar página de Facebook</button>
-          <details class="alts"><summary>Si el botón da error: pegar un token</summary><form id="metaTok" class="stack"><input name="token" placeholder="Token del Explorador de la API Graph" autocomplete="off"><button class="btn small">Conectar con este token</button></form></details>` : '<p class="muted small">Faltan META_APP_ID y META_APP_SECRET en Railway.</p>'}` : '<p>Tu cuenta personal no se toca. Meta no permite publicar en perfiles personales de forma automática, así que en cada noticia tienes el botón <b>«Compartir en Facebook»</b>: deja la imagen y el texto listos y solo tienes que pulsar «Publicar» en Facebook.</p>'}
+          <details class="alts"><summary>Si el botón da error: pegar un token</summary><form id="metaTok" class="stack"><input name="token" placeholder="Token del Explorador de la API Graph" autocomplete="off"><button class="btn small">Conectar con este token</button></form></details>` : '<p class="muted small">Faltan META_APP_ID y META_APP_SECRET en Railway.</p>'}`}
         ${(nets.pages || []).length > 1 ? `<label>Página<select id="pagePick">${nets.pages.map(p => `<option value="${esc(p.id)}" ${p.name === nets.facebook.name ? 'selected' : ''}>${esc(p.name)}</option>`).join('')}</select></label>` : ''}
-        ${isMain && nets.meta_login && !(nets.facebook && nets.facebook.connected) ? `<details class="alts"><summary>Solo si algún día creas una página de Facebook</summary><button class="btn small" id="metaConn">Conectar página de Facebook</button>
-          <form id="metaTok" class="stack"><input name="token" placeholder="O pega el token del Explorador de la API Graph" autocomplete="off"><button class="btn small">Conectar con este token</button></form></details>` : ''}</div>
+</div>
       <div class="netrow"><b>TikTok</b>
         <p>${nets.tiktok && nets.tiktok.connected ? 'Conectado' + (nets.tiktok.name ? ': ' + esc(nets.tiktok.name) : '') + '.' : nets.tiktok_configured ? 'Sin conectar.' : 'Faltan TIKTOK_CLIENT_KEY y TIKTOK_CLIENT_SECRET en Railway.'}</p>
         ${nets.tiktok_configured ? `<div class="row wrap"><button class="btn small" id="ttConn">${nets.tiktok && nets.tiktok.connected ? 'Volver a conectar' : 'Conectar TikTok'}</button>${nets.tiktok && nets.tiktok.connected ? '<button class="link" id="ttOff">Desconectar</button>' : ''}</div>` : ''}

@@ -13,7 +13,7 @@ from . import db, sources, pipeline, publishers, photos, canva, ai, planner, lay
 from .auth import login, require_auth
 from .config import BASE_DIR, RENDER_DIR, UPLOAD_DIR, SCAN_INTERVAL_MINUTES, AUTO_PIPELINE, OPENAI_API_KEY, ADMIN_PASSWORD, JWT_SECRET, PUBLISH_MODE, CORS_ORIGINS, PUBLIC_BASE_URL, AUTO_PUBLISH
 
-VERSION='6.4.1'
+VERSION='6.4.2'
 app=FastAPI(title='InfoLinense Desk',version=VERSION)
 app.add_middleware(CORSMiddleware,allow_origins=CORS_ORIGINS,allow_credentials=False,allow_methods=['*'],allow_headers=['Authorization','Content-Type'])
 db.init_db()
@@ -380,7 +380,7 @@ def to_publish(brand:str=''):
     rows=db.rows("""SELECT a.id,a.brand,a.headline,a.section,a.status,a.image_local,a.publish_url,c.planned_at,c.editorial_priority,c.id candidate_id,
                       a.scheduled_at,a.scheduled_networks,a.schedule_error,d.exported canva_exported FROM articles a LEFT JOIN candidates c ON c.id=a.candidate_id
                       LEFT JOIN canva_designs d ON d.article_id=a.id
-                      WHERE a.status IN ('review_ready','approved') OR (a.status='published' AND a.updated_at>=date('now'))""")
+                      WHERE a.status IN ('draft','review_ready','approved') OR (a.status='published' AND a.updated_at>=date('now'))""")
     rows=_bf(rows,brand)
     for r in rows: r['has_photo']=bool(r.pop('image_local',None))
     posts=social_publish.posts_for([r['id'] for r in rows])

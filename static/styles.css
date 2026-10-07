@@ -263,3 +263,5 @@ body.editing .actions{bottom:0}
 .seg span{display:inline-block;border:1.5px solid var(--line);border-radius:999px;padding:8px 14px;font-weight:700;cursor:pointer;background:#fff}
 .seg input:checked+span{background:var(--navy);border-color:var(--navy);color:#fff}
 .seg input:focus-visible+span{outline:3px solid var(--lime)}
+.rv-card.done{opacity:.72;border-left-color:#1E9E5A}
+.rv-card .sched{font-size:13px;margin:6px 0}

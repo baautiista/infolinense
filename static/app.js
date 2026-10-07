@@ -288,42 +288,49 @@ function placeOf(r) {
   if (r.planned_at) { const d = String(r.planned_at).slice(0, 10); return [d < today ? today : d, slotOf(r.planned_at)] }
   return (r.editorial_priority === 'urgent' || r.editorial_priority === 'today') ? [today, ''] : ['later', ''];
 }
-async function reviewView(v) {
-  const rows = (await api('/api/drafting')).filter(r => r.state === 'ready');
+// Calendario por días y franjas (lo usa Publicar). place(r) → [día, franja]; card(r) → HTML.
+function calendarHtml(rows, place, card) {
   const today = madridDate();
-  const days = [...new Set([today, addDays(today, 1), ...rows.map(r => placeOf(r)[0])])].sort((a, b) => a === 'later' ? 1 : b === 'later' ? -1 : a.localeCompare(b));
-  const card = r => `<article class="rv-card" draggable="true" data-aid="${r.article_id}" style="--bc:${brandOf(r.brand).color}">
-      <div class="meta">${brandBadge(r.brand)}${r.section ? secBadge(r.section, r.brand) : ''}${r.planned_at ? `<span class="rv-time">${esc(String(r.planned_at).slice(11, 16))}</span>` : ''}${r.editorial_priority === 'urgent' ? '<span class="flag">Urgente</span>' : ''}${r.has_photo ? '' : '<span class="muted small">sin foto</span>'}</div>
-      <h3><a href="#editor/${r.article_id}">${esc(r.headline || r.title)}</a></h3>
-      ${r.subtitle ? `<p class="rv-sub">${esc(r.subtitle)}</p>` : ''}
-      <div class="rv-actions"><button class="btn small primary" onclick="go('editor/${r.article_id}')">Revisar</button><button class="btn small" onclick="moveSheet(${r.article_id})">Mover</button><button class="btn small danger icon" title="Eliminar" aria-label="Eliminar" onclick="removeArticle(${r.article_id})">🗑</button></div></article>`;
-  const ordered = [];
-  const daysHtml = days.map(d => {
-    const inDay = rows.filter(r => placeOf(r)[0] === d);
+  const days = [...new Set([today, addDays(today, 1), ...rows.map(r => place(r)[0])])].sort((a, b) => a === 'later' ? 1 : b === 'later' ? -1 : a.localeCompare(b));
+  return days.map(d => {
+    const inDay = rows.filter(r => place(r)[0] === d);
     if (d === 'later' && !inDay.length) return '';
     const [rel, long] = d === 'later' ? ['Más adelante', 'sin fecha fijada'] : dayTitle(d);
-    const unslotted = inDay.filter(r => !placeOf(r)[1]);
+    const unslotted = inDay.filter(r => !place(r)[1]);
     const slots = d === 'later' ? '' : SLOTS.map(([k, name, icon]) => {
-      const list = inDay.filter(r => placeOf(r)[1] === k).sort((a, b) => String(a.planned_at).localeCompare(String(b.planned_at)));
-      ordered.push(...list);
+      const list = inDay.filter(r => place(r)[1] === k).sort((a, b) => String(a._at).localeCompare(String(b._at)));
       return `<div class="rv-slot" data-date="${d}" data-slot="${k}"><h3><span>${icon}</span> ${name} <b>${list.length || ''}</b></h3>${list.map(card).join('') || '<p class="rv-empty">Arrastra aquí o usa «Mover»</p>'}</div>`;
     }).join('');
-    ordered.push(...unslotted);
     return `<section class="rv-day ${d === today ? 'today' : ''}"><header><h2>${esc(rel)}</h2><span>${esc(long)}</span><b>${inDay.length} ${inDay.length === 1 ? 'noticia' : 'noticias'}</b></header>
       ${unslotted.length ? `<div class="rv-slot rv-loose" data-date="${d === 'later' ? '' : d}" data-slot=""><h3>${d === 'later' ? '🗓️ Sin día' : '⏳ Sin hora'} <b>${unslotted.length}</b></h3>${unslotted.map(card).join('')}</div>` : ''}
       ${slots ? `<div class="rv-slots">${slots}</div>` : ''}</section>`;
   }).join('');
-  reviewIds = ordered.map(r => r.article_id);
-  v.innerHTML = rows.length ? `<div class="rv-intro"><p><b>${rows.length}</b> por revisar. Abre cada una, corrige texto, foto e imagen y pulsa «Revisada».</p><p class="muted small">Arrastra las tarjetas para cambiarlas de día o de franja. Si cambias el día, «hoy», «mañana», «ayer»… se ajustan solos en el texto.</p></div>${daysHtml}`
-    : `<p class="empty">No queda nada por revisar.</p>${nextPhase('Ir a Publicar', 'publish')}`;
-  // arrastrar y soltar (ordenador)
-  v.querySelectorAll('.rv-card').forEach(c => c.ondragstart = e => { e.dataTransfer.setData('text/plain', c.dataset.aid); c.classList.add('dragging') });
-  v.querySelectorAll('.rv-card').forEach(c => c.ondragend = () => c.classList.remove('dragging'));
+}
+function armDrag(v) {
+  v.querySelectorAll('.rv-card[draggable="true"]').forEach(c => { c.ondragstart = e => { e.dataTransfer.setData('text/plain', c.dataset.aid); c.classList.add('dragging') }; c.ondragend = () => c.classList.remove('dragging') });
   v.querySelectorAll('.rv-slot[data-slot]:not(.rv-loose)').forEach(z => {
     z.ondragover = e => { e.preventDefault(); z.classList.add('over') };
     z.ondragleave = () => z.classList.remove('over');
     z.ondrop = e => { e.preventDefault(); z.classList.remove('over'); const aid = +e.dataTransfer.getData('text/plain'); if (aid) moveTo(aid, z.dataset.date, z.dataset.slot) };
   });
+}
+function whenLabel(at) {
+  if (!at) return 'Sin fecha';
+  const d = String(at).slice(0, 10), t = String(at).slice(11, 16);
+  return dayTitle(d < madridDate() ? madridDate() : d)[0] + (t ? ' · ' + t : '');
+}
+// Revisar: lista sencilla de lo que hay que repasar (el orden y las horas se organizan en Publicar)
+async function reviewView(v) {
+  const rows = (await api('/api/drafting')).filter(r => r.state === 'ready')
+    .sort((a, b) => String(a.planned_at || '9999').localeCompare(String(b.planned_at || '9999')));
+  reviewIds = rows.map(r => r.article_id);
+  const card = r => `<article class="rv-card" style="--bc:${brandOf(r.brand).color}">
+      <div class="meta">${brandBadge(r.brand)}${r.section ? secBadge(r.section, r.brand) : ''}<span class="rv-time">${esc(whenLabel(r.planned_at))}</span>${r.editorial_priority === 'urgent' ? '<span class="flag">Urgente</span>' : ''}${r.has_photo ? '' : '<span class="muted small">sin foto</span>'}</div>
+      <h3><a href="#editor/${r.article_id}">${esc(r.headline || r.title)}</a></h3>
+      ${r.subtitle ? `<p class="rv-sub">${esc(r.subtitle)}</p>` : ''}
+      <div class="rv-actions"><button class="btn small primary" onclick="go('editor/${r.article_id}')">Revisar</button><button class="btn small danger icon" title="Eliminar" aria-label="Eliminar" onclick="removeArticle(${r.article_id})">🗑</button></div></article>`;
+  v.innerHTML = rows.length ? `<div class="rv-intro"><p><b>${rows.length}</b> por revisar. Abre cada una, corrige texto, foto e imagen y pulsa «Revisada».</p><p class="muted small">El día y la hora de cada noticia se organizan en <a href="#publish">Publicar</a>.</p></div><div class="list">${rows.map(card).join('')}</div>`
+    : `<p class="empty">No queda nada por revisar.</p>${nextPhase('Ir a Publicar', 'publish')}`;
 }
 async function moveTo(aid, date, slot, time) {
   toast('Moviendo…');
@@ -369,28 +376,57 @@ async function publishView(v) {
   await Promise.all(slugs.map(async b => { byBrand[b] = await api('/api/networks?brand=' + b).catch(() => ({})) }));
   const NETS = ['instagram', 'facebook', 'tiktok'];
   const available = NETS.filter(n => slugs.some(b => (byBrand[b][n] || {}).connected));
-  const chosen = netPrefs(available);
   const bname = b => (BRANDS.find(x => x.slug === b) || {}).short || b;
   const offline = slugs.flatMap(b => NETS.filter(n => !(byBrand[b][n] || {}).connected).map(n => (slugs.length > 1 ? bname(b) + ' · ' : '') + NET_NAMES[n]));
-  const picker = `<div class="netpick row wrap"><span class="muted small">${slugs.length > 1 ? 'Se publica a la vez en (cada noticia en las cuentas de su medio):' : 'Se publica a la vez en:'}</span>${available.map(n => `<label class="switch"><input type="checkbox" value="${n}" ${chosen.includes(n) ? 'checked' : ''} "> ${NET_NAMES[n]}</label>`).join('')}
-    ${offline.map(t => `<a class="switch off" href="#settings" title="Sin conectar">${esc(t)}: sin conectar</a>`).join('')}</div>`;
   const noNets = b => !NETS.some(n => (byBrand[b] && byBrand[b][n] || {}).connected);
-  const today = new Date().toLocaleDateString('sv-SE', { timeZone: 'Europe/Madrid' });
-  const isTodayRow = r => !r.planned_at || String(r.planned_at).slice(0, 10) <= today;
-  const row = r => `<article class="item slot"><div class="hour">${r.planned_at ? esc(String(r.planned_at).slice(11, 16)) : '–'}</div><div class="grow">
-      <div class="meta">${brandBadge(r.brand)}${secBadge(r.section, r.brand)}<span class="st st-${r.status}">${STATUS[r.status]}</span><span>${r.canva_exported ? 'Imagen lista' : r.has_photo ? 'Con foto' : 'Sin foto'}</span></div>
+  const pending = rows.filter(r => !['published', 'draft'].includes(r.status) && !r.scheduled_at);
+  const picker = `<div class="netpick row wrap"><span class="muted small">${slugs.length > 1 ? 'Se publica a la vez en (cada noticia en las cuentas de su medio):' : 'Se publica a la vez en:'}</span>${available.map(n => `<label class="switch"><input type="checkbox" value="${n}" checked> ${NET_NAMES[n]}</label>`).join('')}
+    ${offline.map(t => `<a class="switch off" href="#settings" title="Sin conectar">${esc(t)}: sin conectar</a>`).join('')}</div>`;
+  rows.forEach(r => r._at = r.status === 'published' ? '' : (r.scheduled_at || r.planned_at || ''));
+  const place = r => {
+    const today = madridDate();
+    if (r.status === 'published') return [today, ''];
+    const at = r._at;
+    if (at) { const d = String(at).slice(0, 10); return [d < today ? today : d, slotOf(at)] }
+    return (r.editorial_priority === 'urgent' || r.editorial_priority === 'today') ? [today, ''] : ['later', ''];
+  };
+  const card = r => {
+    const done = r.status === 'published';
+    const actions = r.status === 'draft' ? `<div class="rv-actions"><button class="btn small primary" onclick="go('editor/${r.id}')">Revisar</button><button class="btn small" onclick="moveSheet(${r.id})">Mover</button><button class="btn small danger icon" title="Eliminar" aria-label="Eliminar" onclick="removeArticle(${r.id})">🗑</button></div>`
+      : done ? `<div class="row wrap">${r.publish_url ? `<a class="net ok" href="${safeUrl(r.publish_url)}" target="_blank" rel="noopener">Web ✓</a>` : ''}${netStatus(r)}</div>`
+      : r.scheduled_at ? `<div class="sched"><b>⏰ Se publica sola ${esc(whenText(r.scheduled_at))}</b> · ${schedNets(r)}</div>
+         <div class="rv-actions"><button class="btn small" onclick="publishNow(${r.id},this)">Publicar ahora</button><button class="btn small" onclick="moveSheet(${r.id})">Mover</button><button class="link" onclick="unschedule(${r.id})">Cancelar</button></div>`
+      : `${r.schedule_error ? `<p class="error small">No se pudo publicar a su hora: ${esc(r.schedule_error)}</p>` : ''}
+         <div class="rv-actions"><button class="btn small primary" onclick="scheduleAt(${r.id},'${esc(r._at)}',this)">Programar${r._at ? ' ' + esc(String(r._at).slice(11, 16)) : ''}</button><button class="btn small" onclick="publishNow(${r.id},this)">Publicar ahora</button><button class="btn small" onclick="moveSheet(${r.id})">Mover</button><button class="btn small danger icon" title="Eliminar" aria-label="Eliminar" onclick="removeArticle(${r.id})">🗑</button></div>`;
+    return `<article class="rv-card ${done ? 'done' : ''}" ${done ? '' : 'draggable="true"'} data-aid="${r.id}" style="--bc:${brandOf(r.brand).color}">
+      <div class="meta">${brandBadge(r.brand)}${secBadge(r.section, r.brand)}${r._at ? `<span class="rv-time">${esc(String(r._at).slice(11, 16))}</span>` : ''}${done ? '<span class="st st-published">Publicada</span>' : r.status === 'draft' ? '<span class="flag">Sin revisar</span>' : ''}<span class="muted small">${r.canva_exported ? 'Imagen lista' : r.has_photo ? 'Sin imagen de Canva' : 'Sin foto'}</span></div>
       <h3><a href="#editor/${r.id}">${esc(r.headline)}</a></h3>
-      ${r.status !== 'published' && (r.brand || 'infolinense') !== 'infolinense' && noNets(r.brand) ? `<p class="error small">${esc(bname(r.brand))} no tiene Instagram ni Facebook conectados: no se publicará en ningún sitio. <a href="#settings">Conectar en Ajustes</a></p>` : ''}
-      ${r.status === 'published' ? `<div class="row wrap">${r.publish_url ? `<a class="net ok" href="${safeUrl(r.publish_url)}" target="_blank" rel="noopener">Web ✓</a>` : ''}${netStatus(r)}</div>` :
-        r.scheduled_at ? `<div class="sched"><b>⏰ Se publica sola ${esc(whenText(r.scheduled_at))}</b> · ${schedNets(r)}</div>
-         <div class="row wrap"><button class="btn small" onclick="publishNow(${r.id},this)">Publicar ahora</button><button class="link" onclick="unschedule(${r.id})">Cancelar programación</button></div>` :
-        `${r.schedule_error ? `<p class="error small">No se pudo publicar a su hora: ${esc(r.schedule_error)}</p>` : ''}<div class="row wrap"><input type="datetime-local" id="when-${r.id}" value="${esc(defaultWhen(r.planned_at))}">
-         <button class="btn small primary" onclick="scheduleNow(${r.id},this)">Programar</button><button class="btn small" onclick="publishNow(${r.id},this)">Publicar ahora</button></div>`}</div></article>`;
-  const todayRows = rows.filter(isTodayRow), later = rows.filter(r => !isTodayRow(r));
-  v.innerHTML = rows.length ? `${picker}<h2 class="day">Hoy</h2><div class="list">${todayRows.map(row).join('') || '<p class="muted">Nada para hoy.</p>'}</div>
-    ${later.length ? `<h2 class="day">Próximos días</h2><div class="list">${later.map(row).join('')}</div>` : ''}`
-    : `<p class="empty">Aún no hay noticias revisadas.</p>${nextPhase('Ir a Revisar', 'review')}`;
+      ${!done && (r.brand || 'infolinense') !== 'infolinense' && noNets(r.brand) ? `<p class="error small">${esc(bname(r.brand))} no tiene redes conectadas. <a href="#settings">Conectar</a></p>` : ''}
+      ${actions}</article>`;
+  };
+  v.innerHTML = rows.length ? `${picker}
+    <div class="rv-intro"><p>Organiza el día: arrastra las tarjetas (o «Mover») a otro día o franja. Si cambias el día, «hoy», «mañana»… se ajustan solos en el texto.</p>
+      ${pending.length ? `<button class="btn primary" id="schedAll">Programar las ${pending.length} a su hora</button>` : ''}</div>
+    ${calendarHtml(rows, place, card)}`
+    : `<p class="empty">Aún no hay noticias para publicar.</p>${nextPhase('Ir a Revisar', 'review')}`;
+  armDrag(v);
+  if ($('#schedAll')) $('#schedAll').onclick = async e => {
+    const b = e.target; b.disabled = true; b.textContent = 'Programando…'; let ok = 0; const errs = [];
+    for (const r of pending) {
+      const at = r._at && String(r._at).slice(0, 16) > madridNow() ? String(r._at).slice(0, 16) : null;
+      if (!at) { errs.push('«' + r.headline.slice(0, 40) + '»: sin hora futura'); continue }
+      try { await api(`/api/articles/${r.id}/schedule`, { method: 'POST', body: JSON.stringify({ at, networks: pickedNets() }) }); ok++ } catch (er) { errs.push('«' + r.headline.slice(0, 40) + '»: ' + er.message) }
+    }
+    toast(`${ok} programadas` + (errs.length ? ' · ' + errs.slice(0, 2).join(' · ') : '')); render(); counts();
+  };
 }
+window.scheduleAt = async (id, at, b) => {
+  let when = String(at || '').slice(0, 16);
+  if (!when || when <= madridNow()) { when = prompt('¿A qué hora se publica? (AAAA-MM-DD HH:MM)', defaultWhen(at).replace('T', ' ')); if (!when) return; when = when.trim().replace(' ', 'T') }
+  b.disabled = true; b.textContent = 'Programando…';
+  try { const r = await api(`/api/articles/${id}/schedule`, { method: 'POST', body: JSON.stringify({ at: when, networks: pickedNets() }) }); toast('Programada: se publicará sola ' + whenText(r.scheduled_at)); render(); counts() }
+  catch (e) { toast(e.message); b.disabled = false; b.textContent = 'Programar' }
+};
 // Programar: la noticia se publica sola a esa hora (web + redes marcadas). Facebook personal se comparte a mano.
 function madridNow() { return new Date().toLocaleString('sv-SE', { timeZone: 'Europe/Madrid' }).replace(' ', 'T').slice(0, 16) }
 function defaultWhen(planned) { const p = String(planned || '').slice(0, 16); const now = madridNow(); return p && p > now ? p : now.slice(0, 11) + String(Math.min(23, +now.slice(11, 13) + 1)).padStart(2, '0') + ':00' }

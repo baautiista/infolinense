@@ -104,6 +104,7 @@ def init_db():
         'scheduled_at':'TEXT',
         'section_label':'TEXT',
         'time_ref':'TEXT',
+        'canva_error':'TEXT',
         'brand':"TEXT NOT NULL DEFAULT 'infolinense'",
         'scheduled_networks':'TEXT',
         'schedule_error':'TEXT',
@@ -227,5 +228,10 @@ def row(sql,args=()):
 def exec_(sql,args=()):
     c=conn(); cur=c.execute(sql,args); c.commit(); rid=cur.lastrowid; c.close(); return rid
 
+def get_setting(key,default=''):
+    r=row('SELECT value FROM settings WHERE key=?',(key,))
+    return r['value'] if r else default
+def set_setting(key,value):
+    exec_('INSERT OR REPLACE INTO settings(key,value) VALUES(?,?)',(key,str(value)))
 def log(kind,msg):
     exec_('INSERT INTO activity(kind,message) VALUES(?,?)',(kind,msg))

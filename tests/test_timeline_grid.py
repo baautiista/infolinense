@@ -69,3 +69,25 @@ class GridTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class AytoTests(unittest.TestCase):
+    def setUp(self):
+        db.init_db()
+        for t in ('articles', 'candidates'):
+            db.exec_('DELETE FROM ' + t)
+
+    def test_today_ayuntamiento_marked_for_today(self):
+        from app import sources, pipeline
+        src = db.row("SELECT * FROM sources WHERE url='https://lalinea.es/feed/'")
+        now = datetime.now(planner.TZ).isoformat()
+        cid = sources.add_candidate('El Ayuntamiento de La Línea abre el plazo de matrícula en las escuelas deportivas', 'https://lalinea.es/n/1',
+                                    'texto', src['name'], src['id'], now, src)
+        with patch.object(pipeline, 'queue_auto_write') as q:
+            self.assertEqual(sources.auto_ayto([cid]), 1)
+        self.assertEqual(db.row('SELECT editorial_priority FROM candidates WHERE id=?', (cid,))['editorial_priority'], 'today')
+        q.assert_called_once()
+        db.set_setting('auto_ayto', '0')
+        db.exec_("UPDATE candidates SET editorial_priority='undecided' WHERE id=?", (cid,))
+        self.assertEqual(sources.auto_ayto([cid]), 0)
+        db.set_setting('auto_ayto', '1')

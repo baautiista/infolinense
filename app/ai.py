@@ -377,7 +377,7 @@ Reglas que nunca rompes:
 - Devuelves únicamente JSON válido, sin markdown.'''
 
 from . import layout
-SECTIONS = ', '.join(layout.FAMILY_NAMES)
+SECTIONS = '; '.join('%s (o más concreta: %s)' % (f, ', '.join(layout.SUBSECTIONS.get(f, []))) for f in layout.FAMILY_NAMES)
 SECTION_GUIDE = ('OBRAS = obras, urbanismo, infraestructuras, movilidad, tráfico, aparcamientos; CIUDAD = Ayuntamiento, servicios municipales, barrios; '
                  'GIBRALTAR = Gibraltar, frontera, relaciones transfronterizas, Campo de Gibraltar; SUCESOS = seguridad, policía, bomberos, emergencias; '
                  'CULTURA = carnaval, cofradías, música, teatro, exposiciones, ocio; DEPORTES; COMERCIO = empresas, hostelería, turismo, negocios; '
@@ -507,13 +507,15 @@ def draft(candidate, source_text='', research='', quick=False):
         head_rule = (f'directo, cuenta la noticia y ocupa {n} líneas en la imagen: entre {c * (n - 1) + 5} y {c * n} caracteres '
                      f'(nunca más de {c * n}), porque va tal cual en la imagen')
     else:
-        head_rule = 'breve, directo, cuenta la noticia, máximo 80 caracteres porque va tal cual en la imagen'
+        head_rule = ('breve, directo, cuenta la noticia; va tal cual en la imagen y debe caber en 3 líneas como mucho (unos 55-60 caracteres), '
+                     'lo más horizontal posible: mejor 2-3 líneas largas que 4 cortas')
     prompt = f'''{medium}Redacta la noticia siguiendo al pie de la letra la guía de estilo de InfoLinense.
 Usa SOLO la información de las fuentes de abajo, pero aprovecha TODO el TEXTO FUENTE, no solo el titular: incorpora todos los datos útiles que contiene (cifras, fechas, plazos, lugares, nombres de calles y barrios, empresas, requisitos, antecedentes, declaraciones relevantes).
 Extensión del TEXTO: entre 1.800 y 2.200 caracteres con espacios. Solo si el texto fuente es muy corto (menos de 600 caracteres) puede quedar más breve, sin inventar ni rellenar.
 Párrafos de 2 a 4 frases separados por una línea en blanco.
 PROHIBIDO en titular, subtítulo y texto: hablar de lo que no se sabe o falta («no consta», «se desconoce», «no se ha encontrado», «no se especifica», «falta confirmar»), hablar de la fuente o del documento («según la documentación», «la nota no detalla») o pedir comprobaciones. Si un dato no está, no lo menciones y cuenta la noticia con lo que sí se sabe. Atribuye solo cuando lo haría un periodista («según el Ayuntamiento», «recoge el BOP»).
 Céntrate en los hechos y en lo que cambia para la ciudad, no en tecnicismos ni en las fuentes.
+ENFOQUE LA LÍNEA: si la noticia es comarcal (Campo de Gibraltar), de Gibraltar o de varios pueblos, el titular y la entradilla se centran en lo que toca a La Línea (su agrupación, sus vecinos, su calle, su dinero…) y lo demás se cuenta después en el texto. Ejemplo: «Cinco agrupaciones del Campo cantarán en el Falla» → «La comparsa linense X cantará en el Falla» y luego las demás.
 {'Noticia de menor peso: pieza corta.' if quick else ''}
 
 CANDIDATA: {candidate.get('title', '')}
@@ -525,7 +527,7 @@ HECHOS Y CONTEXTO: {_facts_for_draft(research)[:8000]}
 
 Devuelve la entrega (SECCIÓN, TITULAR, SUBTÍTULO, TEXTO) como JSON válido, sin markdown, con exactamente estas claves:
 focus (ENFOQUE PRINCIPAL: la verdadera noticia en una frase),
-section (exactamente una de: {sections}. Guía: {guide}),
+section (exactamente una de: {sections}. Guía: {guide}. {'' if other else 'Usa la etiqueta más concreta que encaje (CONCIERTOS mejor que CULTURA, PLAYAS mejor que MEDIO AMBIENTE) y evita CIUDAD si hay otra mejor.'}),
 {label_key}
 headline (TITULAR: {head_rule}),
 subtitle (SUBTÍTULO o ENTRADILLA: aporta información nueva, nunca repite el titular, máximo 160 caracteres porque va tal cual en la imagen),
@@ -613,6 +615,48 @@ TEXTO: {fields['body'][:4000]}'''
     out['body'] = out['body'][:2200]
     out['changed'] = any(out[k] != fields[k] for k in fields)
     return out
+
+
+def headline_fits(headline, brand=None, max_lines=3):
+    """¿Cabe el titular en la imagen con N líneas como mucho?"""
+    from . import brands
+    b = brands.settings(brand)
+    if b['slug'] != brands.DEFAULT and b.get('headline_lines'):
+        c, n = int(b.get('line_chars') or 30), int(b['headline_lines'])
+        lines, cur = 0, ''
+        for w in (headline or '').split():
+            x = (cur + ' ' + w).strip()
+            if len(x) <= c or not cur:
+                cur = x
+            else:
+                lines, cur = lines + 1, w
+        return lines + (1 if cur else 0) <= n
+    return len(layout.headline_lines(headline)) <= max_lines
+
+
+def shorten_headline(article, max_lines=3):
+    """Si el titular no cabe en la imagen (3 líneas), la IA lo acorta sin perder la noticia. Nunca se manda al editor sin caber."""
+    head = article.get('headline') or ''
+    brand = article.get('brand')
+    if headline_fits(head, brand, max_lines):
+        return head
+    if AI_ENABLED:
+        for attempt in range(2):
+            limit = max(35, int(len(head) * (0.8 if attempt == 0 else 0.65)))
+            prompt = f'''Acorta este titular de noticia para que quepa en {max_lines} líneas de una imagen: como mucho {limit} caracteres.
+Mantén lo esencial (qué pasa, dónde, a quién afecta), en español claro, sin inventar ni cambiar los hechos, sin comillas ni punto final.
+Devuelve JSON {{"headline": "..."}}.
+TITULAR: {head}
+ENTRADILLA: {article.get('subtitle') or ''}'''
+            try:
+                data, _, _ = ask_json(SYSTEM, prompt, max_tokens=300)
+                new = clean_meta(str((data or {}).get('headline') or '')).strip().rstrip('.')
+            except AIProviderError:
+                break
+            if new and headline_fits(new, brand, max_lines):
+                return new
+            head = new or head
+    return layout.fit_headline(head) if headline_fits(layout.fit_headline(head), brand, 4) else head
 
 
 def alternate_headlines(article):

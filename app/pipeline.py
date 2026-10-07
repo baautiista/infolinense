@@ -92,7 +92,35 @@ def draft_candidate(cid):
     db.exec_('UPDATE articles SET brand=?,section_label=?,time_ref=? WHERE id=?', (c.get('brand') or 'infolinense', draft.get('section_label') or '', ref, aid))
     db.exec_('UPDATE candidates SET status=?,section=? WHERE id=?', ('draft', draft.get('section', 'CIUDAD'), cid))
     db.log('pipeline', f'Candidata {cid} -> borrador')
+    finish_article(aid)
     return aid
+
+
+def finish_article(aid):
+    """Después de redactar: titular que quepa en la imagen (lo acorta la IA) y, si es para hoy, la imagen de Canva ya hecha."""
+    a = db.row('SELECT a.*,c.editorial_priority,c.planned_at FROM articles a LEFT JOIN candidates c ON c.id=a.candidate_id WHERE a.id=?', (aid,))
+    if not a:
+        return
+    try:
+        short = ai.shorten_headline(a)
+        if short and short != a['headline']:
+            db.exec_('UPDATE articles SET headline=? WHERE id=?', (short, aid))
+            a['headline'] = short
+    except Exception as exc:
+        db.log('headline_error', f'{aid}: {str(exc)[:200]}')
+    from zoneinfo import ZoneInfo
+    today = _dt.now(ZoneInfo('Europe/Madrid')).date().isoformat()
+    for_today = a.get('editorial_priority') in ('urgent', 'today') or str(a.get('planned_at') or '')[:10] <= today
+    if not for_today or db.get_setting('auto_canva', '1') != '1' or not a.get('image_local'):
+        return
+    from . import canva
+    if not (canva.ready() and canva.connected()):
+        return
+    try:
+        canva.create_design(a)
+        db.exec_('UPDATE articles SET canva_error=NULL WHERE id=?', (aid,))
+    except Exception as exc:  # se ve en Revisar; se puede reintentar con «Crear imagen en Canva»
+        db.exec_('UPDATE articles SET canva_error=? WHERE id=?', (str(exc)[:300], aid))
 
 
 def write_candidate(cid):

@@ -36,12 +36,20 @@ _OTHER_TOWNS = re.compile(r'\b(algeciras|san\s+roque|los\s+barrios|tarifa|jimena
                           r'paterna|bornos|villamart[ií]n|olvera|prado\s+del\s+rey|trebujena|benalup|alcal[aá]\s+de\s+los\s+gazules|estepona|marbella|'
                           r'm[aá]laga|sevilla|ceuta|sotogrande|guadiaro|pueblo\s+nuevo|taraguilla|palmones|manilva|casares)\b', re.I)
 # Gibraltar solo si toca rellenos, obras, eventos, elecciones o la frontera
-_GIB = re.compile(r'\bgibraltar\b|\bpe[ñn][oó]n\b|\bllanit[oa]s?\b|gibraltare[ñn]', re.I)
-_GIB_TOPIC = re.compile(r'(relleno|ganad[oa]s?\s+al\s+mar|ganar\s+terreno|reclamation|reclaimed|\bobras?\b|construcci[oó]n|construction|\bworks\b|'
-                        r'proyecto|project|development|edificio|rascacielos|urbaniz|t[uú]nel|tunnel|aeropuerto|airport|carretera|'
-                        r'evento|festival|concierto|concert|feria|fiesta|d[ií]a\s+nacional|national\s+day|calentita|carnaval|carnival|'
-                        r'elecci[oó]n|elecciones|electoral|votaci[oó]n|election|vote|'
-                        r'frontera|verja|tratado|acuerdo|schengen|transfronteriz|frontier|border|treaty|colas)', re.I)
+_GIB = re.compile(r'\bpicardo\b|\bgibraltar\b|\bpe[ñn][oó]n\b|\bllanit[oa]s?\b|gibraltare[ñn]', re.I)
+# Gibraltar solo interesa con eventos, política que toque a España o rellenos que afecten a España
+_GIB_EVENT = re.compile(r'(evento|festival|concierto|concert|feria|fiesta|d[ií]a\s+nacional|national\s+day|calentita|carnaval|carnival|'
+                        r'gala|exposici[oó]n|marat[oó]n|espect[aá]culo|desfile|celebraci[oó]n)', re.I)
+_GIB_POLITICS = re.compile(r'(picardo|gobierno\s+de\s+gibraltar|ministro\s+principal|chief\s+minister|parlamento|elecci[oó]n|elecciones|'
+                           r'tratado|acuerdo|negociaci[oó]n|frontera|verja|schengen|aduana|fiscal|tabaco|brexit|soberan[ií]a|'
+                           r'albares|gobierno\s+de\s+espa[ñn]a|treaty|border|frontier|customs)', re.I)
+_GIB_FILL = re.compile(r'(relleno|ganad[oa]s?\s+al\s+mar|ganar\s+terreno|reclamation|reclaimed)', re.I)
+_SPAIN = re.compile(r'(espa[ñn]a|espa[ñn]ol|madrid|gobierno\s+de\s+espa|ministerio|junta\s+de\s+andaluc|andaluc|c[aá]diz|'
+                    r'la\s+l[ií]nea|campo\s+de\s+gibraltar|bruselas|uni[oó]n\s+europea|\bue\b|frontera|verja|transfronteriz|'
+                    r'aguas|ecologistas|protesta|denuncia|spain|spanish)', re.I)
+_GIB_TOPIC = re.compile(_GIB_EVENT.pattern + '|' + _GIB_POLITICS.pattern + '|' + _GIB_FILL.pattern, re.I)  # (compatibilidad)
+# Comarca: lo del Campo de Gibraltar solo entra si toca a La Línea
+_COMARCA = re.compile(r'campo\s+de\s+gibraltar|\bcomarca|comarcal|mancomunidad|algeciras|san\s+roque|los\s+barrios|tarifa|jimena|castellar', re.I)
 _LA_LINEA_ENTITY = re.compile(r'l[ií]nea\s+de\s+la\s+concepci[oó]n|ayuntamiento\s+de\s+la\s+l[ií]nea|\blinens[ea]s?\b', re.I)
 _TOWN_HALL = re.compile(r'(ayuntamiento|alcald[ií]a|consistorio)\s+de\s+([a-záéíóúñ ]{3,40}?)(?=[.,:;\-–(]|$)', re.I)
 
@@ -393,9 +401,12 @@ def exact_locality(text):
     return bool(_CONTEXT.search(text))
 
 def gibraltar_topic(text):
-    """Gibraltar interesa solo con rellenos, obras, eventos, elecciones o frontera."""
+    """Gibraltar interesa solo si son eventos, política relacionada con España o rellenos que afectan a España."""
     t = re.sub(r'campo\s+de\s+gibraltar|estrecho\s+de\s+gibraltar|bah[ií]a\s+de\s+(algeciras|gibraltar)', ' ', text or '', flags=re.I)
-    return bool(_GIB.search(t) and _GIB_TOPIC.search(t))
+    if not _GIB.search(t):
+        return False
+    spain = _SPAIN.search(re.sub(r'\bgibraltar\w*', ' ', t, flags=re.I))
+    return bool(_GIB_EVENT.search(t) or (_GIB_POLITICS.search(t) and spain) or (_GIB_FILL.search(t) and spain))
 
 
 def place_ok(text, extra=''):
@@ -506,14 +517,53 @@ def source_group(row):
     return 'Otros medios'
 
 
+import os as _os
+SITE_URL = _os.getenv('INFOLINENSE_SITE_URL', 'https://infolinense.com').rstrip('/')
+_site_cache = {'at': 0, 'titles': []}
+
+
+def site_titles():
+    """Titulares ya publicados en infolinense.com (RSS, mapa del sitio o portada). Se guardan 30 minutos."""
+    if time.time() - _site_cache['at'] < 1800:
+        return _site_cache['titles']
+    titles = []
+    for path in ('/rss.xml', '/feed', '/sitemap.xml', '/'):
+        try:
+            r = fetch(SITE_URL + path, timeout=12)
+            if not r.ok:
+                continue
+            text = r.text
+            if '<item' in text:
+                titles += [clean(t) for t in re.findall(r'<title>(?:<!\[CDATA\[)?(.*?)(?:\]\]>)?</title>', text)[1:]]
+            elif '<urlset' in text:  # las direcciones llevan el titular: /noticia/abre-el-plazo-de-...-123
+                for loc in re.findall(r'<loc>(.*?)</loc>', text)[:600]:
+                    slug = loc.rstrip('/').rsplit('/', 1)[-1]
+                    slug = re.sub(r'-\d+$', '', slug)
+                    if slug.count('-') >= 3:
+                        titles.append(slug.replace('-', ' '))
+            else:
+                soup = BeautifulSoup(text, 'html.parser')
+                titles += [clean(h.get_text(' ', strip=True)) for h in soup.select('h1, h2, h3, article a')][:200]
+            if len(titles) >= 5:
+                break
+        except Exception:
+            continue
+    _site_cache.update(at=time.time(), titles=[t for t in titles if len(t) > 15][:800])
+    return _site_cache['titles']
+
+
 def similar_to_published(title):
-    """¿Ya hemos publicado (o aprobado) algo casi igual?"""
+    """¿InfoLinense ya lo ha publicado (desde el panel o directamente en la web)?"""
     norm = lambda t: re.sub(r'\W+', ' ', (t or '').lower()).strip()
     words = set(w for w in norm(title).split() if len(w) > 3)
     if len(words) < 3: return False
-    for a in db.rows("SELECT headline FROM articles WHERE status IN ('approved','published') ORDER BY id DESC LIMIT 300"):
-        other = set(w for w in norm(a['headline']).split() if len(w) > 3)
+    published = [a['headline'] for a in db.rows("SELECT headline FROM articles WHERE status IN ('approved','published') "
+                                                "AND updated_at>=datetime('now','-60 day') ORDER BY id DESC LIMIT 400")]
+    for other_title in published + site_titles():
+        other = set(w for w in norm(other_title).split() if len(w) > 3)
         if other and len(words & other) / max(1, min(len(words), len(other))) >= 0.7:
+            return True
+        if same_story(title, other_title):
             return True
     return False
 
@@ -621,6 +671,22 @@ def merge_duplicates(days=7):
     return merged
 
 
+_deep = {'n': 0}
+DEEP_LIMIT = 15  # comprobaciones de texto completo por búsqueda (noticias comarcales)
+
+
+def comarca_angle(url, text_hint=''):
+    """Noticia del Campo de Gibraltar: ¿el texto completo nombra a La Línea? Devuelve la frase de La Línea o ''."""
+    if _deep['n'] >= DEEP_LIMIT:
+        return ''
+    _deep['n'] += 1
+    text = fetch_article_text(url) or ''
+    for sentence in re.split(r'(?<=[.!?])\s+', text):
+        if _LA_LINEA_ENTITY.search(sentence) or exact_locality(sentence):
+            return clean(sentence)[:300]
+    return ''
+
+
 def add_candidate(title, url, excerpt, source_name, source_id=None, published_at='', source_meta=None, local_angle='', outlet='', image=''):
     source_meta = source_meta or {'priority': 60, 'official': 0, 'local_scope': 0}
     title, excerpt = clean(title)[:260], clean(excerpt)[:4000]
@@ -632,9 +698,13 @@ def add_candidate(title, url, excerpt, source_name, source_id=None, published_at
         if tender:
             if not tender_ok(title, excerpt): return None  # edictos y licitaciones de otros ayuntamientos, fuera
         elif not place_ok(title + ' ' + excerpt, source_name):
-            return None
-    if _OTHER_TOWNS.search(title) and not exact_locality(title) and not gibraltar_topic(title):
-        return None  # titular de otro municipio (Algeciras, San Roque…)
+            angle = comarca_angle(url) if _COMARCA.search(title + ' ' + excerpt) else ''
+            if not angle:
+                return None  # comarcal sin nada de La Línea, o de otro municipio
+            local_angle = ('ENFOQUE LA LÍNEA: es una noticia comarcal; el titular y la entradilla se centran en lo que toca a '
+                           'La Línea y el resto va después en el texto. Dato de La Línea: ' + angle)
+    if _OTHER_TOWNS.search(title) and not exact_locality(title) and not gibraltar_topic(title) and not local_angle.startswith('ENFOQUE'):
+        return None  # titular de otro municipio (Algeciras, San Roque…) sin nada de La Línea
     if url and (db.row('SELECT 1 FROM candidates WHERE url=?', (url,)) or db.row('SELECT 1 FROM candidate_links WHERE url=?', (url,))):
         return None
     if similar_to_published(title): return None
@@ -704,6 +774,7 @@ def scan_all():
         return {'added': [], 'errors': [], 'busy': True}
     try:
         added, errors = [], []
+        _deep['n'] = 0
         active = db.rows('SELECT * FROM sources WHERE active=1 ORDER BY priority DESC')
         # Fetch concurrently; commit all SQLite writes in this thread.
         with ThreadPoolExecutor(max_workers=6) as pool:
@@ -751,6 +822,7 @@ def scan_all():
                         scope = str(item.get('scope') or '').lower()
                         db.exec_('UPDATE candidates SET scope=? WHERE id=?', (scope[:20], cid))
             except Exception as exc: errors.append('Descubrimiento web IA: ' + str(exc)[:250])
+        auto_ayto(added)
         merged = merge_duplicates()
         archive_off_topic()
         added = [a for a in added if (db.row('SELECT status FROM candidates WHERE id=?', (a,)) or {}).get('status') != 'merged']
@@ -760,13 +832,39 @@ def scan_all():
     finally:
         _scan_lock.release()
 
+def auto_ayto(ids):
+    """Las noticias del Ayuntamiento de hoy (salen sobre la 13:00-14:30) se marcan solas para hoy: se publican casi todas.
+    Se puede desactivar en Ajustes."""
+    if db.get_setting('auto_ayto', '1') != '1':
+        return 0
+    from zoneinfo import ZoneInfo
+    today = datetime.now(ZoneInfo('Europe/Madrid')).date().isoformat()
+    n = 0
+    for cid in ids:
+        c = db.row("""SELECT c.*,s.kind source_kind FROM candidates c LEFT JOIN sources s ON s.id=c.source_id WHERE c.id=?""", (cid,))
+        if not c or c.get('editorial_priority') not in ('undecided', '') or (c.get('brand') or 'infolinense') != 'infolinense':
+            continue
+        date = publication_datetime(c.get('published_at'))
+        if source_group(c) == 'Ayuntamiento' and date and date.astimezone(ZoneInfo('Europe/Madrid')).date().isoformat() == today:
+            db.exec_("UPDATE candidates SET editorial_priority='today',plan_reason='Ayuntamiento de hoy: marcada sola' WHERE id=?", (cid,))
+            try:
+                from . import pipeline
+                pipeline.queue_auto_write(cid, 'today')
+            except Exception:
+                pass
+            n += 1
+    return n
+
+
 def archive_off_topic():
     """Retira del radar lo que no es de La Línea (ni de Gibraltar con interés) y nadie ha marcado."""
     n = 0
-    for r in db.rows("""SELECT c.id,c.title,c.excerpt,c.source_name,s.local_scope FROM candidates c LEFT JOIN sources s ON s.id=c.source_id
+    for r in db.rows("""SELECT c.id,c.title,c.excerpt,c.source_name,c.local_angle,c.brand,s.local_scope FROM candidates c LEFT JOIN sources s ON s.id=c.source_id
                         WHERE c.status IN ('new','researched','needs_config') AND c.editorial_priority IN ('undecided','')
                         AND c.social_type IS NULL"""):
         title, excerpt = r['title'] or '', r['excerpt'] or ''
+        if str(r.get('local_angle') or '').startswith('ENFOQUE') or (r.get('brand') or 'infolinense') != 'infolinense':
+            continue  # comarcal con dato de La Línea comprobado, o de Cofrade/Carnaval
         tender = bool(_TENDER.search(title))
         bad = (_OTHER_TOWNS.search(title) and not exact_locality(title) and not gibraltar_topic(title))
         if not r.get('local_scope'):

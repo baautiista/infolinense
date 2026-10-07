@@ -79,7 +79,7 @@ def capabilities():
 
 @app.get('/api/sections',dependencies=[Depends(require_auth)])
 def sections():
-    return [{'name':f[0],'page':f[1],'background':f[2],'color':f[3]} for f in layout.FAMILIES]
+    return [{'name':l,'family':fam,'background':bg,'color':col} for l,fam,bg,col in layout.all_labels()]
 
 @app.get('/api/canva/connect',dependencies=[Depends(require_auth)])
 def connect_canva():
@@ -298,6 +298,14 @@ def move_article(aid:int,m:MoveIn):
             result['message']+='. '+str(e)
     db.log('move',f'Noticia {aid} → {when}')
     return result
+
+@app.post('/api/articles/{aid}/shorten',dependencies=[Depends(require_auth)])
+def shorten(aid:int):
+    a=db.row('SELECT * FROM articles WHERE id=?',(aid,))
+    if not a: raise HTTPException(404)
+    new=ai.shorten_headline(a)
+    if new!=a['headline']: db.exec_('UPDATE articles SET headline=?,render_path=NULL WHERE id=?',(new,aid))
+    return {'headline':new,'fits':ai.headline_fits(new,a.get('brand'))}
 
 @app.delete('/api/articles/{aid}',dependencies=[Depends(require_auth)])
 def delete_article(aid:int):
@@ -634,7 +642,8 @@ def choose_photo(aid:int,p:PhotoChoice):
     if not item:
         item={'url':url,'source':p.source or url,'source_name':parsed.hostname or '','license':'','author':p.author,'kind':'web','publish_safe':True}
         allowed=allowed+[item]
-    try: local=photos.download_image(url,min_width=300,min_height=200)
+    try: local=photos.download_image(url,min_width=700,min_height=500)
+    except ValueError as e: raise HTTPException(400,'Esa foto es pequeña para la imagen (1080x1350). Elige otra más grande. '+str(e)[:120])
     except Exception as e: raise HTTPException(400,'No se pudo descargar la foto: '+str(e)[:200])
     db.exec_("UPDATE articles SET image_url=?,image_source=?,image_license=?,image_author=?,image_kind=?,image_local=?,image_candidates_json=?,render_path=NULL,ai_image_suggestion='',status=CASE WHEN status='approved' THEN 'review_ready' ELSE status END,updated_at=CURRENT_TIMESTAMP WHERE id=?",
              (url,item.get('source') or p.source,item.get('license') or p.license,item.get('author') or p.author,item.get('kind') or '',local,json.dumps(allowed,ensure_ascii=False),aid))
@@ -741,7 +750,7 @@ def do_publish(aid,nets):
         db.exec_("UPDATE articles SET status='approved',updated_at=CURRENT_TIMESTAMP WHERE id=?",(aid,))
         db.exec_("UPDATE candidates SET status='review_ready' WHERE id=?",(a['candidate_id'],))
         if not brands.web_enabled(a.get('brand')):
-            web={'network':'web','ok':False,'skipped':True,'message':'La web de %s no está configurada en Railway'%brands.BRANDS[brands.valid(a.get('brand'))]['name']}
+            web={'network':'web','ok':False,'skipped':True,'message':'' if brands.valid(a.get('brand'))!=brands.DEFAULT else 'La web no está configurada en Railway'}
         else:
             try:
                 url=publishers.publish(a)
@@ -785,6 +794,10 @@ def schedule_article(aid:int,body:ScheduleIn):
     if when<datetime.now(timezone.utc)-timedelta(minutes=2): raise HTTPException(400,'Esa hora ya ha pasado: elige una hora futura o pulsa «Publicar ahora»')
     ok=social_publish.connected_networks(a.get('brand') or brands.DEFAULT)
     nets=[n for n in (body.networks or []) if n in ok]
+    if not nets and not brands.web_enabled(a.get('brand')):
+        name=brands.BRANDS[brands.valid(a.get('brand'))]['name']
+        raise HTTPException(400,f'{name} no tiene web: marca al menos una red conectada (Instagram, Facebook o TikTok) para programarla.' if ok
+                            else f'{name} no tiene web ni redes conectadas todavía. Conéctalas en Ajustes → Redes sociales.')
     _ready_to_publish(a,nets)
     local=when.astimezone(MADRID).isoformat(timespec='minutes')
     db.exec_("UPDATE articles SET status='approved',scheduled_at=?,scheduled_networks=?,schedule_error=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=?",
@@ -810,7 +823,8 @@ def publish_due():
         try:
             r=do_publish(a['id'],nets)
             if not r['published']:
-                db.exec_("UPDATE articles SET scheduled_at=NULL,schedule_error=? WHERE id=?",(r['message'][:400],a['id']))
+                why='; '.join(x.get('message') or '' for x in r['results'] if not x.get('ok') and not x.get('skipped') and x.get('message')) or 'No había web ni redes donde publicarla'
+                db.exec_("UPDATE articles SET scheduled_at=NULL,schedule_error=? WHERE id=?",(why[:400],a['id']))
             db.log('schedule',f"Noticia {a['id']} publicada a su hora: {r['message']}"[:400]); done.append(a['id'])
         except HTTPException as e:
             db.exec_("UPDATE articles SET scheduled_at=NULL,schedule_error=? WHERE id=?",(str(e.detail)[:400],a['id']))
@@ -946,6 +960,13 @@ def networks_disconnect(network:str,brand:str='infolinense'):
 class BrandIn(BaseModel):
     templates:dict|None=None; hashtags:str|None=None; sections:list[str]|str|None=None; page:int|None=None
     page_mode:str|None=None; carousel_page:int|None=None; headline_lines:int|None=None; line_chars:int|None=None
+class PrefIn(BaseModel): auto_ayto:bool|None=None; auto_canva:bool|None=None
+@app.get('/api/prefs',dependencies=[Depends(require_auth)])
+def prefs(): return {'auto_ayto':db.get_setting('auto_ayto','1')=='1','auto_canva':db.get_setting('auto_canva','1')=='1'}
+@app.put('/api/prefs',dependencies=[Depends(require_auth)])
+def prefs_save(p:PrefIn):
+    for k,v in p.model_dump(exclude_none=True).items(): db.set_setting(k,'1' if v else '0')
+    return prefs()
 @app.get('/api/brands',dependencies=[Depends(require_auth)])
 def brands_list(): return brands.all_public()
 @app.put('/api/brands/{slug}',dependencies=[Depends(require_auth)])
@@ -1048,7 +1069,9 @@ def scheduler_loop():
                 planner.rebuild_schedule()
                 pipeline.queue_useful_pending()
         except Exception as e: db.log('scheduler_error',str(e)[:250])
-        time.sleep(max(15,SCAN_INTERVAL_MINUTES)*60)
+        # De 12:45 a 15:15 el Ayuntamiento publica lo del día: se busca cada 10 minutos
+        t=datetime.now(MADRID); m=t.hour*60+t.minute
+        time.sleep(600 if 765<=m<=915 else max(15,SCAN_INTERVAL_MINUTES)*60)
 @app.on_event('startup')
 def startup():
     if os.getenv('DISABLE_SCHEDULER','false').lower() not in {'1','true','yes'}:

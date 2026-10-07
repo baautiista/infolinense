@@ -202,7 +202,7 @@ class TemplateLayout(unittest.TestCase):
                                       'image_headline': 'OTRO TITULAR', 'graphic_summary': 'OTRO RESUMEN'})
         self.assertEqual(fields['HEADLINE'], long)  # exactamente el de Revisar
         self.assertEqual(fields['SUMMARY'], 'La retirada continúa esta semana.')
-        self.assertEqual((fields['SECTION'], fields['page']), ('MEDIO AMBIENTE', 8))
+        self.assertEqual((fields['SECTION'], fields['page']), ('PLAYAS', 8))  # subsección con la página de su familia
         self.assertEqual(layout.family_for('Fútbol')[1], 6)
         self.assertEqual(layout.family_for('AGENDA')[3], '#061E5C')
 

@@ -5,6 +5,7 @@ Si Google no responde se usan DuckDuckGo y Bing como reserva.
 """
 import hashlib
 import json
+import os
 import re
 from io import BytesIO
 from urllib.parse import quote, quote_plus, urljoin, urlparse
@@ -191,12 +192,13 @@ def google_images(query, limit=16):
             for start in (1, 11):
                 r = requests.get('https://www.googleapis.com/customsearch/v1', timeout=20, params={
                     'key': GOOGLE_SEARCH_API_KEY, 'cx': GOOGLE_SEARCH_CX, 'q': query, 'searchType': 'image',
-                    'num': 10, 'start': start, 'gl': 'es', 'hl': 'es', 'safe': 'active', 'imgSize': 'large'})
+                    'num': 10, 'start': start, 'gl': 'es', 'hl': 'es', 'safe': 'active', 'imgSize': 'huge' if start == 1 else 'xlarge'})
                 r.raise_for_status()
                 for it in r.json().get('items', []) or []:
                     u = it.get('link') or ''
+                    img = it.get('image') or {}
                     if u.startswith('http') and not _JUNK.search(u) and not _bad_host(u):
-                        out.append(_item(u, (it.get('image') or {}).get('contextLink') or u, 'google'))
+                        out.append(dict(_item(u, img.get('contextLink') or u, 'google'), w=img.get('width') or 0, h=img.get('height') or 0))
                 if len(out) >= limit:
                     break
             if out:
@@ -395,7 +397,36 @@ def local_images(query, limit=12):
     return out
 
 
-PROVIDERS = (('Google Imágenes', google_images), ('Bing Imágenes', web_images), ('DuckDuckGo', duckduckgo_images),
+def serpapi_images(query, limit=30):
+    """Google Imágenes real a través de SerpApi (SERPAPI_KEY, 100 búsquedas gratis al mes). Mismo orden que Google."""
+    key = os.getenv('SERPAPI_KEY', '').strip()
+    if not key:
+        return []
+    r = requests.get('https://serpapi.com/search.json', timeout=25, params={
+        'engine': 'google_images', 'q': query, 'hl': 'es', 'gl': 'es', 'api_key': key, 'imgsz': 'l'})
+    r.raise_for_status()
+    out = []
+    for it in r.json().get('images_results', [])[:limit]:
+        u = it.get('original') or ''
+        if u.startswith('http') and not _JUNK.search(u):
+            out.append(dict(_item(u, it.get('link') or u, 'google'), w=it.get('original_width') or 0, h=it.get('original_height') or 0))
+    return out
+
+
+def pexels_images(query, limit=20):
+    """Pexels (PEXELS_API_KEY, gratis): fotos de gran calidad, en vertical si hay."""
+    key = os.getenv('PEXELS_API_KEY', '').strip()
+    if not key:
+        return []
+    r = requests.get('https://api.pexels.com/v1/search', timeout=20, headers={'Authorization': key},
+                     params={'query': query, 'per_page': limit, 'locale': 'es-ES'})
+    r.raise_for_status()
+    return [dict(_item(p['src'].get('large2x') or p['src']['original'], p.get('url') or '', 'pexels'),
+                 author=p.get('photographer') or '', w=p.get('width') or 0, h=p.get('height') or 0)
+            for p in r.json().get('photos', [])]
+
+
+PROVIDERS = (('Google (SerpApi)', serpapi_images), ('Google Imágenes', google_images), ('Pexels', pexels_images), ('Bing Imágenes', web_images), ('DuckDuckGo', duckduckgo_images),
              ('Yahoo Imágenes', yahoo_images), ('Noticias', news_images), ('Openverse', openverse_images),
              ('Fotos guardadas', local_images))
 
@@ -527,8 +558,15 @@ def search_real_photos(candidate, section='', query=None):
 
 
 def search_photos(query):
-    """Búsqueda libre desde el panel (toda la web)."""
-    return internet_images(query, limit=24)
+    """Búsqueda libre desde el panel: lo mismo que saldría en Google, en su orden, y luego el resto de buscadores.
+    Se quitan las fotos pequeñas conocidas (la imagen final es 1080x1350)."""
+    merged, results = _run_all(query)
+    google = [x for name in ('Google (SerpApi)', 'Google Imágenes') for x in results.get(name, [])]
+    rest = rank([x for x in merged if x not in google], query)
+    out = _unique(google + rest)
+    if len(out) < 8:
+        out = _unique(out + internet_images(query))
+    return [x for x in out if not (x.get('w') and x.get('w') < 700)][:30]
 
 
 def download_image(url, min_width=500, min_height=350):
@@ -545,10 +583,15 @@ def download_image(url, min_width=500, min_height=350):
 
 
 def first_usable(candidates, limit=12):
-    """Descarga la primera foto válida (tamaño suficiente). Devuelve (item, ruta) o (None, '')."""
-    for item in candidates[:limit]:
-        try:
-            return item, download_image(item['url'])
-        except Exception:
-            continue
+    """Descarga la primera foto de buena calidad para 1080x1350 (al menos 1000 px de ancho);
+    si ninguna llega, la primera aceptable (700 px). Devuelve (item, ruta) o (None, '')."""
+    pool = sorted(candidates[:limit + 8], key=lambda x: 0 if (x.get('w') or 0) >= 1000 or x.get('kind') == 'source' else 1)
+    for min_w, min_h in ((1000, 750), (700, 500)):
+        for item in pool[:limit]:
+            if item.get('w') and item['w'] < min_w:
+                continue
+            try:
+                return item, download_image(item['url'], min_width=min_w, min_height=min_h)
+            except Exception:
+                continue
     return None, ''

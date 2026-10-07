@@ -25,6 +25,23 @@ FAMILIES = [
 FAMILY_NAMES = [f[0] for f in FAMILIES]
 _BY_NAME = {f[0]: f for f in FAMILIES}
 
+# Secciones más concretas: cada una usa el color y la página de su familia (p. ej. CONCIERTOS y CARNAVAL → CULTURA)
+SUBSECTIONS = {
+    'OBRAS': ['URBANISMO', 'MOVILIDAD', 'TRÁFICO', 'INFRAESTRUCTURAS', 'APARCAMIENTOS'],
+    'CIUDAD': ['AYUNTAMIENTO', 'BARRIADAS', 'SERVICIOS', 'VECINOS', 'LIMPIEZA VIARIA'],
+    'GIBRALTAR': ['FRONTERA', 'TRANSFRONTERIZOS', 'CAMPO DE GIBRALTAR'],
+    'SUCESOS': ['SEGURIDAD', 'POLICÍA', 'TRIBUNALES', 'EMERGENCIAS', 'NARCOTRÁFICO'],
+    'CULTURA': ['CONCIERTOS', 'CARNAVAL', 'TEATRO', 'EXPOSICIONES', 'FIESTAS', 'FERIA', 'MÚSICA', 'CINE', 'LIBROS'],
+    'DEPORTES': ['FÚTBOL', 'BALONA', 'BALONCESTO', 'ATLETISMO', 'DEPORTE BASE', 'BALONMANO', 'NÁUTICA'],
+    'COMERCIO': ['EMPRESAS', 'TURISMO', 'HOSTELERÍA', 'ECONOMÍA', 'PUERTO'],
+    'MEDIO AMBIENTE': ['PLAYAS', 'PARQUES', 'ANIMALES', 'NATURALEZA', 'RECICLAJE'],
+    'POLÍTICA': ['PLENO', 'ELECCIONES', 'PRESUPUESTOS', 'PARTIDOS'],
+    'SOCIEDAD': ['EDUCACIÓN', 'SANIDAD', 'VIVIENDA', 'EMPLEO', 'AYUDAS', 'MAYORES', 'JUVENTUD', 'IGUALDAD', 'SOLIDARIDAD'],
+    'PATRIMONIO': ['HISTORIA', 'MEMORIA', 'EFEMÉRIDES', 'ARQUEOLOGÍA'],
+    'AGENDA': ['PLANES', 'FIN DE SEMANA', 'EVENTOS'],
+}
+_LABEL_FAMILY = {}
+
 
 def _plain(text):
     text = unicodedata.normalize('NFD', str(text or '').lower())
@@ -32,11 +49,15 @@ def _plain(text):
 
 
 def family_for(section, text=''):
-    """Devuelve la familia (nombre, página, fondo, texto) para una sección o tema."""
+    """Devuelve la familia (nombre, página, fondo, texto) para una sección, subsección o tema."""
     s = _plain(section).strip()
     for f in FAMILIES:
         if s == _plain(f[0]):
             return f
+    if not _LABEL_FAMILY:
+        _LABEL_FAMILY.update({_plain(lbl): fam for fam, labels in SUBSECTIONS.items() for lbl in labels})
+    if s in _LABEL_FAMILY:
+        return _BY_NAME[_LABEL_FAMILY[s]]
     for f in FAMILIES:  # la sección es una subsección conocida (p. ej. «Playas»)
         if s and any(s == k or s.startswith(k) for k in f[4]):
             return f
@@ -48,7 +69,22 @@ def family_for(section, text=''):
 
 
 def normalize_section(section, text=''):
+    """Familia o subsección válida, en mayúsculas (la etiqueta que sale en la imagen)."""
+    s = _plain(section).strip()
+    for fam, labels in SUBSECTIONS.items():
+        for lbl in labels:
+            if s == _plain(lbl):
+                return lbl
     return family_for(section, text)[0]
+
+
+def all_labels():
+    """[(etiqueta, familia, fondo, texto)] para el panel."""
+    out = []
+    for f in FAMILIES:
+        out.append((f[0], f[0], f[2], f[3]))
+        out += [(lbl, f[0], f[2], f[3]) for lbl in SUBSECTIONS.get(f[0], [])]
+    return out
 
 
 # Anchura media de cada carácter (en «em») calibrada con la fuente del titular en Canva.

@@ -65,3 +65,19 @@ class TimelineTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class HeadlineAndSections(unittest.TestCase):
+    def test_long_headline_is_shortened_by_ai(self):
+        long = 'El Ayuntamiento de La Línea aprueba en el pleno de octubre la modificación del presupuesto para reforzar la limpieza de las playas y parques'
+        with patch.object(ai, 'AI_ENABLED', True), patch.object(ai, 'ask_json', return_value=({'headline': 'La Línea refuerza la limpieza de playas y parques'}, 'gemini', False)):
+            short = ai.shorten_headline({'headline': long, 'subtitle': ''})
+        self.assertEqual(short, 'La Línea refuerza la limpieza de playas y parques')
+        self.assertTrue(ai.headline_fits(short))
+
+    def test_subsections_keep_family_color(self):
+        from app import layout
+        self.assertEqual(layout.normalize_section('conciertos'), 'CONCIERTOS')
+        self.assertEqual(layout.family_for('CONCIERTOS')[0], 'CULTURA')
+        self.assertEqual(layout.family_for('Carnaval')[2], layout.family_for('CULTURA')[2])
+        self.assertEqual(layout.normalize_section('CIUDAD'), 'CIUDAD')

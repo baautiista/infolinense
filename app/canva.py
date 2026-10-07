@@ -203,6 +203,13 @@ def design_fields(article, strict=True):
     summary = re.sub(r'\s+', ' ', article.get('subtitle') or '').strip()
     if strict and _is_default(article):
         lines = len(layout.headline_lines(headline))
+        if lines > 3 and article.get('id'):  # demasiado largo: se acorta solo (IA) y se guarda
+            from . import ai
+            new = ai.shorten_headline(dict(article, headline=headline))
+            if new and new != headline and len(layout.headline_lines(new)) <= layout.HEADLINE_MAX_LINES:
+                db.exec_('UPDATE articles SET headline=? WHERE id=?', (new, article['id']))
+                article['headline'] = headline = new
+                lines = len(layout.headline_lines(headline))
         if lines > layout.HEADLINE_MAX_LINES:
             raise ValueError('El titular ocupa %s líneas en la imagen y caben %s. Acórtalo en Revisar y vuelve a crear la imagen.'
                              % (lines, layout.HEADLINE_MAX_LINES))
@@ -223,8 +230,8 @@ def design_fields(article, strict=True):
             label = (article.get('section_label') or '').strip() or brands.holy_week_label()  # «General» con título propio
         return {'HEADLINE': headline, 'SUMMARY': summary, 'SECTION': label,
                 'page': _page_for(article), 'template': template_for(headline, article.get('brand'))}
-    return {'HEADLINE': headline, 'SUMMARY': summary, 'SECTION': family[0], 'page': family[1],
-            'template': template_for(headline)}
+    return {'HEADLINE': headline, 'SUMMARY': summary, 'SECTION': layout.normalize_section(article.get('section'), article.get('headline') or ''),
+            'page': family[1], 'template': template_for(headline)}
 
 
 # Tamaño de letra según la longitud: la plantilla puede tener, en el mismo sitio, cuadros con letra

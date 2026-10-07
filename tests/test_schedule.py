@@ -78,9 +78,20 @@ class OnlyLaLineaTests(unittest.TestCase):
         self.assertIsNone(self.add('San Roque abre la nueva piscina cubierta en Taraguilla', local=1))
         self.assertIsNone(self.add('Detenido un narcotraficante en el Campo de Gibraltar con 300 kilos'))
         self.assertIsNone(self.add('Gibraltar: el ministro de Sanidad presenta su informe anual'))
-        self.assertTrue(self.add('Gibraltar inicia el relleno de terrenos ganados al mar en la bahía oeste'))
-        self.assertTrue(self.add('Gibraltar celebrará elecciones generales el 15 de noviembre'))
+        self.assertIsNone(self.add('Gibraltar inicia el relleno de terrenos ganados al mar en la bahía oeste'))  # sin relación con España
+        self.assertTrue(self.add('Ecologistas españoles denuncian el relleno de Gibraltar en aguas de la bahía'))
+        self.assertTrue(self.add('Picardo y Albares avanzan en el tratado sobre la frontera'))
+        self.assertTrue(self.add('Gibraltar celebra el Día Nacional con un gran concierto'))
+        self.assertIsNone(self.add('Gibraltar celebrará elecciones generales el 15 de noviembre'))
         self.assertTrue(self.add('El Ayuntamiento de La Línea arregla la calle Real'))
+
+    def test_comarca_only_with_la_linea_inside(self):
+        with patch.object(sources, 'fetch_article_text', return_value='Cinco agrupaciones del Campo actuarán. Entre ellas la comparsa linense Los del Puerto, de La Línea de la Concepción.'):
+            cid = self.add('Cinco agrupaciones del Campo de Gibraltar cantarán en el Falla')
+        self.assertTrue(cid)
+        self.assertIn('ENFOQUE LA LÍNEA', db.row('SELECT local_angle FROM candidates WHERE id=?', (cid,))['local_angle'])
+        with patch.object(sources, 'fetch_article_text', return_value='Algeciras y San Roque presentan su programa.'):
+            self.assertIsNone(self.add('La comarca del Campo de Gibraltar presenta su programa de Navidad'))
 
     def test_tenders_only_from_la_linea(self):
         self.assertIsNone(self.add('Licitación: Ayuntamiento de Algeciras. Servicio de limpieza de playas'))

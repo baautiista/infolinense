@@ -12,7 +12,8 @@ const BLOCKS = ['Ayuntamiento', 'Licitaciones y edictos', 'Otros medios', 'Nacio
 const SECTIONS = [['OBRAS', '#0150FE', '#fff'], ['CIUDAD', '#4F9AFC', '#fff'], ['GIBRALTAR', '#7249E0', '#fff'], ['SUCESOS', '#D02132', '#fff'],
   ['CULTURA', '#E72E79', '#fff'], ['DEPORTES', '#00AB4F', '#fff'], ['COMERCIO', '#FF8E1A', '#fff'], ['MEDIO AMBIENTE', '#62DBD1', '#061E5C'],
   ['POLÍTICA', '#08176E', '#fff'], ['SOCIEDAD', '#2756CD', '#fff'], ['PATRIMONIO', '#B9831E', '#fff'], ['AGENDA', '#FDE206', '#061E5C']];
-const SEC = Object.fromEntries(SECTIONS.map(s => [s[0], s]));
+let SEC = Object.fromEntries(SECTIONS.map(s => [s[0], s]));
+async function loadSections() { try { const l = await api('/api/sections'); SECTIONS.length = 0; l.forEach(x => SECTIONS.push([x.name, x.background, x.color])); SEC = Object.fromEntries(SECTIONS.map(s => [s[0], s])) } catch (e) { } }
 const STATUS = { draft: 'Borrador', review_ready: 'Revisada', approved: 'Aprobada', published: 'Publicada' };
 const PHASES = [['sort', 'Ordenar'], ['writing', 'Redacción'], ['review', 'Revisar'], ['publish', 'Publicar']];
 const KIND = { queja: 'Queja', propuesta: 'Propuesta', asociacion: 'Asociación' };
@@ -73,7 +74,7 @@ $('#loginForm').onsubmit = async e => {
 };
 async function start() {
   $('#login').hidden = true; $('#app').hidden = false;
-  await loadBrands();
+  await Promise.all([loadBrands(), loadSections()]);
   const h = location.hash.slice(1);
   if (h) return go(h);
   // Al abrir, se va a la primera fase con trabajo pendiente.

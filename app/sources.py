@@ -703,7 +703,8 @@ def add_candidate(title, url, excerpt, source_name, source_id=None, published_at
                 return None  # comarcal sin nada de La Línea, o de otro municipio
             local_angle = ('ENFOQUE LA LÍNEA: es una noticia comarcal; el titular y la entradilla se centran en lo que toca a '
                            'La Línea y el resto va después en el texto. Dato de La Línea: ' + angle)
-    if _OTHER_TOWNS.search(title) and not exact_locality(title) and not gibraltar_topic(title) and not local_angle.startswith('ENFOQUE'):
+    own_brand = (source_meta.get('brand') or 'infolinense') != 'infolinense' and source_meta.get('local_scope')
+    if not own_brand and _OTHER_TOWNS.search(title) and not exact_locality(title) and not gibraltar_topic(title) and not local_angle.startswith('ENFOQUE'):
         return None  # titular de otro municipio (Algeciras, San Roque…) sin nada de La Línea
     if url and (db.row('SELECT 1 FROM candidates WHERE url=?', (url,)) or db.row('SELECT 1 FROM candidate_links WHERE url=?', (url,))):
         return None

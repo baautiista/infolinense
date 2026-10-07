@@ -121,3 +121,15 @@ class BrandTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class CarnavalSources(unittest.TestCase):
+    def test_carnaval_pages_seeded_and_comarca_allowed(self):
+        db.init_db()
+        names = {r['name'] for r in db.rows("SELECT name FROM sources WHERE brand='carnaval'")}
+        self.assertIn('Chirigota Los Moriegas (La Línea)', names)
+        self.assertIn('Chirigota del Tini (Algeciras)', names)
+        cid = sources.add_candidate('La chirigota de Algeciras presenta su tipo para el COAC', 'https://fb/tini1', '', 'Chirigota del Tini (Algeciras)',
+                                    published_at=NOW, source_meta={'priority': 75, 'official': 0, 'local_scope': 1, 'brand': 'carnaval'})
+        self.assertTrue(cid)
+        self.assertEqual(db.row('SELECT brand FROM candidates WHERE id=?', (cid,))['brand'], 'carnaval')

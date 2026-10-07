@@ -30,7 +30,8 @@ BRANDS = {
                 'headline_lines': 3, 'line_chars': 24,  # el titular ocupa normalmente 3 líneas de unos 24 caracteres (letra grande)
                 'free_title_section': 'General'},
     'carnaval': {'name': 'Carnavalinense', 'short': 'Carnaval', 'color': '#E72E79', 'text': '#FFFFFF', 'env': 'CARNAVAL_',
-                 'about': 'medio del Carnaval de La Línea de la Concepción: agrupaciones, concurso, coplas, cabalgata y fiesta',
+                 'about': ('medio del Carnaval de La Línea de la Concepción y de las agrupaciones del Campo de Gibraltar: '
+                           'comparsas, chirigotas, coros, cuartetos, concurso, coplas, cabalgata y fiesta. Lo de La Línea va primero'),
                  'hashtags': '#Carnavalinense #CarnavalLaLínea #LaLínea',
                  'sections': ['AGRUPACIONES', 'CONCURSO', 'COPLAS', 'CALLE', 'CABALGATA', 'AGENDA']},
 }

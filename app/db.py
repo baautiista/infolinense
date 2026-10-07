@@ -191,6 +191,19 @@ def init_db():
     for n,u,k in cofrade:
         c.execute("INSERT OR IGNORE INTO sources(name,url,kind,priority,official,local_scope,brand) VALUES(?,?,?,?,?,?,?)",
                   (n,u,k,85 if k!='rss' else 75,0,0 if k=='rss' else 1,'cofrade'))
+    carnaval=[('Asociación ACALI (La Línea)','https://www.facebook.com/Accalivolao'),
+      ('Comparsa Morenopolo (La Línea)','https://www.facebook.com/lolo.lolito.7127'),
+      ('Comparsa Los Niños (Los Barrios)','https://www.facebook.com/profile.php?id=61579483787143'),
+      ('Comparsa Hermanos Torres (Algeciras)','https://www.facebook.com/TutontinaventureroCarnaval2025'),
+      ('Chirigota Los Moriegas (La Línea)','https://www.facebook.com/profile.php?id=61593395201136'),
+      ('Chirigota de la Bajadilla (Algeciras)','https://www.facebook.com/lachirigotadelabajadilla2.0'),
+      ('Chirigota Bau y Ocaña (La Línea)','https://www.facebook.com/profile.php?id=100037188225698'),
+      ('Chirigota de San Roque (San Roque)','https://www.facebook.com/profile.php?id=100085719862408'),
+      ('Chirigota de San Roque 2 (San Roque)','https://www.facebook.com/profile.php?id=61573955275998'),
+      ('Chirigota del Tini (Algeciras)','https://www.facebook.com/luismartin.galindeztellitu.3')]
+    for n,u in carnaval:
+        c.execute("INSERT OR IGNORE INTO sources(name,url,kind,priority,official,local_scope,brand) VALUES(?,?,?,?,?,?,?)",
+                  (n,u,'social',85 if 'La Línea' in n else 75,0,1,'carnaval'))
     c.execute("INSERT OR IGNORE INTO sources(name,url,kind,priority,official,local_scope,brand) VALUES(?,?,?,?,?,?,?)",
               ('Carnaval · noticias de La Línea',news('"La Línea" (carnaval OR chirigota OR comparsa OR murga OR cuarteto OR agrupación) when:3d'),'rss',75,0,0,'carnaval'))
     # El tablón de edictos es fuente prioritaria: se reactiva una vez (5.6)

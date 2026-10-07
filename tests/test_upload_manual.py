@@ -83,3 +83,21 @@ class HeadlineLengthTests(unittest.TestCase):
         h = 'Abre el plazo de las ayudas al alquiler hasta el 30 de octubre'
         with patch.object(ai, 'AI_ENABLED', True), patch.object(ai, 'ask_json', side_effect=AssertionError('no')):
             self.assertEqual(ai.shorten_headline({'headline': h, 'brand': 'infolinense'}), h)
+
+
+class CofradePublishTests(unittest.TestCase):
+    def test_cofrade_without_networks_says_why(self):
+        db.init_db()
+        cid = db.exec_("INSERT INTO candidates(title,url,status) VALUES('x','https://x/c','review_ready')")
+        aid = db.exec_("INSERT INTO articles(candidate_id,headline,body,status,brand) VALUES(?,?,?,?,?)", (cid, 'T', 'B', 'review_ready', 'cofrade'))
+        with patch.object(main.social_publish, 'connected_networks', return_value=[]):
+            with self.assertRaises(HTTPException) as e:
+                main.publish(aid, main.PublishIn(networks=['instagram', 'facebook']))
+        self.assertIn('Conectar', e.exception.detail)
+
+    def test_page_matched_by_brand_name(self):
+        from app import social_publish as sp
+        pages = [{'id': '1', 'name': 'InfoLinense', 'instagram_username': 'infolinense'},
+                 {'id': '2', 'name': 'El Cofrade Linense', 'instagram_username': 'elcofradelinense'}]
+        with sp.use_brand('cofrade'):
+            self.assertEqual(sp._page_for_brand(pages)['id'], '2')

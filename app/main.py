@@ -13,7 +13,7 @@ from . import db, sources, pipeline, publishers, photos, canva, ai, planner, lay
 from .auth import login, require_auth
 from .config import BASE_DIR, RENDER_DIR, UPLOAD_DIR, SCAN_INTERVAL_MINUTES, AUTO_PIPELINE, OPENAI_API_KEY, ADMIN_PASSWORD, JWT_SECRET, PUBLISH_MODE, CORS_ORIGINS, PUBLIC_BASE_URL, AUTO_PUBLISH
 
-VERSION='6.3.2'
+VERSION='6.3.3'
 app=FastAPI(title='InfoLinense Desk',version=VERSION)
 app.add_middleware(CORSMiddleware,allow_origins=CORS_ORIGINS,allow_credentials=False,allow_methods=['*'],allow_headers=['Authorization','Content-Type'])
 db.init_db()
@@ -822,9 +822,20 @@ def publish(aid:int,body:PublishIn|None=None):
     """«Publicar ahora»: publica en la web y en las redes elegidas (solo al pulsar el botón)."""
     a=db.row('SELECT brand FROM articles WHERE id=?',(aid,))
     if not a: raise HTTPException(404)
-    ok=social_publish.connected_networks(a.get('brand') or brands.DEFAULT)  # solo las redes de su medio que estén conectadas
-    nets=ok if body is None or body.networks is None else [n for n in body.networks if n in ok]
-    return do_publish(aid,nets)
+    brand=a.get('brand') or brands.DEFAULT
+    ok=social_publish.connected_networks(brand)  # solo las redes de su medio que estén conectadas
+    wanted=ok if body is None or body.networks is None else list(body.networks)
+    nets=[n for n in wanted if n in ok]
+    missing=[n for n in wanted if n not in ok and n in social_publish.NETWORKS]
+    if not nets and not brands.web_enabled(brand):
+        name=brands.settings(brand)['name']
+        raise HTTPException(400,f'{name} no tiene ninguna red conectada, así que no se puede publicar. '
+                                f'Ve a Ajustes, elige «{name}» arriba y pulsa «Conectar» en Instagram y Facebook.')
+    out=do_publish(aid,nets)
+    name=brands.settings(brand)['name']
+    for n in missing:
+        out['results'].append({'network':n,'ok':False,'message':f'{social_publish.NAMES[n]} de {name} sin conectar (Ajustes → {name} → Conectar)'})
+    return out
 
 MADRID=ZoneInfo('Europe/Madrid')
 

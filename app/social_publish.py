@@ -226,6 +226,19 @@ def _meta_complete(code):
     return meta_from_user_token(short)
 
 
+def _page_for_brand(pages):
+    """Si el usuario administra varias páginas, la del medio: «El Cofrade Linense» para Cofrade, etc."""
+    import unicodedata
+    plain = lambda t: ''.join(c for c in unicodedata.normalize('NFD', (t or '').lower()) if c.isalnum())
+    b = brands.settings(_brand.get())
+    keys = [plain(b['name']), plain(b.get('short')), plain(_brand.get())]
+    for p in pages:
+        name = plain(p.get('name')) + plain(p.get('instagram_username'))
+        if any(k and k in name for k in keys):
+            return p
+    return None
+
+
 def meta_from_user_token(short):
     """A partir de un token de usuario (del inicio de sesión o pegado desde el Explorador de la API Graph)
     obtiene tokens de página que no caducan y guarda la página y su Instagram."""
@@ -249,7 +262,7 @@ def meta_from_user_token(short):
     if not pages:
         raise SocialError('Tu usuario de Facebook no administra ninguna página o no diste permiso a la página.')
     chosen = next((p for p in pages if p['id'] == PREFERRED_PAGES.get(_brand.get())), None) \
-        or next((p for p in pages if p['instagram_id']), None) or pages[0]
+        or _page_for_brand(pages) or next((p for p in pages if p['instagram_id']), None) or pages[0]
     _save_account('meta', {'pages': pages, 'page': chosen})
     return chosen
 

@@ -362,17 +362,25 @@ function netPrefs(available) { let saved = null; try { saved = JSON.parse(localS
 function saveNetPrefs() { try { localStorage.setItem('nets', JSON.stringify([...document.querySelectorAll('.netpick input:checked')].map(i => i.value))) } catch (e) { } }
 function netStatus(r) { const n = r.networks || {}; return Object.keys(n).map(k => n[k].status === 'published' ? (n[k].url ? `<a class="net ok" href="${safeUrl(n[k].url)}" target="_blank" rel="noopener">${NET_NAMES[k]} ✓</a>` : `<span class="net ok">${NET_NAMES[k]} ✓</span>`) : `<span><button class="net bad" title="${esc(n[k].message)}" onclick="retryNet(${r.id},'${k}',this)">${NET_NAMES[k]}: reintentar</button><small class="neterr">${esc(String(n[k].message || '').slice(0, 160))}</small></span>`).join('') }
 async function publishView(v) {
-  const [rows, nets] = await Promise.all([api('/api/to-publish'), api('/api/networks?brand=' + netBrand()).catch(() => ({}))]);
-  const available = ['instagram', 'facebook', 'tiktok'].filter(n => (nets[n] || {}).connected);
+  const rows = await api('/api/to-publish');
+  // Cada medio publica en SUS cuentas: se mira lo conectado de cada uno
+  const slugs = BRAND === 'all' ? [...new Set([netBrand(), ...rows.map(r => r.brand || 'infolinense')])] : [BRAND];
+  const byBrand = {};
+  await Promise.all(slugs.map(async b => { byBrand[b] = await api('/api/networks?brand=' + b).catch(() => ({})) }));
+  const NETS = ['instagram', 'facebook', 'tiktok'];
+  const available = NETS.filter(n => slugs.some(b => (byBrand[b][n] || {}).connected));
   const chosen = netPrefs(available);
-  const offline = ['instagram', 'facebook', 'tiktok'].filter(n => !(nets[n] || {}).connected);
-  const picker = `<div class="netpick row wrap"><span class="muted small">${BRAND === 'all' ? 'Publicar también en (cada noticia en las cuentas de su medio):' : 'Publicar también en:'}</span>${available.map(n => `<label class="switch"><input type="checkbox" value="${n}" ${chosen.includes(n) ? 'checked' : ''} onchange="saveNetPrefs()"> ${NET_NAMES[n]}</label>`).join('')}
-    ${offline.map(n => `<a class="switch off" href="#settings" title="Sin conectar">${NET_NAMES[n]}: sin conectar</a>`).join('')}</div>`;
+  const bname = b => (BRANDS.find(x => x.slug === b) || {}).short || b;
+  const offline = slugs.flatMap(b => NETS.filter(n => !(byBrand[b][n] || {}).connected).map(n => (slugs.length > 1 ? bname(b) + ' · ' : '') + NET_NAMES[n]));
+  const picker = `<div class="netpick row wrap"><span class="muted small">${slugs.length > 1 ? 'Publicar también en (cada noticia en las cuentas de su medio):' : 'Publicar también en:'}</span>${available.map(n => `<label class="switch"><input type="checkbox" value="${n}" ${chosen.includes(n) ? 'checked' : ''} onchange="saveNetPrefs()"> ${NET_NAMES[n]}</label>`).join('')}
+    ${offline.map(t => `<a class="switch off" href="#settings" title="Sin conectar">${esc(t)}: sin conectar</a>`).join('')}</div>`;
+  const noNets = b => !NETS.some(n => (byBrand[b] && byBrand[b][n] || {}).connected);
   const today = new Date().toLocaleDateString('sv-SE', { timeZone: 'Europe/Madrid' });
   const isTodayRow = r => !r.planned_at || String(r.planned_at).slice(0, 10) <= today;
   const row = r => `<article class="item slot"><div class="hour">${r.planned_at ? esc(String(r.planned_at).slice(11, 16)) : '–'}</div><div class="grow">
       <div class="meta">${brandBadge(r.brand)}${secBadge(r.section, r.brand)}<span class="st st-${r.status}">${STATUS[r.status]}</span><span>${r.canva_exported ? 'Imagen lista' : r.has_photo ? 'Con foto' : 'Sin foto'}</span></div>
       <h3><a href="#editor/${r.id}">${esc(r.headline)}</a></h3>
+      ${r.status !== 'published' && (r.brand || 'infolinense') !== 'infolinense' && noNets(r.brand) ? `<p class="error small">${esc(bname(r.brand))} no tiene Instagram ni Facebook conectados: no se publicará en ningún sitio. <a href="#settings">Conectar en Ajustes</a></p>` : ''}
       ${r.status === 'published' ? `<div class="row wrap">${r.publish_url ? `<a class="net ok" href="${safeUrl(r.publish_url)}" target="_blank" rel="noopener">Web ✓</a>` : ''}${netStatus(r)}${r.canva_exported ? `<button class="net" onclick="shareFb(${r.id},this)">Compartir en Facebook</button>` : ''}</div>` :
         r.scheduled_at ? `<div class="sched"><b>⏰ Se publica sola ${esc(whenText(r.scheduled_at))}</b> · ${schedNets(r)}</div>
          <div class="row wrap"><button class="btn small" onclick="publishNow(${r.id},this)">Publicar ahora</button><button class="link" onclick="unschedule(${r.id})">Cancelar programación</button></div>` :

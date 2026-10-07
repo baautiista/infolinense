@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#D7192A">
+<title>Área Desk</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Figtree:wght@400;500;600;700;800&family=Poppins:wght@700;800;900&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/styles.css?v=1.0">
+</head>
+<body>
+<div id="login" class="login" hidden>
+  <form id="loginForm" class="login-card">
+    <div class="logo">Á</div>
+    <h1>Área Campo de Gibraltar Desk</h1>
+    <label for="password">Contraseña</label>
+    <input id="password" type="password" autocomplete="current-password" required>
+    <button class="btn primary" type="submit">Entrar</button>
+    <p id="loginError" class="error" role="alert"></p>
+  </form>
+</div>
+
+<div id="app" hidden>
+  <header class="top">
+    <button class="back" id="backBtn" hidden aria-label="Volver">‹</button>
+    <h1><span class="brand">ÁREA</span><span id="title">Ordenar</span></h1>
+    <button class="btn primary small" id="scanBtn">Buscar</button>
+    <button class="gear" id="settingsBtn" aria-label="Ajustes">⚙</button>
+  </header>
+  <nav class="tabs" aria-label="Fases del día">
+    <button data-view="sort" class="on"><span class="num">1</span>Ordenar<span class="n"></span></button>
+    <button data-view="writing"><span class="num">2</span>Redacción<span class="n"></span></button>
+    <button data-view="review"><span class="num">3</span>Revisar<span class="n"></span></button>
+    <button data-view="ready"><span class="num">4</span>Copiar<span class="n"></span></button>
+  </nav>
+  <main id="view"></main>
+</div>
+<div id="toast" class="toast" role="status" hidden></div>
+<script src="/static/app.js?v=1.0"></script>
+</body>
+</html>

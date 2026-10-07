@@ -2,7 +2,7 @@
 const $ = s => document.querySelector(s);
 let token = localStorage.getItem('area_token') || '';
 let view = 'sort', editorId = null, editorFrom = 'review', block = null, showArea = false, sortMode = 'tenders';
-const TF = { town: '', status: '', sort: 'new', q: '', sel: new Set() };
+const TF = { town: '', status: '', sort: 'new', q: '', sel: new Set(), area: 0 };
 let blobUrls = [];
 let queue = [];
 const BLOCKS = ['Exclusivas', 'Obras y urbanismo', 'Agenda y cultura', 'Instituciones', 'Nacionales adaptables', 'Efemérides'];
@@ -134,21 +134,23 @@ async function sortView(v) {
 /* ---------- Licitaciones: todas las de la comarca, por municipio y fase ---------- */
 const euro = n => n ? Number(n).toLocaleString('es-ES', { maximumFractionDigits: 0 }) + ' €' : '';
 async function tendersView(box) {
-  const qs = new URLSearchParams({ town: TF.town, status: TF.status, sort: TF.sort, q: TF.q });
+  const qs = new URLSearchParams({ town: TF.town, status: TF.status, sort: TF.sort, q: TF.q, area: TF.area });
   const d = await api('/api/tenders?' + qs);
   const all = d.towns.reduce((a, t) => a + t.n, 0);
   box.innerHTML = `<div class="chips scroll" style="margin-top:12px"><button class="chip ${!TF.town ? 'on' : ''}" data-town="">Todos<b>${all}</b></button>
       ${d.towns.map(t => `<button class="chip ${TF.town === t.town ? 'on' : ''}" data-town="${esc(t.town)}" ${t.n ? '' : 'disabled'}>${esc(t.town)}<b>${t.n}</b></button>`).join('')}</div>
     <div class="chips scroll"><button class="chip ${!TF.status ? 'on' : ''}" data-st="">Todas las fases</button>
-      ${d.statuses.filter(x => x.n || TF.status === x.code).map(x => `<button class="chip ${TF.status === x.code ? 'on' : ''}" data-st="${x.code}">${esc(x.label)}<b>${x.n}</b></button>`).join('')}</div>
+      ${d.statuses.filter(x => x.n || TF.status === x.code).map(x => `<button class="chip ${TF.status === x.code ? 'on' : ''}" data-st="${x.code}">${esc(x.label)}<b>${x.n}</b></button>`).join('')}
+      <button class="chip ${TF.area ? 'on' : ''}" id="tarea">${TF.area ? '← Volver a las no publicadas' : `Ya publicadas en Área<b>${d.in_area}</b>`}</button></div>
     <div class="row wrap" style="margin-bottom:10px"><input id="tq" class="grow" placeholder="Buscar (obra, calle, empresa…)" value="${esc(TF.q)}" style="min-width:180px">
       <select id="tsort" style="width:auto">${[['new', 'Más recientes'], ['amount', 'Mayor importe'], ['deadline', 'Plazo más cercano'], ['score', 'Más interesantes']].map(([k, l]) => `<option value="${k}" ${TF.sort === k ? 'selected' : ''}>${l}</option>`).join('')}</select></div>
-    <p class="progress">${d.total} licitaciones${d.sum ? ' · ' + euro(d.sum) + ' en total' : ''}</p>
+    <p class="progress">${TF.area ? 'Ya publicadas en Área (no se proponen): ' : ''}${d.total} licitaciones${d.sum ? ' · ' + euro(d.sum) + ' en total' : ''}</p>
     <div class="list">${d.items.map(tenderRow).join('') || '<p class="empty">No hay licitaciones con estos filtros. Pulsa Buscar para leer la Plataforma de Contratación.</p>'}</div>
     <div class="actions" id="tsel" ${TF.sel.size >= 2 ? '' : 'hidden'}><button class="btn primary" id="tsum">Pieza resumen con ${TF.sel.size} licitaciones</button><button class="btn" id="tclear">Quitar selección</button></div>`;
   box.querySelectorAll('[data-town]').forEach(b => b.onclick = () => { TF.town = b.dataset.town; tendersView(box) });
   box.querySelectorAll('[data-st]').forEach(b => b.onclick = () => { TF.status = b.dataset.st; tendersView(box) });
   $('#tsort').onchange = e => { TF.sort = e.target.value; tendersView(box) };
+  $('#tarea').onclick = () => { TF.area = TF.area ? 0 : 1; tendersView(box) };
   $('#tq').onkeydown = e => { if (e.key === 'Enter') { TF.q = e.target.value; tendersView(box) } };
   box.querySelectorAll('[data-sel]').forEach(c => c.onchange = () => { c.checked ? TF.sel.add(+c.dataset.sel) : TF.sel.delete(+c.dataset.sel); $('#tsel').hidden = TF.sel.size < 2; $('#tsum').textContent = `Pieza resumen con ${TF.sel.size} licitaciones` });
   $('#tclear').onclick = () => { TF.sel.clear(); tendersView(box) };

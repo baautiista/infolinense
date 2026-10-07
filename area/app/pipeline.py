@@ -59,7 +59,15 @@ def write_candidate(cid):
                     text += '\n\n' + sources.fetch_article_text(l['url'])
             dtext = _docs_text(cand) if cand.get('tag') in ('licitacion', 'edicto') or cand.get('docs_json') not in (None, '', '[]') else ''
             _work(cid, 'working', 'Redactando')
-            data = redaccion.draft(cand, text, dtext)
+            try:
+                data = redaccion.draft(cand, text, dtext)
+            except AIProviderError as exc:
+                if exc.kind not in ('auth', 'config', 'billing', 'quota', 'bad_request'):
+                    raise
+                # La IA no está disponible: se prepara el borrador desde la fuente para no bloquear la pieza
+                data = redaccion.free_draft(cand, text)
+                data['missing'] = ['Redactado SIN IA porque falló la IA: %s' % str(exc)[:300]] + data.get('missing', [])
+                db.log('ai', 'Sin IA para %s: %s' % (cid, exc))
         except AIProviderError as exc:
             _work(cid, 'error', error=str(exc))
             raise

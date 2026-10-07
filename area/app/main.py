@@ -158,11 +158,14 @@ TSTATUS = {'PUB': 'En plazo', 'PRE': 'Anuncio previo', 'EV': 'En evaluación', '
 
 
 @app.get('/api/tenders', dependencies=AUTH)
-def tenders(town: str = '', status: str = '', sort: str = 'new', days: int = 30, q: str = ''):
+def tenders(town: str = '', status: str = '', sort: str = 'new', days: int = 30, q: str = '', area: int = 0):
     """Todas las licitaciones de la comarca, con filtros por municipio y fase y recuentos para los chips."""
     since = (datetime.utcnow() - timedelta(days=max(1, min(days, 120)))).isoformat()
     rows = db.rows("""SELECT * FROM candidates WHERE block='Licitaciones' AND status IN ('new','in_area','chosen')
                        AND priority!='no' AND (published_at>=? OR published_at='') ORDER BY published_at DESC LIMIT 1500""", (since,))
+    in_area = sum(1 for r in rows if r['status'] == 'in_area')
+    # Lo que Diario Área ya ha publicado no se propone (solo se ve si se pide expresamente)
+    rows = [r for r in rows if (r['status'] == 'in_area') == bool(area)]
     for r in rows:
         r['town'] = (r.get('towns') or '').split(',')[0] or 'Campo de Gibraltar'
         r['tstatus'] = r.get('tstatus') or 'PUB'
@@ -192,7 +195,7 @@ def tenders(town: str = '', status: str = '', sort: str = 'new', days: int = 30,
     order = ['Algeciras', 'La Línea', 'San Roque', 'Los Barrios', 'Tarifa', 'Jimena', 'Castellar', 'San Martín del Tesorillo', 'Campo de Gibraltar']
     return {'items': out, 'total': len(rows), 'towns': [{'town': t, 'n': counts_town.get(t, 0)} for t in order],
             'statuses': [{'code': k, 'label': v, 'n': counts_status.get(k, 0)} for k, v in TSTATUS.items()],
-            'sum': round(sum(r.get('amount_value') or 0 for r in rows), 2)}
+            'sum': round(sum(r.get('amount_value') or 0 for r in rows), 2), 'in_area': in_area}
 
 
 @app.post('/api/tenders/summary', dependencies=AUTH)

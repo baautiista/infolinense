@@ -224,6 +224,27 @@ def test_tender_towns_and_merge():
     assert cid2 and db.row('SELECT tstatus FROM candidates WHERE id=?', (cid2,))['tstatus'] == 'ADJ'
 
 
+def test_ai_failure_falls_back_and_hides_area():
+    from app import pipeline, ai
+    from app.ai import AIProviderError
+    cid = db.row("SELECT id FROM candidates WHERE tag='licitacion' LIMIT 1")['id']
+    old = redaccion.draft
+    def boom(*a, **k):
+        raise AIProviderError('Gemini no funciona: la clave no es válida.', 'gemini', 400, '', 'auth')
+    redaccion.draft = boom
+    old_imgs = pipeline.gather_images
+    pipeline.gather_images = lambda aid, query=None: None
+    try:
+        art = pipeline.write_candidate(cid)
+    finally:
+        redaccion.draft, pipeline.gather_images = old, old_imgs
+    assert art and art['headline'] and 'SIN IA' in art['sources_json']
+    import os
+    os.environ['GEMINI_API_KEY'] = '"GEMINI_API_KEY=AIza 123"'
+    from app import config
+    assert config._key('GEMINI_API_KEY') == 'AIza123'
+
+
 if __name__ == '__main__':
     for name, fn in list(globals().items()):
         if name.startswith('test_'):

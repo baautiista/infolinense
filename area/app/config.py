@@ -26,7 +26,15 @@ ANTHROPIC_MODEL = os.getenv('ANTHROPIC_MODEL', 'claude-sonnet-5-5').strip()
 ANTHROPIC_WORKSPACE_ID = os.getenv('ANTHROPIC_WORKSPACE_ID', '').strip()
 ANTHROPIC_WEB_SEARCH = _on('ANTHROPIC_WEB_SEARCH')
 AI_ALLOW_PAID = _on('AI_ALLOW_PAID')
-GEMINI_API_KEY = os.getenv('GEMINI_API_KEY', '').strip()
+def _key(name):
+    """Clave tal cual, aunque se haya pegado con comillas, espacios o con «NOMBRE=» delante."""
+    v = os.getenv(name, '').strip().strip('"').strip("'").strip()
+    if v.upper().startswith(name + '='):
+        v = v[len(name) + 1:].strip().strip('"').strip("'")
+    return ''.join(v.split())
+
+
+GEMINI_API_KEY = _key('GEMINI_API_KEY')
 GEMINI_MODEL = os.getenv('GEMINI_MODEL', 'gemini-flash-lite-latest').strip()
 GEMINI_FALLBACK_MODELS = [m.strip() for m in os.getenv('GEMINI_FALLBACK_MODELS', 'gemini-2.5-flash-lite,gemini-flash-latest,gemini-2.5-flash').split(',') if m.strip()]
 GEMINI_MIN_INTERVAL = float(os.getenv('GEMINI_MIN_INTERVAL', '13'))

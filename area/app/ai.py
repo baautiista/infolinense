@@ -239,7 +239,13 @@ def ask_gemini(instructions, user_text, web=False, max_tokens=4000):
                     last_error = (status, err, msg, model)
                     break  # probar otro modelo (cada uno tiene su propio cupo)
                 if status in (401, 403) or 'api key' in msg.lower():
-                    raise AIProviderError('Google no acepta la clave GEMINI_API_KEY. Créala de nuevo en aistudio.google.com.', 'gemini', status, '', 'auth', None, msg)
+                    hint = ('la clave no es válida (copiada incompleta, con espacios o borrada)' if re.search(r'not valid|invalid|API_KEY_INVALID', msg, re.I)
+                            else 'la API de Gemini no está activada en ese proyecto de Google' if re.search(r'has not been used|disabled|SERVICE_DISABLED', msg, re.I)
+                            else 'Gemini no está disponible para esa cuenta o región' if re.search(r'location|region|not supported', msg, re.I)
+                            else 'la clave caducó o se revocó' if re.search(r'expired|revoked', msg, re.I) else 'Google rechazó la clave')
+                    raise AIProviderError('Gemini no funciona: %s. Respuesta de Google: «%s». Crea una clave nueva en aistudio.google.com → Get API key '
+                                          'y pégala en Railway (Variables → GEMINI_API_KEY), sin comillas ni espacios.' % (hint, msg[:160] or 'sin detalle'),
+                                          'gemini', status, '', 'auth', None, msg)
                 if status >= 500:
                     last_error = (status, err, msg, model)
                     if attempt == 0:

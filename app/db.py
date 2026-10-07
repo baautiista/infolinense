@@ -211,6 +211,7 @@ def init_db():
     # Lista ampliada de fuentes (6.4.5): cada grupo busca solo lo que menciona La Línea en esos medios
     more=[
       ('Plataforma de Contratación · Ayuntamiento de La Línea','https://contrataciondelestado.es/sindicacion/sindicacion_643/licitacionesPerfilesContratanteCompleto3.atom','procurement',96,1,1),
+      ('Plataforma de Contratación · contratos menores de La Línea','https://contrataciondelestado.es/sindicacion/sindicacion_1143/contratosMenoresPerfilesContratantes.atom','procurement',90,1,1),
       ('Medios nacionales (Público, infoLibre, Vozpópuli, HuffPost, Servimedia, Newtral, Maldita)',news('"La Línea de la Concepción" (site:publico.es OR site:infolibre.es OR site:vozpopuli.com OR site:huffingtonpost.es OR site:servimedia.es OR site:newtral.es OR site:maldita.es) when:3d'),'rss',72,0,0),
       ('Radio y agencias (SER, COPE, Onda Cero, Europa Press, EFE)',news('"La Línea" (site:cadenaser.com OR site:cope.es OR site:ondacero.es OR site:europapress.es OR site:efe.com) when:2d'),'rss',80,0,0),
       ('Prensa andaluza (Grupo Joly, SUR, Ideal, Córdoba, La Voz del Sur…)',news('"La Línea de la Concepción" (site:diariodesevilla.es OR site:malagahoy.es OR site:granadahoy.com OR site:huelvainformacion.es OR site:diariodecadiz.es OR site:diariodejerez.es OR site:diariosur.es OR site:ideal.es OR site:diariocordoba.com OR site:cordopolis.es OR site:lavozdelsur.es OR site:cadizdirecto.com OR site:andaluciainformacion.es OR site:granadadigital.es) when:3d'),'rss',78,0,0),

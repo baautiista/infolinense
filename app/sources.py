@@ -264,13 +264,25 @@ def parse_licitacionesio(source):
 
 
 PLACSP_FEED = 'https://contrataciondelestado.es/sindicacion/sindicacion_643/licitacionesPerfilesContratanteCompleto3.atom'
+PLACSP_MENORES = 'https://contrataciondelestado.es/sindicacion/sindicacion_1143/contratosMenoresPerfilesContratantes.atom'
 _LINEA = re.compile(r'L[ií]nea de la Concepci[oó]n', re.I)
+PLACSP_STATES = {'PRE': 'Anuncio previo', 'PUB': 'En plazo', 'EV': 'Pendiente de adjudicación', 'ADJ': 'Adjudicada',
+                 'RES': 'Formalizada', 'ANUL': 'Anulada'}
+_STATE_TITLE = {'PRE': 'Licitación (anuncio previo): ', 'PUB': 'Licitación: ', 'EV': 'Licitación cerrada, pendiente de adjudicar: ',
+                'ADJ': 'Adjudicada: ', 'RES': 'Formalizada: ', 'ANUL': 'Anulada: '}
+
+
+def _tag(raw, pattern):
+    m = re.search(pattern, raw, re.S)
+    return clean(re.sub(r'<[^>]+>', ' ', m.group(1))) if m else ''
 
 
 def parse_placsp(source):
-    """Plataforma de Contratación del Sector Público: su fuente abierta (Atom) con las últimas licitaciones de toda España.
-    Se queda con las del Ayuntamiento de La Línea (y organismos con sede en La Línea)."""
+    """Plataforma de Contratación del Sector Público (fuente abierta oficial, Atom). Se queda con lo de La Línea y avisa de:
+    licitaciones nuevas, cada cambio de estado (cerrada, adjudicada, formalizada, anulada), rectificaciones o documentos
+    nuevos, y contratos menores."""
     url = source.get('url') or ''
+    menores = 'menores' in url.lower() or 'sindicacion_1143' in url
     if 'sindicacion' not in url:
         url = PLACSP_FEED  # el enlace del perfil del contratante no se puede leer: se usa la fuente abierta oficial
     r = requests.get(url, timeout=(15, 90), headers={'User-Agent': UA, 'Accept': 'application/atom+xml,application/xml'})
@@ -278,20 +290,43 @@ def parse_placsp(source):
     text = r.content.decode('utf-8', 'ignore')
     if '<entry' not in text:
         raise ValueError('La Plataforma de Contratación no devolvió licitaciones')
+    db.exec_('CREATE TABLE IF NOT EXISTS placsp_state(id TEXT PRIMARY KEY, estado TEXT, updated TEXT)')
     out = []
     for raw in re.findall(r'<entry\b.*?</entry>', text, re.S):
         plain = clean(re.sub(r'<[^>]+>', ' ', raw))
         if not _LINEA.search(plain):
             continue
-        title = clean(re.sub(r'<[^>]+>', ' ', (re.search(r'<title[^>]*>(.*?)</title>', raw, re.S) or [None, ''])[1]))
+        title = _tag(raw, r'<title[^>]*>(.*?)</title>')
         link = (re.search(r'<link[^>]*href="([^"]+)"', raw) or [None, ''])[1].replace('&amp;', '&')
-        updated = (re.search(r'<updated>([^<]+)</updated>', raw) or [None, ''])[1]
-        summary = clean(re.sub(r'<[^>]+>', ' ', (re.search(r'<summary[^>]*>(.*?)</summary>', raw, re.S) or [None, ''])[1]))
-        if not title or not link:
+        uid = _tag(raw, r'<id>(.*?)</id>') or link
+        updated = _tag(raw, r'<updated>(.*?)</updated>')
+        summary = _tag(raw, r'<summary[^>]*>(.*?)</summary>')
+        if not title or not link or not recent_enough(updated, 10):
             continue
-        if re.search(r'Estado:\s*(RES|ANUL|ADJ)', summary) and not recent_enough(updated, 3):
-            continue  # resueltas o anuladas antiguas: no interesan
-        out.append({'title': 'Licitación: ' + title[:240], 'url': link, 'excerpt': summary[:500], 'published_at': updated})
+        estado = (re.search(r'Estado:\s*([A-Z]+)', summary) or re.search(r'ContractFolderStatusCode[^>]*>\s*([A-Z]+)\s*<', raw) or [None, ''])[1]
+        winner = _tag(raw, r'<cac:WinningParty>.*?<cbc:Name>(.*?)</cbc:Name>')
+        awarded = _tag(raw, r'<cac:AwardedTenderedProject>.*?<cbc:PayableAmount[^>]*>(.*?)</cbc:PayableAmount>')
+        budget = _tag(raw, r'<cbc:TaxExclusiveAmount[^>]*>(.*?)</cbc:TaxExclusiveAmount>') or _tag(raw, r'<cbc:TotalAmount[^>]*>(.*?)</cbc:TotalAmount>')
+        deadline = _tag(raw, r'<cac:TenderSubmissionDeadlinePeriod>.*?<cbc:EndDate>(.*?)</cbc:EndDate>')
+        facts = [PLACSP_STATES.get(estado, estado)] if estado else []
+        if budget: facts.append(f'Presupuesto: {budget} € sin IVA')
+        if deadline and estado in ('PUB', 'PRE'): facts.append(f'Plazo hasta {deadline}')
+        if winner: facts.append(f'Adjudicataria: {winner}')
+        if awarded: facts.append(f'Importe de adjudicación: {awarded} €')
+        organ = (re.search(r'[ÓO]rgano de Contrataci[oó]n:\s*([^;]+)', summary) or [None, ''])[1].strip()
+        excerpt = ((organ + '. ' if organ else '') + '. '.join(facts) + '. ' + summary)[:700]
+        prev = db.row('SELECT estado,updated FROM placsp_state WHERE id=?', (uid,))
+        db.exec_('INSERT OR REPLACE INTO placsp_state(id,estado,updated) VALUES(?,?,?)', (uid, estado, updated))
+        if menores:
+            if prev: continue
+            head, key = 'Contrato menor: ', 'menor'
+        elif prev and prev['estado'] == estado:
+            if prev['updated'] == updated:
+                continue  # sin cambios
+            head, key = 'Cambios en la licitación: ', estado + '-' + updated[:16]  # rectificación, documentos nuevos, plazo…
+        else:
+            head, key = _STATE_TITLE.get(estado, 'Licitación: '), estado or 'nuevo'
+        out.append({'title': head + title[:240], 'url': link + '#' + key, 'excerpt': excerpt, 'published_at': updated})
     return out
 
 

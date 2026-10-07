@@ -127,17 +127,31 @@ class HidePublishedTests(unittest.TestCase):
 class PlacspTests(unittest.TestCase):
     def test_only_la_linea_tenders(self):
         from app import sources
+        db.init_db(); db.exec_('CREATE TABLE IF NOT EXISTS placsp_state(id TEXT PRIMARY KEY, estado TEXT, updated TEXT)'); db.exec_('DELETE FROM placsp_state')
+        from datetime import date, timedelta
+        d1, d2 = (date.today() - timedelta(days=1)).isoformat(), date.today().isoformat()
         feed = '''<feed xmlns="http://www.w3.org/2005/Atom">
 <entry><title>Suministro de luminarias LED</title><link href="https://contrataciondelestado.es/wps/poc?uri=deeplink:detalle_licitacion&amp;idEvl=AAA"/>
 <summary type="text">Id licitación: 12/2026; Órgano de Contratación: Alcaldía del Ayuntamiento de La Línea de la Concepción; Importe: 120000 EUR; Estado: PUB</summary>
 <updated>2026-10-07T10:00:00+02:00</updated></entry>
 <entry><title>Obras en Madrid</title><link href="https://contrataciondelestado.es/x"/><summary>Órgano de Contratación: Ayuntamiento de Madrid; Estado: PUB</summary><updated>2026-10-07T10:00:00+02:00</updated></entry>
-</feed>'''
+</feed>'''.replace('2026-10-07', d1)
         class R:
             content = feed.encode(); ok = True
             def raise_for_status(self): pass
         with patch.object(sources.requests, 'get', return_value=R()):
             items = sources.read_source({'url': sources.PLACSP_FEED, 'kind': 'procurement'})
         self.assertEqual(len(items), 1)
-        self.assertIn('luminarias', items[0]['title'])
+        self.assertTrue(items[0]['title'].startswith('Licitación: '))
         self.assertIn('idEvl=AAA', items[0]['url'])
+        self.assertTrue(sources.tender_ok(items[0]['title'], items[0]['excerpt']))
+        # la misma licitación pasa a adjudicada: aviso nuevo, con otra dirección
+        feed2 = feed.replace('Estado: PUB', 'Estado: ADJ').replace(d1 + 'T10:00', d2 + 'T10:00')
+        R.content = feed2.encode()
+        with patch.object(sources.requests, 'get', return_value=R()):
+            again = sources.read_source({'url': sources.PLACSP_FEED, 'kind': 'procurement'})
+        self.assertEqual(len(again), 1)
+        self.assertTrue(again[0]['title'].startswith('Adjudicada: '))
+        self.assertNotEqual(again[0]['url'], items[0]['url'])
+        with patch.object(sources.requests, 'get', return_value=R()):
+            self.assertEqual(sources.read_source({'url': sources.PLACSP_FEED, 'kind': 'procurement'}), [])  # sin cambios

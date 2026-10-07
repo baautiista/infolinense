@@ -13,7 +13,7 @@ from . import db, sources, pipeline, publishers, photos, canva, ai, planner, lay
 from .auth import login, require_auth
 from .config import BASE_DIR, RENDER_DIR, UPLOAD_DIR, SCAN_INTERVAL_MINUTES, AUTO_PIPELINE, OPENAI_API_KEY, ADMIN_PASSWORD, JWT_SECRET, PUBLISH_MODE, CORS_ORIGINS, PUBLIC_BASE_URL, AUTO_PUBLISH
 
-VERSION='6.4.3'
+VERSION='6.4.4'
 app=FastAPI(title='InfoLinense Desk',version=VERSION)
 app.add_middleware(CORSMiddleware,allow_origins=CORS_ORIGINS,allow_credentials=False,allow_methods=['*'],allow_headers=['Authorization','Content-Type'])
 db.init_db()
@@ -359,7 +359,10 @@ def delete_article(aid:int):
     """Eliminar de la planificación: no se publica y no vuelve a aparecer en Ordenar."""
     a=db.row('SELECT id,candidate_id,status FROM articles WHERE id=?',(aid,))
     if not a: raise HTTPException(404)
-    if a['status']=='published': raise HTTPException(400,'Ya está publicada; bórrala desde la web o las redes')
+    if a['status']=='published':  # se quita del panel; lo publicado sigue en la web y las redes
+        db.exec_("UPDATE articles SET hidden=1,scheduled_at=NULL WHERE id=?",(aid,))
+        db.log('delete',f'Noticia publicada {aid} quitada del panel')
+        return {'ok':True,'hidden':True}
     db.exec_("UPDATE articles SET status='rejected',scheduled_at=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=?",(aid,))
     db.exec_("UPDATE candidates SET status='archived',editorial_priority='no_interest',planned_at=NULL WHERE id=?",(a['candidate_id'],))
     db.log('delete',f'Noticia {aid} eliminada')
@@ -380,7 +383,7 @@ def to_publish(brand:str=''):
     rows=db.rows("""SELECT a.id,a.brand,a.headline,a.section,a.status,a.image_local,a.publish_url,c.planned_at,c.editorial_priority,c.id candidate_id,
                       a.scheduled_at,a.scheduled_networks,a.schedule_error,d.exported canva_exported FROM articles a LEFT JOIN candidates c ON c.id=a.candidate_id
                       LEFT JOIN canva_designs d ON d.article_id=a.id
-                      WHERE a.status IN ('draft','review_ready','approved') OR (a.status='published' AND a.updated_at>=date('now'))""")
+                      WHERE a.status IN ('draft','review_ready','approved') OR (a.status='published' AND a.updated_at>=date('now') AND COALESCE(a.hidden,0)=0)""")
     rows=_bf(rows,brand)
     for r in rows: r['has_photo']=bool(r.pop('image_local',None))
     posts=social_publish.posts_for([r['id'] for r in rows])
@@ -394,7 +397,7 @@ def list_articles(brand:str=''):
     rows=db.rows("""SELECT a.id,a.brand,a.candidate_id,a.section,a.headline,a.status,a.image_url,a.updated_at,a.publish_url,
                     c.planned_at,c.editorial_priority,c.source_name,c.outlet,d.exported canva_exported
                     FROM articles a LEFT JOIN candidates c ON c.id=a.candidate_id LEFT JOIN canva_designs d ON d.article_id=a.id
-                    WHERE a.status IN ('draft','review_ready','approved') OR (a.status='published' AND a.updated_at>=datetime('now','-3 day'))""")
+                    WHERE a.status IN ('draft','review_ready','approved') OR (a.status='published' AND a.updated_at>=datetime('now','-3 day') AND COALESCE(a.hidden,0)=0)""")
     rows=_bf(rows,brand)
     order={'urgent':0,'today':1,'this_week':2,'future':3}
     rows.sort(key=lambda r:(r['status']=='published',order.get(r.get('editorial_priority'),9),r.get('planned_at') or '9999'))

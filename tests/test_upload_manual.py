@@ -110,3 +110,15 @@ class FourLineTests(unittest.TestCase):
         self.assertEqual(ai.headline_line_count(h, 'infolinense'), 4)
         with patch.object(ai, 'AI_ENABLED', True), patch.object(ai, 'ask_json', side_effect=AssertionError('no recortar')):
             self.assertEqual(ai.shorten_headline({'headline': h, 'brand': 'infolinense'}), h)
+
+
+class HidePublishedTests(unittest.TestCase):
+    def test_published_is_removed_from_panel(self):
+        db.init_db()
+        cid = db.exec_("INSERT INTO candidates(title,url,status) VALUES('x','https://x/h','published')")
+        aid = db.exec_("INSERT INTO articles(candidate_id,headline,body,status) VALUES(?,?,?,?)", (cid, 'T', 'B', 'published'))
+        with patch.object(main.social_publish, 'posts_for', return_value={}):
+            self.assertIn(aid, [r['id'] for r in main.to_publish()])
+            self.assertTrue(main.delete_article(aid)['hidden'])
+            self.assertNotIn(aid, [r['id'] for r in main.to_publish()])
+        self.assertEqual(db.row('SELECT status FROM articles WHERE id=?', (aid,))['status'], 'published')

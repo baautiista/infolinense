@@ -362,7 +362,7 @@ window.moveSheet = aid => {
 function dropCard(sel) { document.querySelectorAll(sel).forEach(c => { c.style.transition = 'opacity .2s'; c.style.opacity = '0'; setTimeout(() => c.remove(), 200) }) }
 window.removeArticle = async aid => {
   dropCard(`[data-aid="${aid}"]`);
-  try { await api(`/api/articles/${aid}`, { method: 'DELETE' }); toast('Eliminada'); counts(); if (view === 'editor') go('review') } catch (e) { toast(e.message); render() }
+  try { const r = await api(`/api/articles/${aid}`, { method: 'DELETE' }); toast(r.hidden ? 'Quitada del panel (sigue publicada en la web y las redes)' : 'Eliminada'); counts(); if (view === 'editor') go('review') } catch (e) { toast(e.message); render() }
 };
 window.discardCandidate = async (cid, aid) => {
   if (aid) return removeArticle(aid);
@@ -399,8 +399,9 @@ async function publishView(v) {
   };
   const card = r => {
     const done = r.status === 'published';
+    const del = `<button class="btn small danger icon" title="Eliminar" aria-label="Eliminar" onclick="removeArticle(${r.id})">🗑</button>`;
     const actions = r.status === 'draft' ? `<div class="rv-actions"><button class="btn small primary" onclick="go('editor/${r.id}')">Revisar</button><button class="btn small" onclick="moveSheet(${r.id})">Mover</button><button class="btn small danger icon" title="Eliminar" aria-label="Eliminar" onclick="removeArticle(${r.id})">🗑</button></div>`
-      : done ? `<div class="row wrap">${r.publish_url ? `<a class="net ok" href="${safeUrl(r.publish_url)}" target="_blank" rel="noopener">Web ✓</a>` : ''}${netStatus(r)}</div>`
+      : done ? `<div class="row wrap">${r.publish_url ? `<a class="net ok" href="${safeUrl(r.publish_url)}" target="_blank" rel="noopener">Web ✓</a>` : ''}${netStatus(r)}${del}</div>`
       : r.scheduled_at ? `<div class="sched"><b>⏰ Se publica sola ${esc(whenText(r.scheduled_at))}</b> · ${schedNets(r)}</div>
          <div class="rv-actions"><button class="btn small" onclick="publishNow(${r.id},this)">Publicar ahora</button><button class="btn small" onclick="moveSheet(${r.id})">Mover</button><button class="link" onclick="unschedule(${r.id})">Cancelar</button><button class="btn small danger icon" title="Eliminar" aria-label="Eliminar" onclick="removeArticle(${r.id})">🗑</button></div>`
       : `${r.schedule_error ? `<p class="error small">No se pudo publicar a su hora: ${esc(r.schedule_error)}</p>` : ''}
@@ -534,7 +535,7 @@ async function editor(v) {
     <button class="btn" onclick="save(true)">Guardar</button>
     <button class="btn" onclick="copyText()">Copiar</button>
     ${published ? '<span class="muted">Publicada</span>' : a.status === 'draft' ? `<button class="btn primary" onclick="reviewed()">Revisada</button>` : `<button class="btn primary" id="pubBtn" onclick="publish()">Publicar</button>`}
-    ${published ? '' : `<button class="btn danger" onclick="removeArticle(${a.id})">🗑 Eliminar</button>`}
+    <button class="btn danger" onclick="removeArticle(${a.id})">🗑 ${published ? 'Quitar del panel' : 'Eliminar'}</button>
   </div>`;
   const f = id => $(`#f-${id}`);
   const fit = () => {

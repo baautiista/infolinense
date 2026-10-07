@@ -107,6 +107,7 @@ def init_db():
         'section_label':'TEXT',
         'time_ref':'TEXT',
         'canva_error':'TEXT',
+        'hidden':'INTEGER DEFAULT 0',
         'brand':"TEXT NOT NULL DEFAULT 'infolinense'",
         'scheduled_networks':'TEXT',
         'schedule_error':'TEXT',

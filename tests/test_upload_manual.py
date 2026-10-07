@@ -101,3 +101,12 @@ class CofradePublishTests(unittest.TestCase):
                  {'id': '2', 'name': 'El Cofrade Linense', 'instagram_username': 'elcofradelinense'}]
         with sp.use_brand('cofrade'):
             self.assertEqual(sp._page_for_brand(pages)['id'], '2')
+
+
+class FourLineTests(unittest.TestCase):
+    def test_four_line_headline_is_kept(self):
+        from app import ai
+        h = 'El Ayuntamiento de La Línea abre el plazo de las becas de transporte'
+        self.assertEqual(ai.headline_line_count(h, 'infolinense'), 4)
+        with patch.object(ai, 'AI_ENABLED', True), patch.object(ai, 'ask_json', side_effect=AssertionError('no recortar')):
+            self.assertEqual(ai.shorten_headline({'headline': h, 'brand': 'infolinense'}), h)

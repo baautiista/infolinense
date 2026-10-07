@@ -502,7 +502,7 @@ async function editor(v) {
       $('#fit').className = n > want ? 'error' : 'muted'; return;
     }
     const n = lines(f('headline').value);
-    $('#fit').innerHTML = n <= 3 ? `${n} ${n === 1 ? 'línea' : 'líneas'} en la imagen` : `${n} líneas: mejor en 3 <button class="link" type="button" onclick="shortenHead()">Acortar con IA</button>`;
+    $('#fit').innerHTML = n <= 3 ? `${n} ${n === 1 ? 'línea' : 'líneas'} en la imagen` : n === 4 ? '4 líneas: la imagen usa letra algo más pequeña' : `${n} líneas: no cabe <button class="link" type="button" onclick="shortenHead()">Acortar con IA</button>`;
     $('#fit').className = n <= 3 ? 'muted' : n === 4 ? 'muted' : 'error' };
   const sub = () => { const n = f('subtitle').value.trim().length; $('#sub').textContent = n <= 165 ? `${n} / 165` : `${n} / 165: no cabe en la imagen, acórtala`; $('#sub').className = n <= 165 ? 'muted' : 'error' };
   const count = () => $('#count').textContent = `${f('body').value.length} / 2.200`;

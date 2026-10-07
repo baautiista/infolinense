@@ -507,8 +507,9 @@ def draft(candidate, source_text='', research='', quick=False):
         head_rule = (f'directo, cuenta la noticia y ocupa {n} líneas en la imagen: entre {c * (n - 1) + 5} y {c * n} caracteres '
                      f'(nunca más de {c * n}), porque va tal cual en la imagen')
     else:
-        head_rule = ('directo, cuenta la noticia con un dato concreto; va tal cual en la imagen y debe LLENAR 3 líneas: '
-                     'entre 52 y 66 caracteres (ni más, ni menos: si se queda corto, añade el dato clave: cifra, fecha, lugar o a quién afecta)')
+        head_rule = ('directo, cuenta la noticia con un dato concreto; va tal cual en la imagen y ocupa 3 o 4 líneas: '
+                     'entre 52 y 80 caracteres (si se queda corto, añade el dato clave: cifra, fecha, lugar o a quién afecta; '
+                     'si es largo, no pasa nada: la imagen usa letra algo más pequeña)')
     prompt = f'''{medium}Redacta la noticia siguiendo al pie de la letra la guía de estilo de InfoLinense.
 Usa SOLO la información de las fuentes de abajo, pero aprovecha TODO el TEXTO FUENTE, no solo el titular: incorpora todos los datos útiles que contiene (cifras, fechas, plazos, lugares, nombres de calles y barrios, empresas, requisitos, antecedentes, declaraciones relevantes).
 Extensión del TEXTO: entre 1.800 y 2.200 caracteres con espacios. Solo si el texto fuente es muy corto (menos de 600 caracteres) puede quedar más breve, sin inventar ni rellenar.
@@ -639,6 +640,15 @@ def headline_fits(headline, brand=None, max_lines=3):
     return headline_line_count(headline, brand) <= max_lines
 
 
+def headline_max_lines(brand=None):
+    """InfoLinense tiene plantilla de 4 líneas con letra más pequeña: un titular largo cabe sin recortarlo."""
+    from . import brands
+    b = brands.settings(brand)
+    if b['slug'] != brands.DEFAULT and b.get('headline_lines'):
+        return int(b['headline_lines'])
+    return layout.HEADLINE_MAX_LINES
+
+
 def headline_target(brand=None):
     """(líneas, mínimo, máximo de caracteres) para que el titular llene la imagen."""
     from . import brands
@@ -646,7 +656,7 @@ def headline_target(brand=None):
     if b['slug'] != brands.DEFAULT and b.get('headline_lines'):
         n, c = int(b['headline_lines']), int(b.get('line_chars') or 30)
         return n, c * (n - 1) + 4, c * n
-    return 3, 52, 66
+    return 3, 52, 80
 
 
 def shorten_headline(article, max_lines=3):
@@ -655,18 +665,20 @@ def shorten_headline(article, max_lines=3):
     head = article.get('headline') or ''
     brand = article.get('brand')
     n, lo, hi = headline_target(brand)
+    top = max(n, headline_max_lines(brand))  # 3 líneas o, si hay plantilla con letra más pequeña, hasta 4
+    ok = lambda k: n <= k <= top
     lines = headline_line_count(head, brand)
-    if lines == n or (lines < n and not AI_ENABLED):
+    if ok(lines) or (lines < n and not AI_ENABLED):
         return head
     if AI_ENABLED:
         for attempt in range(3):
             lines = headline_line_count(head, brand)
-            if lines == n:
+            if ok(lines):
                 return head
-            if lines > n:
+            if lines > top:
                 limit = max(lo, min(hi, int(len(head) * (0.85 if attempt == 0 else 0.7))))
-                task = (f'Acorta este titular para que quepa en {n} líneas de la imagen: entre {lo} y {limit} caracteres. '
-                        'Mantén lo esencial (qué pasa, dónde, a quién afecta).')
+                task = (f'Este titular no cabe en la imagen. Recórtalo lo justo (quita solo palabras de relleno) para que quede '
+                        f'entre {lo} y {limit} caracteres. Mantén todos los datos importantes (qué pasa, dónde, a quién afecta, cifras).')
             else:
                 task = (f'Este titular se queda corto en la imagen (ocupa {lines} de {n} líneas). Reescríbelo más completo, '
                         f'entre {lo} y {hi} caracteres, añadiendo un dato concreto del texto (cifra, fecha, lugar, a quién afecta). '
@@ -684,9 +696,9 @@ TEXTO: {(article.get('body') or '')[:1500]}'''
                 break
             if not new:
                 break
-            if headline_line_count(new, brand) == n:
+            if ok(headline_line_count(new, brand)):
                 return new
-            if lines < n and headline_line_count(new, brand) > n:
+            if lines < n and headline_line_count(new, brand) > top:
                 continue  # se ha pasado al alargar: se reintenta desde el original
             head = new
     if headline_fits(head, brand, max_lines):

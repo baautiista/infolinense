@@ -203,7 +203,7 @@ def design_fields(article, strict=True):
     summary = re.sub(r'\s+', ' ', article.get('subtitle') or '').strip()
     if strict and _is_default(article):
         lines = len(layout.headline_lines(headline))
-        if lines > 3 and article.get('id'):  # demasiado largo: se acorta solo (IA) y se guarda
+        if lines > layout.HEADLINE_MAX_LINES and article.get('id'):  # no cabe ni en 4 líneas: la IA lo recorta lo justo
             from . import ai
             new = ai.shorten_headline(dict(article, headline=headline))
             if new and new != headline and len(layout.headline_lines(new)) <= layout.HEADLINE_MAX_LINES:

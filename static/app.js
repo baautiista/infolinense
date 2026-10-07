@@ -6,7 +6,7 @@ let blobUrls = [];
 const polling = {};
 const cache = { photos: {}, article: {} };
 
-const PRIO = [['urgent', 'Urgente'], ['today', 'Hoy'], ['this_week', 'Esta semana'], ['future', 'Más adelante']];
+const PRIO = [['urgent', 'Urgente'], ['today', 'Hoy'], ['this_week', 'Esta semana'], ['future', 'Más adelante']];  // (Mañana = esta semana, día siguiente)
 const PRIO_LABEL = Object.fromEntries(PRIO);
 const BLOCKS = ['Ayuntamiento', 'Licitaciones y edictos', 'Otros medios', 'Nacionales adaptables', 'Redes sociales'];
 const SECTIONS = [['OBRAS', '#0150FE', '#fff'], ['CIUDAD', '#4F9AFC', '#fff'], ['GIBRALTAR', '#7249E0', '#fff'], ['SUCESOS', '#D02132', '#fff'],
@@ -90,6 +90,7 @@ function go(target, fromHash) {
   if (view !== 'editor' && v === 'editor') editorFrom = view === 'settings' ? 'review' : view;
   view = ['sort', 'writing', 'review', 'publish', 'settings', 'editor'].includes(v) ? v : 'sort';
   document.body.classList.toggle('wide', view === 'review');
+  document.body.classList.toggle('editing', view === 'editor');
   editorId = view === 'editor' ? Number(id) : null;
   if (!fromHash) location.hash = currentHash();
   document.querySelectorAll('.tabs button').forEach(b => b.classList.toggle('on', b.dataset.view === (view === 'editor' ? editorFrom : view)));
@@ -141,31 +142,79 @@ function drawSort(v = $('#view')) {
   const n = items[0];
   const shown = ownBrand() ? [...groups.filter(count), ...groups.filter(g => !count(g))] : groups;  // primero las que tienen noticias
   v.innerHTML = `<div class="chips scroll blocks">${shown.map(g => `<button class="chip ${g === block ? 'on' : ''}" data-g="${esc(g)}" ${count(g) ? '' : 'disabled'}>${esc(g)} <b>${count(g)}</b></button>`).join('')}</div>
-    ${n ? `<p class="progress">${esc(block)}: quedan ${items.length}</p>${focusCard(n)}
-      ${items.length > 1 ? `<details class="peek"><summary>Ver las ${items.length - 1} siguientes</summary>${items.slice(1, 15).map(x => `<p class="peeki">${esc(x.title)}</p>`).join('')}</details>` : ''}`
+    ${n ? `<div class="deck" id="deck">${items[2] ? '<div class="swipe ghost g2"></div>' : ''}${items[1] ? '<div class="swipe ghost"></div>' : ''}${swipeCard(n)}</div>
+      <div class="deck-actions"><button class="round no" id="noBtn" aria-label="No sirve" title="No sirve (←)">✕</button>
+        <span class="deck-count">${items.length} ${items.length === 1 ? 'queda' : 'quedan'}</span>
+        <button class="round yes" id="yesBtn" aria-label="Sirve" title="Sirve (→)">✓</button></div>
+      <p class="deck-hint">Desliza a la derecha si sirve y a la izquierda si no.</p>`
     : queue.length ? '' : `<p class="empty">Todo ordenado. Pulsa «Buscar» para traer noticias nuevas.</p>${nextPhase('Ir a Redacción', 'writing', 'Las noticias marcadas se están redactando solas.')}`}`;
   v.querySelectorAll('[data-g]').forEach(b => b.onclick = () => { block = b.dataset.g; drawSort() });
+  if (n) armDeck(n);
 }
 function special(n) { const t = `${n.title} ${n.excerpt || ''} ${n.source_name || ''}`.toLowerCase(); if (n.source_kind === 'procurement' || /licitaci|contrataci|adjudicaci/.test(t)) return 'Licitación'; if (n.source_kind === 'edictos' || n.source_kind === 'bop' || /edicto/.test(t)) return 'Edicto'; if (/exclusiv/.test(t)) return 'Exclusiva'; return '' }
-function focusCard(n) {
-  const sp = special(n);
-  return `<article class="focuscard" id="fc">
-    <div class="meta">${brandBadge(n.brand)}${n.social_type ? `<span class="kind ${n.social_type}">${KIND[n.social_type] || ''}</span>` : ''}${sp ? `<span class="flag">${sp}</span>` : ''}<span class="src">${esc(n.outlet || n.source_name || host(n.url))}${(n.links || []).length ? ` +${n.links.length} ${n.links.length === 1 ? 'fuente' : 'fuentes'}` : ''}</span><span>${n.date_iso ? ago(n.date_iso) : 'fecha no indicada'}</span></div>
-    <h2>${esc(n.title)}</h2>
-    ${n.local_angle ? `<p class="angle">${esc(n.local_angle)}</p>` : n.excerpt && n.excerpt !== n.title ? `<p class="angle">${esc(n.excerpt.slice(0, 260))}</p>` : ''}
-    <a class="link" href="${safeUrl(n.url)}" target="_blank" rel="noopener noreferrer">Ver la fuente</a>
-    ${(n.links || []).length ? `<p class="muted small">También la cuentan: ${n.links.map(l => `<a href="${safeUrl(l.url)}" target="_blank" rel="noopener noreferrer">${esc(l.outlet || l.source_name || host(l.url))}</a>`).join(' · ')}. Se combinan al redactar.</p>` : ''}
-    <div class="decide">${PRIO.map(([k, t]) => `<button class="btn ${k === 'urgent' ? 'urgent' : k === 'today' ? 'primary' : ''}" onclick="decide(${n.id},'${k}')">${t}</button>`).join('')}
-      <button class="btn no" onclick="decide(${n.id},'no_interest')">No interesa</button></div></article>`;
+function swipeCard(n) {
+  const sp = special(n), img = n.image_hint && /^https?:/.test(n.image_hint) ? n.image_hint : '';
+  const text = n.local_angle && !n.local_angle.startsWith('ENFOQUE') ? n.local_angle : (n.excerpt && n.excerpt !== n.title ? n.excerpt.slice(0, 280) : '');
+  return `<article class="swipe front ${img ? '' : 'noimg'}" id="fc" data-id="${n.id}" tabindex="0" aria-label="${esc(n.title)}">
+    <span class="stamp yes">SIRVE</span><span class="stamp no">NO SIRVE</span>
+    ${img ? `<div class="pic"><img src="${safeUrl(img)}" alt="" referrerpolicy="no-referrer" draggable="false" onerror="this.parentElement.style.display='none';this.parentElement.nextElementSibling.style.display='flex'"></div>` : ''}
+    <div class="band" style="--bc:${brandOf(n.brand).color};${img ? 'display:none' : ''}"><div class="tag">${brandBadge(n.brand)}${sp ? `<span class="flag">${sp}</span>` : ''}${n.social_type ? `<span class="kind ${n.social_type}">${KIND[n.social_type] || ''}</span>` : ''}</div>
+      <b>${esc(n.outlet || n.source_name || host(n.url))}</b><span>${n.date_iso ? ago(n.date_iso) : 'sin fecha'}${(n.links || []).length ? ` · y ${n.links.length} ${n.links.length === 1 ? 'fuente más' : 'fuentes más'}` : ''}</span></div>
+    <div class="body">
+      ${img ? `<div class="meta">${brandBadge(n.brand)}${n.social_type ? `<span class="kind ${n.social_type}">${KIND[n.social_type] || ''}</span>` : ''}${sp ? `<span class="flag">${sp}</span>` : ''}<span class="src">${esc(n.outlet || n.source_name || host(n.url))}${(n.links || []).length ? ` +${n.links.length}` : ''}</span><span>${n.date_iso ? ago(n.date_iso) : 'sin fecha'}</span></div>` : ''}
+      <h2>${esc(n.title)}</h2>
+      ${text ? `<p class="angle">${esc(text)}</p>` : ''}
+      <div class="foot"><a class="link" href="${safeUrl(n.url)}" target="_blank" rel="noopener noreferrer">Ver la fuente</a>
+        ${(n.links || []).length ? `<span class="muted small">También: ${n.links.map(l => esc(l.outlet || l.source_name || host(l.url))).join(', ')}</span>` : ''}</div>
+    </div></article>`;
 }
+// Gesto de deslizar: derecha = sirve (y se elige cuándo), izquierda = no sirve.
+function armDeck(n) {
+  const card = $('#fc'); if (!card) return;
+  const yes = card.querySelector('.stamp.yes'), no = card.querySelector('.stamp.no');
+  let x0 = null, dx = 0, id = null;
+  const paint = () => { card.style.transform = `translateX(${dx}px) rotate(${dx / 18}deg)`; yes.style.opacity = Math.max(0, Math.min(1, dx / 90)); no.style.opacity = Math.max(0, Math.min(1, -dx / 90)) };
+  card.onpointerdown = e => { if (e.target.closest('a')) return; x0 = e.clientX; id = e.pointerId; card.setPointerCapture(id); card.classList.add('dragging') };
+  card.onpointermove = e => { if (x0 === null) return; dx = e.clientX - x0; paint() };
+  const end = () => {
+    if (x0 === null) return; x0 = null; card.classList.remove('dragging');
+    if (dx > 100) swipeYes(n); else if (dx < -100) swipeNo(n); else { dx = 0; paint() }
+  };
+  card.onpointerup = end; card.onpointercancel = end;
+  $('#noBtn').onclick = () => swipeNo(n);
+  $('#yesBtn').onclick = () => swipeYes(n);
+}
+function flyOut(dir) { const c = $('#fc'); if (!c) return; c.style.transform = `translateX(${dir * 140}%) rotate(${dir * 18}deg)`; c.style.opacity = '0' }
+function resetCard() { const c = $('#fc'); if (!c) return; c.style.transform = ''; c.style.opacity = ''; c.querySelectorAll('.stamp').forEach(s => s.style.opacity = 0) }
+function swipeNo(n) { flyOut(-1); setTimeout(() => decide(n.id, 'no_interest'), 220) }
+function swipeYes(n) {
+  flyOut(1);
+  const sheet = document.createElement('div'); sheet.className = 'sheet-bg';
+  const opts = [['urgent', 'Urgente', 'ahora mismo'], ['today', 'Hoy', 'en la parrilla de hoy'], ['tomorrow', 'Mañana', ''], ['this_week', 'Esta semana', ''], ['future', 'Más adelante', '']];
+  sheet.innerHTML = `<div class="sheet" role="dialog" aria-label="¿Cuándo?"><h2>¿Cuándo la publicamos?</h2><p class="muted small">${esc(n.title)}</p>
+    <div class="prio">${opts.map(([k, t, h]) => `<button class="btn ${k === 'urgent' ? 'urgent' : k === 'today' ? 'today' : ''}" data-p="${k}">${t}${h ? `<small>${h}</small>` : ''}</button>`).join('')}</div>
+    <div class="row"><button class="btn" id="pCancel">Volver</button></div></div>`;
+  document.body.appendChild(sheet);
+  const close = () => { sheet.remove(); resetCard() };
+  sheet.onclick = e => { if (e.target === sheet) close() };
+  sheet.querySelector('#pCancel').onclick = close;
+  sheet.querySelectorAll('[data-p]').forEach(b => b.onclick = () => { sheet.remove(); decide(n.id, b.dataset.p) });
+  setTimeout(() => sheet.querySelector('[data-p="today"]').focus(), 50);
+}
+document.addEventListener('keydown', e => {
+  if (view !== 'sort' || document.querySelector('.sheet-bg') || /INPUT|TEXTAREA|SELECT/.test((e.target.tagName || ''))) return;
+  const n = queue.find(x => x.id === Number(($('#fc') || {}).dataset?.id));
+  if (!n) return;
+  if (e.key === 'ArrowLeft') swipeNo(n); else if (e.key === 'ArrowRight') swipeYes(n);
+});
+const PRIO_SAY = { urgent: 'Urgente', today: 'Hoy', tomorrow: 'Mañana', this_week: 'Esta semana', future: 'Más adelante' };
 window.decide = async (id, p) => {
-  const card = $('#fc'); if (card) card.classList.add('gone');
   try {
     await api(`/api/candidates/${id}/triage`, { method: 'POST', body: JSON.stringify({ priority: p }) });
     queue = queue.filter(x => x.id !== id);
-    if (p !== 'no_interest') toast(`${PRIO_LABEL[p]}: se redacta sola`);
+    toast(p === 'no_interest' ? 'Descartada' : `${PRIO_SAY[p]}: se redacta sola`);
     drawSort(); counts();
-  } catch (e) { toast(e.message); if (card) card.classList.remove('gone') }
+  } catch (e) { toast(e.message); resetCard() }
 };
 
 /* ---------- Fase 2: Redacción ---------- */
@@ -275,12 +324,14 @@ window.removeArticle = async aid => {
 const NET_NAMES = { web: 'Web', instagram: 'Instagram', facebook: 'Facebook', tiktok: 'TikTok' };
 function netPrefs(available) { let saved = null; try { saved = JSON.parse(localStorage.getItem('nets') || 'null') } catch (e) { } return available.filter(n => !saved || saved.includes(n)) }
 function saveNetPrefs() { try { localStorage.setItem('nets', JSON.stringify([...document.querySelectorAll('.netpick input:checked')].map(i => i.value))) } catch (e) { } }
-function netStatus(r) { const n = r.networks || {}; return Object.keys(n).map(k => n[k].status === 'published' ? (n[k].url ? `<a class="net ok" href="${safeUrl(n[k].url)}" target="_blank" rel="noopener">${NET_NAMES[k]} ✓</a>` : `<span class="net ok">${NET_NAMES[k]} ✓</span>`) : `<button class="net bad" title="${esc(n[k].message)}" onclick="retryNet(${r.id},'${k}',this)">${NET_NAMES[k]}: reintentar</button>`).join('') }
+function netStatus(r) { const n = r.networks || {}; return Object.keys(n).map(k => n[k].status === 'published' ? (n[k].url ? `<a class="net ok" href="${safeUrl(n[k].url)}" target="_blank" rel="noopener">${NET_NAMES[k]} ✓</a>` : `<span class="net ok">${NET_NAMES[k]} ✓</span>`) : `<span><button class="net bad" title="${esc(n[k].message)}" onclick="retryNet(${r.id},'${k}',this)">${NET_NAMES[k]}: reintentar</button><small class="neterr">${esc(String(n[k].message || '').slice(0, 160))}</small></span>`).join('') }
 async function publishView(v) {
   const [rows, nets] = await Promise.all([api('/api/to-publish'), api('/api/networks?brand=' + netBrand()).catch(() => ({}))]);
   const available = ['instagram', 'facebook', 'tiktok'].filter(n => (nets[n] || {}).connected);
   const chosen = netPrefs(available);
-  const picker = available.length ? `<div class="netpick row wrap"><span class="muted small">${BRAND === 'all' ? 'Publicar también en (cada noticia en las cuentas de su medio):' : 'Publicar también en:'}</span>${available.map(n => `<label class="switch"><input type="checkbox" value="${n}" ${chosen.includes(n) ? 'checked' : ''} onchange="saveNetPrefs()"> ${NET_NAMES[n]}</label>`).join('')}</div>` : `<p class="muted small">Las redes sociales no están conectadas. <a href="#settings">Conéctalas en Ajustes</a>.</p>`;
+  const offline = ['instagram', 'facebook', 'tiktok'].filter(n => !(nets[n] || {}).connected);
+  const picker = `<div class="netpick row wrap"><span class="muted small">${BRAND === 'all' ? 'Publicar también en (cada noticia en las cuentas de su medio):' : 'Publicar también en:'}</span>${available.map(n => `<label class="switch"><input type="checkbox" value="${n}" ${chosen.includes(n) ? 'checked' : ''} onchange="saveNetPrefs()"> ${NET_NAMES[n]}</label>`).join('')}
+    ${offline.map(n => `<a class="switch off" href="#settings" title="Sin conectar">${NET_NAMES[n]}: sin conectar</a>`).join('')}</div>`;
   const today = new Date().toLocaleDateString('sv-SE', { timeZone: 'Europe/Madrid' });
   const isTodayRow = r => !r.planned_at || String(r.planned_at).slice(0, 10) <= today;
   const row = r => `<article class="item slot"><div class="hour">${r.planned_at ? esc(String(r.planned_at).slice(11, 16)) : '–'}</div><div class="grow">
@@ -407,7 +458,9 @@ async function editor(v) {
       $('#fit').textContent = n === want ? `${n} líneas, perfecto` : n < want ? `${n} de ${want} líneas: alárgalo un poco` : `${n} líneas: acórtalo a ${want}`;
       $('#fit').className = n > want ? 'error' : 'muted'; return;
     }
-    const n = lines(f('headline').value); $('#fit').textContent = n <= 4 ? `${n} de 4 líneas en la imagen` : `${n} líneas: no cabe en la imagen, acórtalo`; $('#fit').className = n <= 4 ? 'muted' : 'error' };
+    const n = lines(f('headline').value);
+    $('#fit').innerHTML = n <= 3 ? `${n} ${n === 1 ? 'línea' : 'líneas'} en la imagen` : `${n} líneas: mejor en 3 <button class="link" type="button" onclick="shortenHead()">Acortar con IA</button>`;
+    $('#fit').className = n <= 3 ? 'muted' : n === 4 ? 'muted' : 'error' };
   const sub = () => { const n = f('subtitle').value.trim().length; $('#sub').textContent = n <= 165 ? `${n} / 165` : `${n} / 165: no cabe en la imagen, acórtala`; $('#sub').className = n <= 165 ? 'muted' : 'error' };
   const count = () => $('#count').textContent = `${f('body').value.length} / 2.200`;
   f('section').onchange = () => { const fs = freeSection(f('brand') ? f('brand').value : a.brand); $('#labelBox').hidden = !(fs && f('section').value === fs) };
@@ -428,6 +481,7 @@ function freeSection(brand) { return brand && brand !== 'infolinense' ? brandOf(
 function values() { const o = {}; ['section', 'headline', 'subtitle', 'body', 'brand', 'section_label'].forEach(k => { const el = $(`#f-${k}`); if (el) o[k] = el.value }); return o }
 async function saveArticle(say) { await api(`/api/articles/${editorId}`, { method: 'PUT', body: JSON.stringify(values()) }); if (say) toast('Guardado') }
 window.save = s => saveArticle(s).catch(e => toast(e.message));
+window.shortenHead = async () => { try { await saveArticle(); const r = await api(`/api/articles/${editorId}/shorten`, { method: 'POST' }); $('#f-headline').value = r.headline; $('#f-headline').dispatchEvent(new Event('input')); toast('Titular acortado') } catch (e) { toast(e.message) } };
 window.copyText = async () => { const o = values(); await navigator.clipboard.writeText([o.headline, o.subtitle, o.body].filter(Boolean).join('\n\n')); toast('Texto copiado') };
 window.makeCanva = async () => {
   const b = $('#canvaBtn'); b.disabled = true; b.textContent = 'Creando en Canva…';
@@ -512,6 +566,9 @@ async function settings(v) {
         <label>Hashtags en redes<input name="hashtags" value="${esc(B.hashtags || '')}"></label>
         <button class="btn small primary">Guardar</button></form>
       <p class="muted small">En la plantilla de Canva, los campos de datos deben llamarse <b>HEADLINE</b> (titular), <b>SUMMARY</b> (entradilla), <b>PHOTO</b> (foto)${isMain ? ' y <b>SECTION</b>' : ' y, si tiene, <b>SECTION</b>'}.</p></section>
+    <section class="panel"><h2>Automático</h2>
+      <label class="switch"><input type="checkbox" id="pAyto"> Marcar solas para hoy las noticias del Ayuntamiento del día</label>
+      <label class="switch"><input type="checkbox" id="pCanva"> Crear la imagen de Canva al redactar lo de hoy</label></section>
     <section class="panel"><h2>Redacción con IA</h2>
       <p>${h.ai_configured ? `Redacta ${{ openai: 'ChatGPT', anthropic: 'Claude', gemini: 'Gemini (gratis)' }[h.ai_provider] || h.ai_provider}.` : 'Sin IA: los borradores se preparan a partir de la fuente. Añade GEMINI_API_KEY (gratis) en Railway.'}</p>
       <p class="muted small">${h.paid_ai_allowed ? 'Las IA de pago están permitidas.' : 'Modo sin coste: ChatGPT y Claude están desactivados aunque tengan clave.'}</p>
@@ -563,6 +620,9 @@ async function settings(v) {
   const conn = async net => { try { location.href = (await api(`/api/networks/${net}/connect` + q)).url } catch (e) { toast(e.message) } };
   const off = async net => { if (!confirm('¿Desconectar?')) return; try { await api(`/api/networks/${net}/disconnect` + q, { method: 'POST' }); render() } catch (e) { toast(e.message) } };
   v.querySelectorAll('[data-sb]').forEach(b => b.onclick = () => { settingsBrand = b.dataset.sb; render() });
+  api('/api/prefs').then(pr => { $('#pAyto').checked = pr.auto_ayto; $('#pCanva').checked = pr.auto_canva }).catch(() => { });
+  const savePrefs = () => api('/api/prefs', { method: 'PUT', body: JSON.stringify({ auto_ayto: $('#pAyto').checked, auto_canva: $('#pCanva').checked }) }).then(() => toast('Guardado')).catch(e => toast(e.message));
+  $('#pAyto').onchange = savePrefs; $('#pCanva').onchange = savePrefs;
   $('#brandForm').onsubmit = async e => {
     e.preventDefault(); const d = Object.fromEntries(new FormData(e.target));
     const body = { templates: { main: d.main, '1': d.t1, '2': d.t2, '4': d.t4 }, hashtags: d.hashtags };

@@ -182,6 +182,12 @@ def rebuild_schedule():
         else:
             first = 0 if bucket in ("today", "this_week") else 7
             last = {"today": 2, "this_week": 7}.get(bucket, 31)
+            if row.get("plan_day"):  # «Mañana»: ese día (o los siguientes si está lleno)
+                try:
+                    first = max(0, (datetime.fromisoformat(row["plan_day"]).date() - now.date()).days)
+                    last = first + 3
+                except ValueError:
+                    pass
             best = None
             for offset in range(first, last):
                 day = now.date() + timedelta(days=offset)

@@ -95,6 +95,7 @@ def init_db():
         'social_type':'TEXT',
         'image_hint':'TEXT',
         'merged_into':'INTEGER',
+        'plan_day':'TEXT',
         'brand':"TEXT NOT NULL DEFAULT 'infolinense'"
     }.items():
         if name not in existing_candidates: c.execute(f'ALTER TABLE candidates ADD COLUMN {name} {ddl}')

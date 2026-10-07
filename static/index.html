@@ -8,7 +8,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Figtree:wght@400;500;600;700&family=Poppins:wght@700;800;900&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="/static/styles.css?v=6.0">
+<link rel="stylesheet" href="/static/styles.css?v=6.2">
 </head>
 <body>
 <div id="login" class="login" hidden>
@@ -25,20 +25,21 @@
 <div id="app" hidden>
   <header class="top">
     <button class="back" id="backBtn" hidden aria-label="Volver">‹</button>
+    <div class="mark" aria-hidden="true">IL</div>
     <h1 id="title">Ordenar</h1>
     <button class="btn primary small" id="scanBtn">Buscar</button>
     <button class="gear" id="settingsBtn" aria-label="Ajustes">⚙</button>
   </header>
   <div class="brandbar" id="brandBar"></div>
   <nav class="tabs" aria-label="Fases del día">
-    <button data-view="sort" class="on"><span class="num">1</span>Ordenar<span class="n"></span></button>
-    <button data-view="writing"><span class="num">2</span>Redacción<span class="n"></span></button>
-    <button data-view="review"><span class="num">3</span>Revisar<span class="n"></span></button>
-    <button data-view="publish"><span class="num">4</span>Publicar<span class="n"></span></button>
+    <button data-view="sort" class="on"><span class="num"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="3" width="13" height="17" rx="3" transform="rotate(8 12 12)"/><rect x="4" y="4" width="13" height="17" rx="3"/></svg></span>Ordenar<span class="n"></span></button>
+    <button data-view="writing"><span class="num"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20h4L19 9l-4-4L4 16z"/><path d="M13.5 6.5l4 4"/></svg></span>Redacción<span class="n"></span></button>
+    <button data-view="review"><span class="num"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="17" rx="3"/><path d="M3 9h18M8 2v4M16 2v4"/></svg></span>Revisar<span class="n"></span></button>
+    <button data-view="publish"><span class="num"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 3L10 14"/><path d="M21 3l-7 18-4-7-7-4z"/></svg></span>Publicar<span class="n"></span></button>
   </nav>
   <main id="view"></main>
 </div>
 <div id="toast" class="toast" role="status" hidden></div>
-<script src="/static/app.js?v=6.0"></script>
+<script src="/static/app.js?v=6.2"></script>
 </body>
 </html>

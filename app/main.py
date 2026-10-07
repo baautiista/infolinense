@@ -13,7 +13,7 @@ from . import db, sources, pipeline, publishers, photos, canva, ai, planner, lay
 from .auth import login, require_auth
 from .config import BASE_DIR, RENDER_DIR, UPLOAD_DIR, SCAN_INTERVAL_MINUTES, AUTO_PIPELINE, OPENAI_API_KEY, ADMIN_PASSWORD, JWT_SECRET, PUBLISH_MODE, CORS_ORIGINS, PUBLIC_BASE_URL, AUTO_PUBLISH
 
-VERSION='6.1.0'
+VERSION='6.2.0'
 app=FastAPI(title='InfoLinense Desk',version=VERSION)
 app.add_middleware(CORSMiddleware,allow_origins=CORS_ORIGINS,allow_credentials=False,allow_methods=['*'],allow_headers=['Authorization','Content-Type'])
 db.init_db()
@@ -169,8 +169,11 @@ def schedule_rebuild():
 @app.post('/api/candidates/{cid}/triage',dependencies=[Depends(require_auth)])
 def triage_candidate(cid:int,body:TriageIn):
     priority=body.priority.strip().lower()
+    plan_day=None
+    if priority=='tomorrow':  # «Mañana»: esta semana, el día siguiente
+        priority='this_week'; plan_day=(datetime.now(MADRID).date()+timedelta(days=1)).isoformat()
     allowed={'urgent','today','this_week','future','no_interest'}
-    if priority not in allowed: raise HTTPException(400,'Elige Urgente, Hoy, Esta semana, Futuro o No me interesa')
+    if priority not in allowed: raise HTTPException(400,'Elige Urgente, Hoy, Mañana, Esta semana, Más adelante o No sirve')
     if not db.row('SELECT id FROM candidates WHERE id=?',(cid,)): raise HTTPException(404,'Noticia no encontrada')
     planned=None; locked=0
     if body.planned_at:
@@ -184,7 +187,7 @@ def triage_candidate(cid:int,body:TriageIn):
         db.exec_("UPDATE candidates SET editorial_priority=?,planned_at=NULL,plan_locked=0,plan_reason=NULL,status='archived' WHERE id=?",(priority,cid))
         db.exec_("UPDATE articles SET status='rejected' WHERE candidate_id=? AND status='draft'",(cid,))
     else:
-        db.exec_("UPDATE candidates SET editorial_priority=?,planned_at=?,plan_locked=?,plan_reason=NULL,status=CASE WHEN status='archived' THEN 'new' ELSE status END WHERE id=?",(priority,planned,locked,cid))
+        db.exec_("UPDATE candidates SET editorial_priority=?,planned_at=?,plan_locked=?,plan_day=?,plan_reason=NULL,status=CASE WHEN status='archived' THEN 'new' ELSE status END WHERE id=?",(priority,planned,locked,plan_day,cid))
     planner.rebuild_schedule()
     if priority in pipeline.USEFUL:
         pipeline.queue_auto_write(cid,priority)  # redacción automática de lo marcado como útil

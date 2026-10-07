@@ -794,7 +794,7 @@ def schedule_article(aid:int,body:ScheduleIn):
     if when<datetime.now(timezone.utc)-timedelta(minutes=2): raise HTTPException(400,'Esa hora ya ha pasado: elige una hora futura o pulsa «Publicar ahora»')
     ok=social_publish.connected_networks(a.get('brand') or brands.DEFAULT)
     nets=[n for n in (body.networks or []) if n in ok]
-    if not nets and not brands.web_enabled(a.get('brand')):
+    if not nets and brands.valid(a.get('brand'))!=brands.DEFAULT and not brands.web_enabled(a.get('brand')):
         name=brands.BRANDS[brands.valid(a.get('brand'))]['name']
         raise HTTPException(400,f'{name} no tiene web: marca al menos una red conectada (Instagram, Facebook o TikTok) para programarla.' if ok
                             else f'{name} no tiene web ni redes conectadas todavía. Conéctalas en Ajustes → Redes sociales.')

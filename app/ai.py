@@ -507,8 +507,8 @@ def draft(candidate, source_text='', research='', quick=False):
         head_rule = (f'directo, cuenta la noticia y ocupa {n} líneas en la imagen: entre {c * (n - 1) + 5} y {c * n} caracteres '
                      f'(nunca más de {c * n}), porque va tal cual en la imagen')
     else:
-        head_rule = ('breve, directo, cuenta la noticia; va tal cual en la imagen y debe caber en 3 líneas como mucho (unos 55-60 caracteres), '
-                     'lo más horizontal posible: mejor 2-3 líneas largas que 4 cortas')
+        head_rule = ('directo, cuenta la noticia con un dato concreto; va tal cual en la imagen y debe LLENAR 3 líneas: '
+                     'entre 52 y 66 caracteres (ni más, ni menos: si se queda corto, añade el dato clave: cifra, fecha, lugar o a quién afecta)')
     prompt = f'''{medium}Redacta la noticia siguiendo al pie de la letra la guía de estilo de InfoLinense.
 Usa SOLO la información de las fuentes de abajo, pero aprovecha TODO el TEXTO FUENTE, no solo el titular: incorpora todos los datos útiles que contiene (cifras, fechas, plazos, lugares, nombres de calles y barrios, empresas, requisitos, antecedentes, declaraciones relevantes).
 Extensión del TEXTO: entre 1.800 y 2.200 caracteres con espacios. Solo si el texto fuente es muy corto (menos de 600 caracteres) puede quedar más breve, sin inventar ni rellenar.
@@ -617,12 +617,12 @@ TEXTO: {fields['body'][:4000]}'''
     return out
 
 
-def headline_fits(headline, brand=None, max_lines=3):
-    """¿Cabe el titular en la imagen con N líneas como mucho?"""
+def headline_line_count(headline, brand=None):
+    """Líneas que ocupa el titular en la imagen del medio."""
     from . import brands
     b = brands.settings(brand)
     if b['slug'] != brands.DEFAULT and b.get('headline_lines'):
-        c, n = int(b.get('line_chars') or 30), int(b['headline_lines'])
+        c = int(b.get('line_chars') or 30)
         lines, cur = 0, ''
         for w in (headline or '').split():
             x = (cur + ' ' + w).strip()
@@ -630,32 +630,67 @@ def headline_fits(headline, brand=None, max_lines=3):
                 cur = x
             else:
                 lines, cur = lines + 1, w
-        return lines + (1 if cur else 0) <= n
-    return len(layout.headline_lines(headline)) <= max_lines
+        return lines + (1 if cur else 0)
+    return len(layout.headline_lines(headline))
+
+
+def headline_fits(headline, brand=None, max_lines=3):
+    """¿Cabe el titular en la imagen con N líneas como mucho?"""
+    return headline_line_count(headline, brand) <= max_lines
+
+
+def headline_target(brand=None):
+    """(líneas, mínimo, máximo de caracteres) para que el titular llene la imagen."""
+    from . import brands
+    b = brands.settings(brand)
+    if b['slug'] != brands.DEFAULT and b.get('headline_lines'):
+        n, c = int(b['headline_lines']), int(b.get('line_chars') or 30)
+        return n, c * (n - 1) + 4, c * n
+    return 3, 52, 66
 
 
 def shorten_headline(article, max_lines=3):
-    """Si el titular no cabe en la imagen (3 líneas), la IA lo acorta sin perder la noticia. Nunca se manda al editor sin caber."""
+    """Ajusta el titular a la imagen: si pasa de 3 líneas, la IA lo acorta; si se queda en 1-2 líneas
+    (demasiado corto), la IA lo completa con datos del texto hasta llenar las 3. Nunca inventa."""
     head = article.get('headline') or ''
     brand = article.get('brand')
-    if headline_fits(head, brand, max_lines):
+    n, lo, hi = headline_target(brand)
+    lines = headline_line_count(head, brand)
+    if lines == n or (lines < n and not AI_ENABLED):
         return head
     if AI_ENABLED:
-        for attempt in range(2):
-            limit = max(35, int(len(head) * (0.8 if attempt == 0 else 0.65)))
-            prompt = f'''Acorta este titular de noticia para que quepa en {max_lines} líneas de una imagen: como mucho {limit} caracteres.
-Mantén lo esencial (qué pasa, dónde, a quién afecta), en español claro, sin inventar ni cambiar los hechos, sin comillas ni punto final.
+        for attempt in range(3):
+            lines = headline_line_count(head, brand)
+            if lines == n:
+                return head
+            if lines > n:
+                limit = max(lo, min(hi, int(len(head) * (0.85 if attempt == 0 else 0.7))))
+                task = (f'Acorta este titular para que quepa en {n} líneas de la imagen: entre {lo} y {limit} caracteres. '
+                        'Mantén lo esencial (qué pasa, dónde, a quién afecta).')
+            else:
+                task = (f'Este titular se queda corto en la imagen (ocupa {lines} de {n} líneas). Reescríbelo más completo, '
+                        f'entre {lo} y {hi} caracteres, añadiendo un dato concreto del texto (cifra, fecha, lugar, a quién afecta). '
+                        'Solo datos que estén en la noticia.')
+            prompt = f'''{task}
+Español claro, sin inventar ni cambiar los hechos, sin comillas ni punto final, sin sensacionalismo.
 Devuelve JSON {{"headline": "..."}}.
 TITULAR: {head}
-ENTRADILLA: {article.get('subtitle') or ''}'''
+ENTRADILLA: {article.get('subtitle') or ''}
+TEXTO: {(article.get('body') or '')[:1500]}'''
             try:
                 data, _, _ = ask_json(SYSTEM, prompt, max_tokens=300)
                 new = clean_meta(str((data or {}).get('headline') or '')).strip().rstrip('.')
             except AIProviderError:
                 break
-            if new and headline_fits(new, brand, max_lines):
+            if not new:
+                break
+            if headline_line_count(new, brand) == n:
                 return new
-            head = new or head
+            if lines < n and headline_line_count(new, brand) > n:
+                continue  # se ha pasado al alargar: se reintenta desde el original
+            head = new
+    if headline_fits(head, brand, max_lines):
+        return head
     return layout.fit_headline(head) if headline_fits(layout.fit_headline(head), brand, 4) else head
 
 

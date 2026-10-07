@@ -27,7 +27,7 @@ BRANDS = {
                              'Cristo del Mar y Luz', 'Santo Entierro y Soledad', 'Inmaculada Concepción', 'Hermandad del Rocío',
                              'General', 'Ocasiones especiales'],
                 'templates': {'main': 'EAHXQHp9uXw'}, 'page_mode': 'section', 'carousel_page': 19,
-                'headline_lines': 3, 'line_chars': 24,  # el titular ocupa normalmente 3 líneas de unos 24 caracteres (letra grande)
+                'headline_lines': 3, 'line_chars': 24,  # el titular ocupa 3 líneas de unos 24 caracteres (letra de 44 px)
                 'free_title_section': 'General'},
     'carnaval': {'name': 'Carnavalinense', 'short': 'Carnaval', 'color': '#E72E79', 'text': '#FFFFFF', 'env': 'CARNAVAL_',
                  'about': ('medio del Carnaval de La Línea de la Concepción y de las agrupaciones del Campo de Gibraltar: '
@@ -80,6 +80,11 @@ def init_tables():
     db.exec_('CREATE TABLE IF NOT EXISTS brand_settings(slug TEXT PRIMARY KEY, data TEXT NOT NULL, updated_at TEXT DEFAULT CURRENT_TIMESTAMP)')
 
 
+# Plantillas sustituidas por una versión nueva (p. ej. letra del titular más pequeña)
+_TEMPLATE_UPGRADES = {}
+_TEMPLATE_LINE_CHARS = {}  # caracteres por línea del titular según la plantilla
+
+
 def settings(slug):
     slug = valid(slug)
     base = dict(BRANDS[slug])
@@ -102,6 +107,10 @@ def settings(slug):
         if saved.get(k) not in (None, '', []):
             base[k] = saved[k]
     base['templates'].update({k: v for k, v in (saved.get('templates') or {}).items() if v})
+    if base['templates'].get('main') in _TEMPLATE_UPGRADES:  # plantilla antigua guardada: se usa la nueva
+        base['templates']['main'] = _TEMPLATE_UPGRADES[base['templates']['main']]
+    if base['templates'].get('main') in _TEMPLATE_LINE_CHARS:  # plantilla nueva con otra letra
+        base['line_chars'] = _TEMPLATE_LINE_CHARS[base['templates']['main']]
     return base
 
 

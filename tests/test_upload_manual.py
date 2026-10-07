@@ -68,3 +68,18 @@ class ManualUploadTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class HeadlineLengthTests(unittest.TestCase):
+    def test_short_headline_is_completed_to_three_lines(self):
+        from app import ai
+        long = 'Abre el plazo de las ayudas al alquiler hasta el 30 de octubre'
+        with patch.object(ai, 'AI_ENABLED', True), patch.object(ai, 'ask_json', return_value=({'headline': long}, 'gemini', False)):
+            got = ai.shorten_headline({'headline': 'Ayudas al alquiler', 'subtitle': '', 'body': 'x', 'brand': 'infolinense'})
+        self.assertEqual(ai.headline_line_count(got, 'infolinense'), 3)
+
+    def test_three_line_headline_untouched(self):
+        from app import ai
+        h = 'Abre el plazo de las ayudas al alquiler hasta el 30 de octubre'
+        with patch.object(ai, 'AI_ENABLED', True), patch.object(ai, 'ask_json', side_effect=AssertionError('no')):
+            self.assertEqual(ai.shorten_headline({'headline': h, 'brand': 'infolinense'}), h)

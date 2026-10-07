@@ -6,7 +6,7 @@ import re
 import threading
 import zipfile
 from contextlib import asynccontextmanager
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, File, HTTPException, Request, UploadFile
@@ -26,6 +26,7 @@ STATIC = Path(__file__).resolve().parent.parent / 'static'
 @asynccontextmanager
 async def lifespan(_app):
     db.init_db()
+    sources.backfill()
     pipeline.start(SCAN_INTERVAL_MINUTES)
     yield
 
@@ -152,6 +153,75 @@ def sort_queue(area: int = 0):
     return _cand_out(rows)
 
 
+TSTATUS = {'PUB': 'En plazo', 'PRE': 'Anuncio previo', 'EV': 'En evaluación', 'ADJ': 'Adjudicada', 'RES': 'Formalizada',
+           'MENOR': 'Contrato menor', 'ANUL': 'Anulada / desierta'}
+
+
+@app.get('/api/tenders', dependencies=AUTH)
+def tenders(town: str = '', status: str = '', sort: str = 'new', days: int = 30, q: str = ''):
+    """Todas las licitaciones de la comarca, con filtros por municipio y fase y recuentos para los chips."""
+    since = (datetime.utcnow() - timedelta(days=max(1, min(days, 120)))).isoformat()
+    rows = db.rows("""SELECT * FROM candidates WHERE block='Licitaciones' AND status IN ('new','in_area','chosen')
+                       AND priority!='no' AND (published_at>=? OR published_at='') ORDER BY published_at DESC LIMIT 1500""", (since,))
+    for r in rows:
+        r['town'] = (r.get('towns') or '').split(',')[0] or 'Campo de Gibraltar'
+        r['tstatus'] = r.get('tstatus') or 'PUB'
+    counts_town, counts_status = {}, {}
+    for r in rows:
+        if not status or r['tstatus'] == status:
+            counts_town[r['town']] = counts_town.get(r['town'], 0) + 1
+        if not town or r['town'] == town:
+            counts_status[r['tstatus']] = counts_status.get(r['tstatus'], 0) + 1
+    if town:
+        rows = [r for r in rows if r['town'] == town]
+    if status:
+        rows = [r for r in rows if r['tstatus'] == status]
+    if q:
+        ql = q.lower()
+        rows = [r for r in rows if ql in ((r.get('title') or '') + ' ' + (r.get('excerpt') or '') + ' ' + (r.get('organism') or '')).lower()]
+    if sort == 'amount':
+        rows.sort(key=lambda r: r.get('amount_value') or 0, reverse=True)
+    elif sort == 'deadline':
+        rows.sort(key=lambda r: r.get('deadline') or '9999')
+    elif sort == 'score':
+        rows.sort(key=lambda r: (r['exclusive'], r['score']), reverse=True)
+    out = _cand_out(rows[:300])
+    for r in out:
+        a = pipeline.article_for(r['id'])
+        r['article_id'] = a['id'] if a else None
+    order = ['Algeciras', 'La Línea', 'San Roque', 'Los Barrios', 'Tarifa', 'Jimena', 'Castellar', 'San Martín del Tesorillo', 'Campo de Gibraltar']
+    return {'items': out, 'total': len(rows), 'towns': [{'town': t, 'n': counts_town.get(t, 0)} for t in order],
+            'statuses': [{'code': k, 'label': v, 'n': counts_status.get(k, 0)} for k, v in TSTATUS.items()],
+            'sum': round(sum(r.get('amount_value') or 0 for r in rows), 2)}
+
+
+@app.post('/api/tenders/summary', dependencies=AUTH)
+def tenders_summary(body: dict):
+    """Pieza resumen («Las licitaciones de la semana en…») a partir de varias licitaciones marcadas."""
+    ids = [int(i) for i in (body.get('ids') or []) if str(i).isdigit()][:12]
+    if len(ids) < 2:
+        raise HTTPException(400, 'Marca al menos dos licitaciones')
+    rows = db.rows('SELECT * FROM candidates WHERE id IN (%s)' % ','.join('?' * len(ids)), tuple(ids))
+    towns = sorted({(r.get('towns') or '').split(',')[0] for r in rows if r.get('towns')})
+    where = towns[0] if len(towns) == 1 else 'el Campo de Gibraltar'
+    total = sum(r.get('amount_value') or 0 for r in rows)
+    title = str(body.get('title') or '').strip() or 'Resumen: %s licitaciones en %s (%s)' % (len(rows), where, sources._euros(total) or 's/i')
+    lines = ['- [%s] %s · %s · %s%s' % (TSTATUS.get(r.get('tstatus') or 'PUB', ''), re.sub(r'^[^:]{3,30}:\s*', '', r['title']),
+                                       r.get('organism') or '', r.get('amount') or 'importe sin indicar',
+                                       (' · plazo ' + r['deadline']) if r.get('deadline') else '') for r in rows]
+    url = 'resumen://%s/%s' % (datetime.now().strftime('%Y%m%d%H%M%S'), '-'.join(map(str, ids)))
+    cid = db.exec_("""INSERT INTO candidates(source_name,title,url,published_at,excerpt,block,tag,towns,status,priority,tstatus,amount_value,docs_json)
+                      VALUES('Resumen de licitaciones',?,?,?,?, 'Licitaciones','licitacion',?,'new','today','RESUMEN',?,?)""",
+                   (title, url, datetime.utcnow().isoformat() + '+00:00', '\n'.join(lines), ','.join(towns), total,
+                    json.dumps([d for r in rows for d in _json(r.get('docs_json'), [])][:10], ensure_ascii=False)))
+    for r in rows:
+        db.exec_('INSERT OR IGNORE INTO candidate_links(candidate_id,source_name,outlet,url,title,excerpt,published_at) VALUES(?,?,?,?,?,?,?)',
+                 (cid, r.get('source_name'), r.get('organism'), r['url'], r['title'], r.get('excerpt'), r.get('published_at')))
+        db.exec_("UPDATE candidates SET status='chosen' WHERE id=?", (r['id'],))
+    pipeline.queue_write(cid, 'urgent')
+    return {'candidate_id': cid, 'queued': True}
+
+
 @app.post('/api/candidates/{cid}/triage', dependencies=AUTH)
 def triage(cid: int, body: dict):
     p = str(body.get('priority') or '')
@@ -220,7 +290,7 @@ def article(aid: int):
     c = _cand_out([db.row('SELECT * FROM candidates WHERE id=?', (a['candidate_id'],))])[0]
     for k, d in (('headline_options_json', []), ('slides_json', []), ('render_json', {}), ('sources_json', {})):
         a[k.replace('_json', '')] = _json(a.pop(k, None), d)
-    a['media'] = db.rows('SELECT * FROM media WHERE article_id=? ORDER BY CASE kind WHEN \'canva\' THEN 0 WHEN \'doc\' THEN 1 WHEN \'plano\' THEN 2 '
+    a['media'] = db.rows('SELECT * FROM media WHERE article_id=? ORDER BY CASE kind WHEN \'carrusel\' THEN -1 WHEN \'canva\' THEN 0 WHEN \'doc\' THEN 1 WHEN \'plano\' THEN 2 '
                          'WHEN \'subida\' THEN 3 WHEN \'fuente\' THEN 4 WHEN \'medio\' THEN 5 ELSE 6 END, slide, id', (aid,))
     a['docs_status'] = _json(db.setting('docs_%s' % aid), None)
     a['candidate'] = c
@@ -369,12 +439,28 @@ def media_file(mid: int):
                         filename='area_%s_%s%s' % (m['article_id'], mid, p.suffix))
 
 
+def slide_text(i, s):
+    clean = lambda t: re.sub(r'==|\+\+|\*\*', '', str(t or ''))
+    out = ['%s. [%s]%s %s' % (i + 1, s.get('layout') or '', (' ' + clean(s['kicker']) + ' ·') if s.get('kicker') else '', clean(s.get('title')))]
+    if s.get('text'):
+        out.append(clean(s['text']))
+    out += ['· ' + clean(b) for b in s.get('bullets') or []]
+    if s.get('chips'):
+        out.append(' → '.join(map(clean, s['chips'])))
+    if s.get('figure') or s.get('status'):
+        out.append(' '.join(x for x in [('Estado: ' + s['status']) if s.get('status') else '', s.get('figure') or '', clean(s.get('figure_label'))] if x))
+    out += ['· %s %s %s' % (c.get('label') or '', c.get('figure') or '', clean(c.get('text'))) for c in s.get('cards') or []]
+    if s.get('image_hint'):
+        out.append('(Imagen: %s)' % s['image_hint'])
+    return '\n'.join(out)
+
+
 def _texts(a):
     slides = _json(a.get('slides_json'), [])
     render = _json(a.get('render_json'), {})
     parts = ['TITULAR\n' + (a.get('headline') or ''), 'ENTRADILLA\n' + (a.get('entradilla') or ''), 'TEXTO\n' + (a.get('body') or ''),
              'COPY DE INSTAGRAM\n' + (a.get('instagram_copy') or ''),
-             'CARRUSEL\n' + '\n\n'.join('%s. %s\n%s' % (i + 1, s.get('title') or '', s.get('text') or '') for i, s in enumerate(slides))]
+             'CARRUSEL\n' + '\n\n'.join(slide_text(i, s) for i, s in enumerate(slides))]
     if render.get('recommended'):
         parts.append('RENDER RECOMENDADO\n%s\n\n%s' % (render.get('why') or '', render.get('prompt') or ''))
     return '\n\n────────\n\n'.join(parts)
@@ -383,7 +469,7 @@ def _texts(a):
 @app.get('/api/articles/{aid}/zip', dependencies=AUTH)
 def article_zip(aid: int, all: int = 0):
     a = _article(aid)
-    q = 'SELECT * FROM media WHERE article_id=?' + ('' if all else ' AND selected=1') + ' ORDER BY CASE kind WHEN \'canva\' THEN 0 ELSE 1 END, slide, id'
+    q = 'SELECT * FROM media WHERE article_id=?' + ('' if all else ' AND selected=1') + ' ORDER BY CASE kind WHEN \'carrusel\' THEN 0 WHEN \'canva\' THEN 1 ELSE 2 END, slide, id'
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, 'w', zipfile.ZIP_DEFLATED) as z:
         z.writestr('textos.txt', _texts(a))
@@ -392,10 +478,77 @@ def article_zip(aid: int, all: int = 0):
                 p = _safe_path(_local(m))
             except HTTPException:
                 continue
-            prefix = 'carrusel' if m['kind'] == 'canva' else m['kind']
+            prefix = ('diapositiva_%02d' % (m['slide'] or n)) if m['kind'] in ('carrusel', 'canva') else m['kind']
             z.write(p, '%02d_%s%s' % (n, prefix, p.suffix))
     slug = re.sub(r'[^a-z0-9]+', '-', (a.get('headline') or 'area').lower())[:50].strip('-')
     return Response(buf.getvalue(), media_type='application/zip', headers={'Content-Disposition': 'attachment; filename="area-%s.zip"' % slug})
+
+
+@app.post('/api/articles/{aid}/carousel/png', dependencies=AUTH)
+def carousel_png(aid: int, body: dict):
+    """Guarda las diapositivas generadas en el panel (PNG 1080×1350) como imágenes del carrusel."""
+    import base64
+    _article(aid)
+    pngs = body.get('slides') or []
+    if not pngs or len(pngs) > 12:
+        raise HTTPException(400, 'Faltan las diapositivas')
+    folder = RENDER_DIR / ('carrusel_%s' % aid)
+    folder.mkdir(parents=True, exist_ok=True)
+    for old in folder.glob('*.png'):
+        old.unlink()
+    db.exec_("DELETE FROM media WHERE article_id=? AND kind='carrusel'", (aid,))
+    stamp = datetime.now().strftime('%H%M%S')
+    for n, d in enumerate(pngs, start=1):
+        m = re.match(r'^data:image/png;base64,(.+)$', str(d or ''), re.S)
+        if not m:
+            raise HTTPException(400, 'La diapositiva %s no es un PNG' % n)
+        raw = base64.b64decode(m.group(1))
+        if len(raw) > 15_000_000:
+            raise HTTPException(400, 'La diapositiva %s es demasiado grande' % n)
+        path = folder / ('%02d_%s.png' % (n, stamp))
+        path.write_bytes(raw)
+        db.exec_("INSERT INTO media(article_id,kind,local_path,width,height,caption,slide,selected) VALUES(?,?,?,?,?,?,?,1)",
+                 (aid, 'carrusel', str(path), 1080, 1350, 'Diapositiva %s' % n, n))
+    return article(aid)
+
+
+# ---------------------------------------------------------------- logos de Área para las diapositivas
+
+LOGO_DIR = UPLOAD_DIR / 'marca'
+
+
+@app.get('/api/brand/logo/{kind}', dependencies=AUTH)
+def brand_logo(kind: str):
+    p = LOGO_DIR / ('logo_%s.png' % ('blanco' if kind == 'blanco' else 'color'))
+    if not p.is_file():
+        raise HTTPException(404, 'Sin logo')
+    return FileResponse(p, media_type='image/png')
+
+
+@app.post('/api/brand/logo/{kind}', dependencies=AUTH)
+async def brand_logo_upload(kind: str, file: UploadFile = File(None)):
+    LOGO_DIR.mkdir(parents=True, exist_ok=True)
+    p = LOGO_DIR / ('logo_%s.png' % ('blanco' if kind == 'blanco' else 'color'))
+    if file is None:
+        if p.exists():
+            p.unlink()
+        return {'ok': True, 'removed': True}
+    from PIL import Image
+    try:
+        im = Image.open(io.BytesIO(await file.read())).convert('RGBA')
+    except Exception:
+        raise HTTPException(400, 'No es una imagen válida (usa PNG con fondo transparente)')
+    bbox = im.getbbox()
+    if bbox:
+        im = im.crop(bbox)
+    im.thumbnail((1200, 600))
+    im.save(p, 'PNG')
+    return {'ok': True}
+
+
+@app.get('/api/brand', dependencies=AUTH)
+def brand():
+    return {k: (LOGO_DIR / ('logo_%s.png' % k)).is_file() for k in ('blanco', 'color')}
 
 
 # ---------------------------------------------------------------- Canva

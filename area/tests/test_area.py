@@ -91,7 +91,8 @@ def test_placsp(monkeypatch=None):
     src = db.row("SELECT * FROM sources WHERE kind='placsp' LIMIT 1")
     cid = sources.add_candidate(it, src)
     c = db.row('SELECT * FROM candidates WHERE id=?', (cid,))
-    assert c['block'] == 'Exclusivas' and c['tag'] == 'licitacion' and c['towns'] == 'Algeciras'
+    assert c['block'] == 'Licitaciones' and c['tag'] == 'licitacion' and c['towns'] == 'Algeciras' and c['tstatus'] == 'PUB'
+    assert c['amount_value'] == 1200000.0
     assert c['exclusive'] == 1 and c['score'] >= 70, c['score']
     # documentos: el proyecto va antes que el pliego administrativo
     assert docs.doc_links({**c, 'url': 'efemeride://x'})[0]['name'] == 'Proyecto de ejecucion.pdf'
@@ -127,7 +128,8 @@ def test_coverage_area_and_competitors():
 def test_free_draft_and_slides():
     c = db.row("SELECT * FROM candidates WHERE tag='licitacion' LIMIT 1")
     d = redaccion.free_draft(c, 'El proyecto prevé ampliar las aceras y plantar 40 árboles en la calle Ancha de Algeciras durante 10 meses de obra.')
-    assert d['headline'].startswith('Reurbanización') and len(d['slides']) >= 3
+    assert d['headline'].startswith('Reurbanización') and [x['layout'] for x in d['slides']][:2] == ['portada', 'ficha']
+    assert d['slides'][1]['figure'] == '1.200.000 €' and d['slides'][1]['status'] == 'En licitación'
     assert '#CampoDeGibraltar' in d['instagram_copy'] and '#Algeciras' in d['instagram_copy']
     assert d['render']['recommended'] is True
 
@@ -159,7 +161,9 @@ def test_ai_draft_parsing():
     fake = {'focus': 'Licitación', 'section': 'licitaciones', 'town': 'Algeciras', 'headline': 'Algeciras licita por 1,2 millones la calle Ancha',
             'headline_options': ['A', 'B'], 'entradilla': 'Diez meses de obra. No consta la empresa.', 'body': 'Párrafo uno.\n\nSe desconoce el inicio. Habrá 40 árboles.',
             'instagram_copy': '🏗 Así será la calle Ancha\n\n#CampoDeGibraltar', 'slides': [{'role': 'portada', 'title': 'Así será la calle Ancha'},
-            {'role': 'dato', 'title': '1,2 millones', 'text': 'Presupuesto de licitación'}, {'role': 'cierre', 'title': 'Plazo', 'text': 'Ofertas hasta el 2 de noviembre'}],
+            {'layout': 'ficha', 'title': 'Calle Ancha', 'text': 'Presupuesto de licitación', 'status': 'En licitación', 'figure': '1,2 M€'},
+            {'layout': 'caja', 'title': '¿Qué incluye?', 'bullets': ['Aceras', '40 árboles']}, {'layout': 'inventado', 'title': 'X'},
+            {'layout': 'portada', 'title': 'ASÍ SERÁ LA CALLE ANCHA'}],
             'render': {'recommended': True, 'why': 'Cambia la calle', 'prompt': 'Vista peatonal…', 'basis': 'Proyecto'}, 'photo_query': 'calle Ancha Algeciras', 'missing': ['Empresa']}
     old_enabled, old_ask = ai.AI_ENABLED, redaccion.ask_json
     ai.AI_ENABLED = True
@@ -169,7 +173,8 @@ def test_ai_draft_parsing():
     finally:
         ai.AI_ENABLED, redaccion.ask_json = old_enabled, old_ask
     assert d['section'] == 'LICITACIONES' and d['entradilla'] == 'Diez meses de obra.' and 'desconoce' not in d['body']
-    assert len(d['slides']) == 3 and d['slides'][1]['role'] == 'dato' and d['render']['recommended']
+    assert [x['layout'] for x in d['slides']] == ['portada', 'ficha', 'caja', 'lista'], d['slides']
+    assert d['slides'][0]['title'] == 'Así será la calle Ancha' and d['slides'][2]['bullets'] == ['Aceras', '40 árboles'] and d['render']['recommended']
 
 
 def test_canva_fields():
@@ -184,6 +189,39 @@ def test_canva_fields():
     data = canva.build_data(fields, [{'title': 'Portada'}, {'title': 'Dos', 'text': 'Texto dos'}], [], 'Algeciras', 1)
     assert data['TITULO_1']['text'] == 'Portada' and data['TEXTO_2']['text'] == 'Texto dos' and data['TITULO_9']['text'] == ' '
     assert data['NUM_2']['text'] == '2/2'
+
+
+def test_tender_towns_and_merge():
+    assert sources.town_from_postal('11202') == 'Algeciras' and sources.town_from_postal('11300') == 'La Línea'
+    assert sources.town_from_postal('11370') == 'Los Barrios' and sources.town_from_postal('11380') == 'Tarifa'
+    assert sources.town_from_postal('11330') == 'Jimena' and sources.town_from_postal('11350') == 'Castellar'
+    assert sources.town_from_postal('11360') == 'San Roque' and sources.town_from_postal('11340') == 'San Martín del Tesorillo'
+    assert sources.town_from_postal('28001') == '' and sources.town_from_postal('11001') == ''
+    assert sources.organism_town('Empresa Municipal de Aguas de Algeciras, S.A. (EMALGESA)') == 'Algeciras'
+    assert sources.organism_town('Junta de Gobierno Local del Ayuntamiento de Jimena de la Frontera') == 'Jimena'
+    assert sources.organism_town('Mancomunidad de Municipios del Campo de Gibraltar') == 'Campo de Gibraltar'
+    # Junta que licita una obra en Los Barrios (organismo en Sevilla, lugar por código postal)
+    e = {'title': 'Reforma del CEIP Sierra Luna', 'organism': 'Agencia Pública Andaluza de Educación', 'party_city': 'Sevilla',
+         'party_zip': '41092', 'place_city': '', 'place_zip': '11370', 'status': 'PUB', 'budget': '850000', 'awarded': '',
+         'type': '3', 'deadline': '2026-11-10', 'winner': '', 'updated': NOW.isoformat(), 'url': 'https://x/ceip', 'docs': [], 'folder': 'X1'}
+    it = sources.placsp_item(e)
+    assert it['town'] == 'Los Barrios' and it['title'].startswith('Licitación:')
+    # Un expediente de Valladolid no entra
+    assert sources.placsp_item({**e, 'place_zip': '47001', 'party_zip': '47001', 'title': 'Suministro de papel'}) is None
+    # Contrato menor
+    m = sources.placsp_item({**e, 'status': 'RES', 'awarded': '14900', 'winner': 'Juegos SL'}, menor=True)
+    assert m['title'].startswith('Contrato menor:') and m['amount_value'] == 14900.0 and m['tstatus'] == 'MENOR'
+    src = db.row("SELECT * FROM sources WHERE kind='placsp' LIMIT 1")
+    cid = sources.add_candidate(it, src)
+    assert cid
+    # La misma licitación desde Gobierto se une; la adjudicación posterior es otra propuesta
+    dup = {'title': 'Licitación: Reforma del CEIP Sierra Luna en Los Barrios', 'url': 'https://contratos.gobierto.es/licitaciones/9',
+           'published_at': NOW.isoformat(), 'organism': 'Ayuntamiento de Los Barrios'}
+    assert sources.add_candidate(dup, {'id': None, 'name': 'Gobierto', 'block': 'Licitaciones', 'kind': 'gobierto', 'priority': 90}) is None
+    assert db.row('SELECT COUNT(*) n FROM candidate_links WHERE candidate_id=?', (cid,))['n'] == 1
+    adj = sources.placsp_item({**e, 'status': 'ADJ', 'awarded': '799000', 'winner': 'Construcciones Sur SL', 'url': 'https://x/ceip2'})
+    cid2 = sources.add_candidate(adj, src)
+    assert cid2 and db.row('SELECT tstatus FROM candidates WHERE id=?', (cid2,))['tstatus'] == 'ADJ'
 
 
 if __name__ == '__main__':

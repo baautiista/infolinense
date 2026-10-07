@@ -1,0 +1,127 @@
+/* Diapositivas de carrusel de Área (1080×1350). Se usan en la vista previa y para generar los PNG. */
+@font-face{font-family:"AP";font-weight:400;src:url(/static/fonts/Poppins-Regular.ttf)}
+@font-face{font-family:"AP";font-weight:500;src:url(/static/fonts/Poppins-Medium.ttf)}
+@font-face{font-family:"AP";font-weight:600;src:url(/static/fonts/Poppins-SemiBold.ttf)}
+@font-face{font-family:"AP";font-weight:700;src:url(/static/fonts/Poppins-Bold.ttf)}
+@font-face{font-family:"AP";font-weight:800;src:url(/static/fonts/Poppins-ExtraBold.ttf)}
+@font-face{font-family:"AB";font-weight:600;src:url(/static/fonts/BarlowCondensed-SemiBold.ttf)}
+@font-face{font-family:"AB";font-weight:700;src:url(/static/fonts/BarlowCondensed-Bold.ttf)}
+@font-face{font-family:"AB";font-weight:800;src:url(/static/fonts/BarlowCondensed-ExtraBold.ttf)}
+
+.cs{--red:#F20A0A;--k:1;position:relative;width:1080px;height:1350px;overflow:hidden;background:#141414;color:#fff;font-family:"AP",sans-serif;box-sizing:border-box;-webkit-font-smoothing:antialiased}
+.cs *{box-sizing:border-box;margin:0;padding:0}
+.cs .fit>*{flex-shrink:0}
+.cs mark{background:var(--red);color:#fff;padding:0 .12em;-webkit-box-decoration-break:clone;box-decoration-break:clone}
+.cs mark.b{background:#0A6FAE}
+.cs b{font-weight:800}
+.cs .cs-bg{position:absolute;inset:0;background:#222 center/cover no-repeat}
+.cs .cs-shade{position:absolute;inset:0;background:rgba(10,10,10,.58)}
+.cs .cs-frame{position:absolute;left:62px;top:55px;right:62px;bottom:55px;border:2px solid rgba(255,255,255,.95);border-radius:62px}
+.cs .cs-in{position:absolute;left:65px;padding-left:60px;right:120px;top:150px;bottom:150px;display:flex;flex-direction:column;overflow:hidden}
+.cs .cs-t{font-weight:800;font-size:calc(var(--k)*var(--ts,104px));line-height:1;letter-spacing:-.055em;margin-left:-4px}
+.cs .cs-s{font-weight:600;font-size:calc(var(--k)*42px);line-height:1.22;margin-top:calc(var(--k)*18px);letter-spacing:-.01em}
+.cs .cs-ul{list-style:none;display:flex;flex-direction:column;gap:calc(var(--k)*46px);margin-top:calc(var(--k)*70px)}
+.cs .cs-ul li{position:relative;font-weight:600;font-size:calc(var(--k)*50px);line-height:1.2;letter-spacing:-.01em}
+.cs .cs-ul.bar li::before{content:"";position:absolute;left:-50px;top:.14em;width:16px;height:1em;background:var(--red)}
+.cs.cs-cifra_lista .cs-ul li{font-size:calc(var(--k)*46px)}
+.cs .cs-ul.plain li::before{display:none}
+.cs-black{background:#000}
+
+/* portada */
+.cs.cs-portada .cs-fade{position:absolute;left:0;right:0;bottom:0;height:62%;background:linear-gradient(180deg,rgba(242,10,10,0) 0%,rgba(242,10,10,.55) 38%,var(--red) 78%)}
+.cs .cs-tab{position:absolute;left:0;top:72px;background:var(--red);border-radius:0 44px 44px 0;padding:26px 60px 24px 58px;display:flex;flex-direction:column;align-items:flex-start}
+.cs .cs-tab img{height:120px;display:block}
+.cs .cs-word{font-weight:800;font-size:108px;line-height:.86;letter-spacing:-.04em;color:#fff}
+.cs .cs-word small{display:block;font-weight:500;font-size:30px;letter-spacing:0;margin-top:10px}
+.cs .cs-pbox{position:absolute;left:58px;right:70px;bottom:150px}
+.cs .cs-ps{margin-right:250px}
+.cs .cs-pt{font-family:"AB";font-weight:800;text-transform:uppercase;font-size:calc(var(--k)*var(--ts,124px));line-height:.92;letter-spacing:-.005em}
+.cs .cs-ps{font-weight:400;font-size:calc(var(--k)*42px);line-height:1.18;margin-top:18px;letter-spacing:-.01em}
+.cs .cs-arrow{position:absolute;right:160px;bottom:150px;width:170px;height:170px;border-radius:50%;background:#fff;display:grid;place-items:center}
+.cs .cs-pbox.fit{max-height:640px;overflow:hidden;padding-bottom:8px}
+
+/* caja roja */
+.cs .cs-box{background:rgba(214,0,0,.8);border-radius:46px;padding:calc(var(--k)*64px) 56px calc(var(--k)*64px) 100px;margin-top:calc(var(--k)*90px)}
+.cs .cs-box li{list-style:disc;font-weight:600;font-size:calc(var(--k)*50px);line-height:1.3}
+
+/* flujo */
+.cs .cs-chips{display:flex;align-items:center;gap:6px 4px;margin:calc(var(--k)*130px) -40px 0 -25px;flex-wrap:wrap}
+.cs .cs-chip{background:#fff;color:var(--red);font-weight:500;font-size:calc(var(--k)*38px);padding:10px 22px;border-radius:10px;white-space:nowrap}
+.cs .cs-chips svg{flex:none}
+.cs .cs-par{display:flex;flex-direction:column;gap:calc(var(--k)*70px);margin-top:calc(var(--k)*70px)}
+.cs .cs-par p{font-weight:700;font-size:calc(var(--k)*52px);line-height:1.2;letter-spacing:-.015em}
+
+/* cifra en píldora */
+.cs .cs-pill{margin-top:calc(var(--k)*70px);align-self:center;background:var(--red);border-radius:34px;padding:20px 30px;text-align:center;font-weight:700;font-size:calc(var(--k)*54px);line-height:1.18}
+
+/* ficha */
+.cs .cs-bartext{position:relative;font-weight:700;font-size:calc(var(--k)*44px);line-height:1.2;margin-top:calc(var(--k)*90px)}
+.cs .cs-bartext::before{content:"";position:absolute;left:-50px;top:.1em;width:16px;height:1.2em;background:var(--red)}
+.cs .cs-row{display:flex;flex-wrap:nowrap;justify-content:space-between;align-items:center;margin-top:calc(var(--k)*70px);gap:20px}
+.cs .cs-status{background:#2E8BFF;border-radius:18px;padding:12px 26px;font-size:calc(var(--k)*44px);font-weight:500;white-space:nowrap}
+.cs .cs-status b{font-weight:700}
+.cs .cs-big{font-weight:400;font-size:calc(var(--k)*96px);line-height:1;letter-spacing:-.03em;white-space:nowrap}
+
+/* pregunta */
+.cs .cs-answer{position:relative;font-weight:700;font-size:calc(var(--k)*56px);line-height:1.32;margin-top:calc(var(--k)*70px)}
+.cs .cs-answer::before{content:"";position:absolute;left:-58px;top:.18em;width:30px;height:.95em;background:var(--red)}
+
+/* anotada */
+.cs .cs-ann-k{font-weight:600;font-size:calc(var(--k)*40px);line-height:1.2;text-align:right}
+.cs .cs-ann-t{text-align:right;margin-top:14px}
+.cs .cs-ann{position:absolute;font-weight:700;font-size:calc(var(--k)*50px);line-height:1.18}
+.cs .cs-ann svg{position:absolute}
+.cs .cs-ann.a1{left:150px;top:600px;width:520px}
+.cs .cs-ann.a2{right:110px;top:820px;width:470px}
+.cs .cs-ann.a3{left:150px;bottom:120px;width:520px}
+.cs .cs-ann.a1 svg{right:-230px;top:50px}
+.cs .cs-ann.a2 svg{left:-150px;top:-60px}
+.cs .cs-ann.a3 svg{right:-210px;top:10px}
+.cs .cs-arr{position:absolute}
+
+/* imagen insertada */
+.cs .cs-inset{position:absolute;left:130px;right:110px;bottom:190px;height:520px;border-radius:30px;background:#333 center/cover no-repeat}
+.cs.cs-mapa .cs-in{bottom:700px;overflow:hidden}
+.cs.cs-mapa .cs-inset{height:480px}
+
+/* estilo claro (cifras, tarjetas, documento, mosaico) */
+.cs-light{background:#F4F6F9;color:#111}
+.cs-light.pink{background:#FDF1F1}
+.cs-light.sky{background:linear-gradient(180deg,#BFD9F2 0%,#E9F2FB 40%,#F4F6F9 70%)}
+.cs .cs-logo{position:absolute;right:62px;top:92px;display:flex;flex-direction:column;align-items:flex-end}
+.cs .cs-logo img{height:140px}
+.cs .cs-logo .cs-word{color:var(--red);font-size:84px}
+.cs .cs-logo .cs-word small{color:var(--red);font-size:24px;text-align:right}
+.cs .cs-kick{display:flex;align-items:center;gap:36px;font-family:"AB";font-weight:800;font-size:calc(var(--k)*50px);color:var(--red);text-transform:uppercase;line-height:1}
+.cs .cs-kick::before{content:"";width:70px;height:12px;background:var(--red);flex:none}
+.cs .cs-li{position:absolute;left:100px;right:90px;top:250px;bottom:120px;display:flex;flex-direction:column}
+.cs .cs-li>.cs-kick:first-child{margin-top:-40px;margin-right:270px}
+.cs .cs-giant{font-family:"AB";font-weight:800;color:var(--red);font-size:calc(var(--k)*var(--gs,260px));line-height:.86;text-align:center;letter-spacing:-.01em;margin-top:calc(var(--k)*20px);white-space:nowrap}
+.cs .cs-label{align-self:center;background:var(--red);color:#fff;font-family:"AB";font-weight:800;font-size:calc(var(--k)*68px);text-transform:uppercase;padding:6px 34px;margin-top:40px;line-height:1.05;text-align:center}
+.cs .cs-ctext{font-weight:500;font-size:calc(var(--k)*40px);line-height:1.28;text-align:center;margin-top:calc(var(--k)*40px);color:#111}
+.cs .cs-photo{position:absolute;left:0;right:0;bottom:0;height:44%;background:center/cover no-repeat}
+.cs .cs-photo::before{content:"";position:absolute;left:0;right:0;top:0;height:30%;background:linear-gradient(180deg,var(--fadebg,#F4F6F9),transparent)}
+.cs .cs-lt{font-family:"AB";font-weight:800;color:var(--red);text-transform:uppercase;font-size:calc(var(--k)*var(--ts,128px));line-height:.9;margin-top:30px}
+.cs .cs-cards{display:flex;flex-direction:column;gap:calc(var(--k)*34px);margin-top:calc(var(--k)*60px)}
+.cs .cs-card{background:#fff;border-radius:36px;padding:calc(var(--k)*24px) 36px;display:flex;align-items:center;gap:44px}
+.cs .cs-ico{width:calc(var(--k)*170px);height:calc(var(--k)*170px);border-radius:50%;background:var(--red);flex:none;display:grid;place-items:center;color:#fff}
+.cs .cs-ico svg{width:56%;height:56%}
+.cs .cs-ico .eur{font-weight:800;font-size:calc(var(--k)*104px);line-height:1}
+.cs .cs-card h4{font-family:"AB";font-weight:800;font-size:calc(var(--k)*50px);text-transform:uppercase;line-height:1}
+.cs .cs-card .fig{font-family:"AB";font-weight:800;color:var(--red);font-size:calc(var(--k)*112px);line-height:.95;white-space:nowrap}
+.cs .cs-card p{font-weight:500;font-size:calc(var(--k)*36px);line-height:1.25}
+.cs .cs-card .two{display:flex;align-items:center;gap:40px}
+
+/* mosaico */
+.cs .cs-grid{display:grid;grid-template-columns:repeat(6,1fr);gap:34px 32px;margin-top:calc(var(--k)*70px)}
+.cs .cs-tile{grid-column:span 2;background:#fff;border:2px solid #222;border-radius:16px;overflow:hidden;display:flex;flex-direction:column}
+.cs .cs-grid.n2 .cs-tile,.cs .cs-grid .cs-tile.w{grid-column:span 3}
+.cs .cs-tile .im{height:calc(var(--k)*330px);width:100%;object-fit:cover;display:block;background:#999}
+.cs .cs-tile h5{background:var(--red);color:#fff;font-family:"AB";font-weight:800;font-size:calc(var(--k)*54px);line-height:1.05;padding:16px 26px}
+.cs .cs-tile p{font-weight:500;font-size:calc(var(--k)*40px);line-height:1.2;padding:18px 26px 22px}
+
+/* documento */
+.cs .cs-doc-k{font-family:"AB";font-weight:800;font-size:calc(var(--k)*150px);line-height:.9;text-transform:uppercase;color:#0B0B0B;margin-top:60px}
+.cs .cs-doc-t{font-family:"AB";font-weight:800;font-size:calc(var(--k)*var(--ts,190px));line-height:.9;text-transform:uppercase;color:var(--red)}
+.cs .cs-doc-s{font-weight:500;font-size:calc(var(--k)*50px);line-height:1.25;margin-top:40px;color:#111}
+.cs .cs-sheet{position:absolute;left:75px;right:120px;top:800px;height:900px;background:#fff center top/cover no-repeat;transform:rotate(-4.5deg);box-shadow:0 30px 60px rgba(0,0,0,.28)}

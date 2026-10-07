@@ -1,14 +1,15 @@
 /* Área Campo de Gibraltar Desk — 1 Ordenar · 2 Redacción · 3 Revisar · 4 Copiar */
 const $ = s => document.querySelector(s);
 let token = localStorage.getItem('area_token') || '';
-let view = 'sort', editorId = null, editorFrom = 'review', block = null, showArea = false;
+let view = 'sort', editorId = null, editorFrom = 'review', block = null, showArea = false, sortMode = 'tenders';
+const TF = { town: '', status: '', sort: 'new', q: '', sel: new Set() };
 let blobUrls = [];
 let queue = [];
 const BLOCKS = ['Exclusivas', 'Obras y urbanismo', 'Agenda y cultura', 'Instituciones', 'Nacionales adaptables', 'Efemérides'];
 const TAG = { licitacion: 'Licitación', edicto: 'Edicto', presupuesto: 'Presupuesto', obras: 'Obras', asi_sera: 'Así será', agenda: 'Agenda', efemeride: 'Efeméride' };
 const PRIO = [['urgent', 'Urgente'], ['today', 'Hoy'], ['week', 'Esta semana'], ['later', 'Más adelante']];
-const KIND = { canva: 'Carrusel Canva', doc: 'Del expediente', plano: 'Planos', subida: 'Subidas', fuente: 'De la fuente', medio: 'Otros medios', internet: 'Internet' };
-const ROLES = [['portada', 'Portada'], ['dato', 'Dato'], ['texto', 'Texto'], ['cierre', 'Cierre']];
+const KIND = { carrusel: 'Carrusel generado', canva: 'Carrusel Canva', doc: 'Del expediente', plano: 'Planos', subida: 'Subidas', fuente: 'De la fuente', medio: 'Otros medios', internet: 'Internet' };
+const TSTATUS = { PUB: 'En plazo', PRE: 'Anuncio previo', EV: 'En evaluación', ADJ: 'Adjudicada', RES: 'Formalizada', MENOR: 'Contrato menor', ANUL: 'Anulada', RESUMEN: 'Resumen' };
 
 /* ---------- utilidades ---------- */
 function esc(s) { return String(s ?? '').replace(/[&<>"']/g, m => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[m])) }
@@ -107,20 +108,67 @@ function facts(c) {
 
 /* ---------- Fase 1: Ordenar ---------- */
 async function sortView(v) {
-  const [today, q, w] = await Promise.all([api('/api/today'), api('/api/sort-queue' + (showArea ? '?area=1' : '')), api('/api/workflow')]);
-  queue = q;
+  const [today, w] = await Promise.all([api('/api/today'), api('/api/workflow')]);
+  v.innerHTML = `${pickCard(today)}
+    <div class="chips" style="margin:16px 0 4px"><button class="chip ${sortMode === 'tenders' ? 'on' : ''}" data-mode="tenders">Licitaciones de la comarca</button>
+      <button class="chip ${sortMode === 'rest' ? 'on' : ''}" data-mode="rest">Resto del radar</button></div>
+    <div id="sortBody"></div>`;
+  v.querySelectorAll('[data-mode]').forEach(b => b.onclick = () => { sortMode = b.dataset.mode; sortView(v) });
+  bindPick(today);
+  if (sortMode === 'tenders') return tendersView($('#sortBody'));
+  const q = await api('/api/sort-queue' + (showArea ? '?area=1' : ''));
+  queue = q.filter(x => showArea || x.group !== 'Licitaciones');
   const groups = showArea ? ['Ya en Área'] : BLOCKS;
   if (showArea) queue.forEach(x => x.group = 'Ya en Área');
   const count = g => queue.filter(n => n.group === g).length;
   if (!block || !groups.includes(block) || !count(block)) block = groups.find(count) || groups[0];
-  v.innerHTML = `${pickCard(today)}${efeStrip(today.efemerides)}
+  $('#sortBody').innerHTML = `${efeStrip(today.efemerides)}
     <div class="chips scroll" style="margin-top:14px">${groups.map(g => `<button class="chip ${g === block ? 'on' : ''}" data-g="${esc(g)}" ${count(g) ? '' : 'disabled'}>${esc(g)}<b>${count(g)}</b></button>`).join('')}
       <button class="chip ${showArea ? 'on' : ''}" id="areaToggle">${showArea ? '← Volver al radar' : `Ya en Área<b>${w.in_area}</b>`}</button></div>
     <div id="focus"></div>`;
   v.querySelectorAll('[data-g]').forEach(b => b.onclick = () => { block = b.dataset.g; sortView(v) });
   $('#areaToggle').onclick = () => { showArea = !showArea; block = null; sortView(v) };
-  bindPick(today);
   drawFocus();
+}
+
+/* ---------- Licitaciones: todas las de la comarca, por municipio y fase ---------- */
+const euro = n => n ? Number(n).toLocaleString('es-ES', { maximumFractionDigits: 0 }) + ' €' : '';
+async function tendersView(box) {
+  const qs = new URLSearchParams({ town: TF.town, status: TF.status, sort: TF.sort, q: TF.q });
+  const d = await api('/api/tenders?' + qs);
+  const all = d.towns.reduce((a, t) => a + t.n, 0);
+  box.innerHTML = `<div class="chips scroll" style="margin-top:12px"><button class="chip ${!TF.town ? 'on' : ''}" data-town="">Todos<b>${all}</b></button>
+      ${d.towns.map(t => `<button class="chip ${TF.town === t.town ? 'on' : ''}" data-town="${esc(t.town)}" ${t.n ? '' : 'disabled'}>${esc(t.town)}<b>${t.n}</b></button>`).join('')}</div>
+    <div class="chips scroll"><button class="chip ${!TF.status ? 'on' : ''}" data-st="">Todas las fases</button>
+      ${d.statuses.filter(x => x.n || TF.status === x.code).map(x => `<button class="chip ${TF.status === x.code ? 'on' : ''}" data-st="${x.code}">${esc(x.label)}<b>${x.n}</b></button>`).join('')}</div>
+    <div class="row wrap" style="margin-bottom:10px"><input id="tq" class="grow" placeholder="Buscar (obra, calle, empresa…)" value="${esc(TF.q)}" style="min-width:180px">
+      <select id="tsort" style="width:auto">${[['new', 'Más recientes'], ['amount', 'Mayor importe'], ['deadline', 'Plazo más cercano'], ['score', 'Más interesantes']].map(([k, l]) => `<option value="${k}" ${TF.sort === k ? 'selected' : ''}>${l}</option>`).join('')}</select></div>
+    <p class="progress">${d.total} licitaciones${d.sum ? ' · ' + euro(d.sum) + ' en total' : ''}</p>
+    <div class="list">${d.items.map(tenderRow).join('') || '<p class="empty">No hay licitaciones con estos filtros. Pulsa Buscar para leer la Plataforma de Contratación.</p>'}</div>
+    <div class="actions" id="tsel" ${TF.sel.size >= 2 ? '' : 'hidden'}><button class="btn primary" id="tsum">Pieza resumen con ${TF.sel.size} licitaciones</button><button class="btn" id="tclear">Quitar selección</button></div>`;
+  box.querySelectorAll('[data-town]').forEach(b => b.onclick = () => { TF.town = b.dataset.town; tendersView(box) });
+  box.querySelectorAll('[data-st]').forEach(b => b.onclick = () => { TF.status = b.dataset.st; tendersView(box) });
+  $('#tsort').onchange = e => { TF.sort = e.target.value; tendersView(box) };
+  $('#tq').onkeydown = e => { if (e.key === 'Enter') { TF.q = e.target.value; tendersView(box) } };
+  box.querySelectorAll('[data-sel]').forEach(c => c.onchange = () => { c.checked ? TF.sel.add(+c.dataset.sel) : TF.sel.delete(+c.dataset.sel); $('#tsel').hidden = TF.sel.size < 2; $('#tsum').textContent = `Pieza resumen con ${TF.sel.size} licitaciones` });
+  $('#tclear').onclick = () => { TF.sel.clear(); tendersView(box) };
+  $('#tsum').onclick = async () => { try { await post('/api/tenders/summary', { ids: [...TF.sel] }); TF.sel.clear(); toast('Redactando la pieza resumen'); go('writing') } catch (e) { toast(e.message) } };
+  box.querySelectorAll('[data-write]').forEach(b => b.onclick = async () => { b.disabled = true; b.innerHTML = '<span class="spin"></span>'; await post(`/api/candidates/${b.dataset.write}/triage`, { priority: 'today' }); toast('A redacción'); b.textContent = 'En redacción'; counts() });
+  box.querySelectorAll('[data-open]').forEach(b => b.onclick = () => go('editor/' + b.dataset.open));
+  box.querySelectorAll('[data-no]').forEach(b => b.onclick = async () => { await post(`/api/candidates/${b.dataset.no}/triage`, { priority: 'no' }); b.closest('.card').remove(); counts() });
+}
+function tenderRow(c) {
+  const name = c.title.replace(/^[^:]{3,30}:\s*/, '');
+  const busy = ['queued', 'working'].includes(c.work_state);
+  return `<div class="card" style="padding:12px 14px"><div class="meta"><label class="row" style="gap:6px;font-weight:700"><input type="checkbox" data-sel="${c.id}" ${TF.sel.has(c.id) ? 'checked' : ''} style="width:18px;height:18px"></label>
+      <span class="tag ${c.tstatus === 'PUB' ? 'excl' : c.tstatus === 'ADJ' || c.tstatus === 'RES' ? 'area' : ''}">${esc(TSTATUS[c.tstatus] || c.tstatus)}</span><span class="tag town">${esc(c.town)}</span>
+      ${c.exclusive ? '<span class="tag excl">EXCLUSIVA</span>' : ''}${c.area_state === 'published' ? '<span class="tag area">Ya en Área</span>' : c.area_state === 'update' ? '<span class="tag upd">Actualiza a Área</span>' : ''}
+      ${(c.competitors || []).slice(0, 2).map(x => `<span class="tag comp">${esc(x.outlet)}</span>`).join('')}<span>${ago(c.published_at)}</span></div>
+    <h3 style="margin:8px 0 4px;font:800 17px/1.3 Poppins,sans-serif">${esc(name)}</h3>
+    <div class="meta"><span class="src">${esc(c.organism || c.source_name || '')}</span>${c.amount_value ? `<b style="color:var(--ink);font-size:15px">${euro(c.amount_value)}</b>` : ''}
+      ${c.deadline && c.tstatus === 'PUB' ? `<span>Plazo: ${esc(c.deadline)}</span>` : ''}${c.winner ? `<span>Adjudicataria: <b>${esc(c.winner)}</b></span>` : ''}${c.docs && c.docs.length ? `<span>${c.docs.length} documentos</span>` : ''}${(c.links || []).length ? `<span>+${c.links.length} fuentes</span>` : ''}</div>
+    <div class="row wrap" style="margin-top:10px">${c.article_id ? `<button class="btn small primary" data-open="${c.article_id}">Abrir pieza</button>` : busy ? '<span class="small muted"><span class="spin"></span> Redactando…</span>' : `<button class="btn small primary" data-write="${c.id}">Redactar</button>`}
+      <a class="btn small" href="${safeUrl(c.url)}" target="_blank" rel="noopener">Expediente ↗</a><button class="btn small" data-no="${c.id}">No interesa</button></div></div>`;
 }
 function pickCard(t) {
   const c = t.pick || t.suggestion;
@@ -227,13 +275,20 @@ async function editorView(v) {
       <div class="row wrap"><button class="btn small" id="copyAll">Copiar todo</button><button class="btn small" id="saveTexts">Guardar cambios</button></div>
     </section>
     <section class="card stack">
-      <div class="row"><h3 class="grow">Carrusel (${(A.slides || []).length})</h3><button class="btn tiny" id="copySlides">Copiar textos</button></div>
-      <div id="slides" class="stack"></div>
-      <div class="row wrap"><button class="btn small" id="addSlide">+ Diapositiva</button><button class="btn small" id="saveSlides">Guardar carrusel</button><input id="regenSlidesHint" class="grow" placeholder="Indicación para rehacerlo (opcional)"><button class="btn small" data-regen="slides">Rehacer</button></div>
       <div class="card render ${r.recommended ? '' : 'no'}"><h3>${r.recommended ? '🏗 Conviene un render: «así quedaría»' : 'Render'}</h3>
         ${r.why ? `<p class="small">${esc(r.why)}</p>` : '<p class="small muted">No hace falta para esta pieza.</p>'}
         ${r.prompt ? `<div class="field"><div class="head"><b>Encargo del render</b><button class="btn tiny copybtn" id="copyRender">Copiar</button></div><p class="small" style="white-space:pre-wrap;margin:0">${esc(r.prompt)}</p>${r.basis ? `<p class="small muted">Basado en: ${esc(r.basis)}</p>` : ''}</div>` : ''}
         <button class="link" data-regen="render">${r.prompt ? 'Rehacer propuesta' : 'Proponer render'}</button></div>
+      ${c.docs && c.docs.length ? `<div><h3>Documentos del expediente</h3>${c.docs.map(d => `<div class="peeki"><span><a href="${safeUrl(d.url)}" target="_blank" rel="noopener">${esc(d.name)}</a></span><small class="muted">${esc(d.kind || '')}</small></div>`).join('')}</div>` : ''}
+    </section>
+    <section class="card stack full">
+      <div class="row wrap"><h3 class="grow">Carrusel (${(A.slides || []).length} diapositivas)</h3>
+        <select id="addLayout" style="width:auto"><option value="">+ Añadir diapositiva…</option>${Object.entries(CS.LAYOUTS).filter(([k]) => k !== 'portada').map(([k, l]) => `<option value="${k}">${esc(l.label)}</option>`).join('')}</select>
+        <button class="btn small" id="saveSlides">Guardar</button><button class="btn tiny" id="copySlides">Copiar textos</button></div>
+      <p class="small muted">La portada va siempre primero. Resalta palabras en rojo con ==así== (en azul con ++así++). La foto de cada diapositiva es la imagen que asignes a su número en «Imágenes» (en el mosaico, una por tarjeta, en orden).</p>
+      <div id="slides" class="slides"></div>
+      <div class="row wrap"><input id="regenSlidesHint" class="grow" placeholder="Indicación para rehacerlo con IA (opcional)"><button class="btn small" data-regen="slides">Rehacer con IA</button>
+        <button class="btn small primary" id="genPngs">Generar imágenes del carrusel</button></div>
     </section>
     <section class="card stack full">
       <div class="row wrap"><h3 class="grow">Imágenes</h3>
@@ -254,7 +309,7 @@ async function editorView(v) {
       <button class="btn" id="rewrite">Volver a redactar</button>
       <button class="btn" data-st="rejected">Descartar</button>
     </div></div>`;
-  drawSlides(); drawImages(); drawCanva(); bindEditor(v);
+  bindEditor(v); drawImages(); drawCanva(); await loadLogos(); drawSlides();
 }
 function docsState(s) {
   if (!s) return '';
@@ -269,7 +324,12 @@ function counters() {
   });
 }
 function textsNow() { const o = {}; document.querySelectorAll('[data-f]').forEach(t => o[t.dataset.f] = t.value); return o }
-function slidesText() { return (A.slides || []).map((s, i) => `${i + 1}. ${s.kicker ? s.kicker + ' · ' : ''}${s.title}${s.text ? '\n' + s.text : ''}`).join('\n\n') }
+function slidesText() {
+  const P = CS.plain;
+  return (A.slides || []).map((s, i) => [`${i + 1}. ${s.kicker ? P(s.kicker) + ' · ' : ''}${P(s.title)}`, P(s.text), ...(s.bullets || []).map(b => '· ' + P(b)),
+    (s.chips || []).length ? s.chips.join(' → ') : '', [s.status ? 'Estado: ' + s.status : '', s.figure, P(s.figure_label)].filter(Boolean).join(' '),
+    ...CS.cards(s.cards).map(c => `· ${c.label || ''} ${c.figure || ''} ${P(c.text)}`.trim())].filter(Boolean).join('\n')).join('\n\n')
+}
 function bindEditor(v) {
   counters();
   v.querySelectorAll('[data-f]').forEach(t => t.oninput = counters);
@@ -278,8 +338,9 @@ function bindEditor(v) {
   $('#copyAll').onclick = e => { const t = textsNow(); copy(`${t.headline}\n\n${t.entradilla}\n\n${t.body}\n\n—\n\n${t.instagram_copy}`, e.target) };
   $('#saveTexts').onclick = async () => { try { A = { ...A, ...(await api('/api/articles/' + A.id, { method: 'PUT', body: JSON.stringify(textsNow()) })) }; toast('Guardado') } catch (e) { toast(e.message) } };
   $('#copySlides').onclick = e => copy(slidesText(), e.target);
-  $('#addSlide').onclick = () => { readSlides(); A.slides.push({ role: 'texto', kicker: '', title: '', text: '', image_hint: '' }); drawSlides() };
+  $('#addLayout').onchange = e => { if (!e.target.value) return; readSlides(); A.slides.push({ layout: e.target.value, title: '', text: '', bullets: [], cards: [] }); e.target.value = ''; drawSlides() };
   $('#saveSlides').onclick = saveSlides;
+  $('#genPngs').onclick = generatePngs;
   $('#copyRender') && ($('#copyRender').onclick = e => copy(A.render.prompt, e.target));
   v.querySelectorAll('[data-regen]').forEach(b => b.onclick = async () => {
     b.disabled = true; const old = b.textContent; b.innerHTML = '<span class="spin"></span>';
@@ -313,20 +374,83 @@ async function pollDocs() {
 }
 async function saveAll(silent) { readSlides(); await api('/api/articles/' + A.id, { method: 'PUT', body: JSON.stringify({ ...textsNow(), slides: A.slides }) }); if (!silent) toast('Guardado') }
 
-function drawSlides() {
-  const box = $('#slides');
-  box.innerHTML = (A.slides || []).map((s, i) => `<div class="slide" data-i="${i}"><div class="head"><span class="n">${i + 1}</span>
-    <select data-s="role">${ROLES.map(([k, l]) => `<option value="${k}" ${s.role === k ? 'selected' : ''}>${l}</option>`).join('')}</select>
-    <input data-s="kicker" placeholder="Antetítulo" value="${esc(s.kicker || '')}" style="max-width:150px">
-    <span class="grow"></span><button class="btn tiny" data-mv="-1" title="Subir">↑</button><button class="btn tiny" data-mv="1" title="Bajar">↓</button><button class="btn tiny" data-del title="Quitar">✕</button></div>
-    <input data-s="title" placeholder="Título" value="${esc(s.title || '')}">
-    <textarea data-s="text" rows="2" placeholder="Texto">${esc(s.text || '')}</textarea>
-    <input data-s="image_hint" placeholder="Imagen sugerida" value="${esc(s.image_hint || '')}" class="small"></div>`).join('');
-  box.querySelectorAll('[data-mv]').forEach(b => b.onclick = () => { readSlides(); const i = +b.closest('.slide').dataset.i, j = i + +b.dataset.mv; if (j < 0 || j >= A.slides.length) return;[A.slides[i], A.slides[j]] = [A.slides[j], A.slides[i]]; drawSlides() });
-  box.querySelectorAll('[data-del]').forEach(b => b.onclick = () => { readSlides(); A.slides.splice(+b.closest('.slide').dataset.i, 1); drawSlides() });
+/* ---------- diapositivas: editor + vista previa con el estilo de Área ---------- */
+const mediaUrl = {}, brandLogos = {};
+async function mediaBlob(id) { if (!mediaUrl[id]) mediaUrl[id] = blobUrl('/api/media/' + id + '/file').catch(() => ''); return mediaUrl[id] }
+async function loadLogos() {
+  try { const b = await api('/api/brand'); for (const k of ['blanco', 'color']) brandLogos[k] = b[k] ? await blobUrl('/api/brand/logo/' + k + '?t=' + Date.now()) : '' } catch { }
 }
-function readSlides() { const box = $('#slides'); if (!box) return; A.slides = [...box.querySelectorAll('.slide')].map(el => { const o = {}; el.querySelectorAll('[data-s]').forEach(x => o[x.dataset.s] = x.value); return o }) }
+async function slideCtx(i) {
+  const base = (A.media || []).filter(m => !['carrusel', 'canva'].includes(m.kind));
+  let list = base.filter(m => m.slide === i + 1);
+  if (!list.length && i === 0) list = base.filter(m => m.selected).slice(0, 1);
+  const images = [];
+  for (const m of list) { const u = await mediaBlob(m.id); if (u) images.push(u) }
+  return { images, logoWhite: brandLogos.blanco, logoColor: brandLogos.color };
+}
+function slideFields(s, i) {
+  const L = CS.LAYOUTS[s.layout] || CS.LAYOUTS.lista, F = CS.FIELD_LABEL;
+  const val = k => k === 'bullets' || k === 'chips' ? (s[k] || []).join('\n') : k === 'cards' ? CS.cards(s.cards).map(c => [c.label, c.figure, c.text, c.icon].map(x => x || '').join(' | ')).join('\n') : (s[k] || '');
+  return L.fields.map(k => {
+    const multi = ['text', 'bullets', 'chips', 'cards'].includes(k) || (k === 'title' && s.layout === 'portada');
+    return `<label class="small">${F[k]}${multi ? `<textarea data-s="${k}" rows="${k === 'cards' || k === 'bullets' ? 4 : 2}">${esc(val(k))}</textarea>` : `<input data-s="${k}" value="${esc(val(k))}">`}</label>`;
+  }).join('') + `<label class="small">Imagen sugerida<input data-s="image_hint" value="${esc(s.image_hint || '')}"></label>`;
+}
+async function drawSlides() {
+  const box = $('#slides');
+  box.innerHTML = (A.slides || []).map((s, i) => `<div class="slide2" data-i="${i}">
+    <div class="pv"><div class="pvin"></div><button class="btn tiny pvdl" data-dl title="Descargar PNG">⬇ PNG</button></div>
+    <div class="stack" style="gap:8px"><div class="row"><span class="n">${i + 1}</span>
+      <select data-s="layout" ${i === 0 ? 'disabled' : ''}>${Object.entries(CS.LAYOUTS).filter(([k]) => i === 0 ? k === 'portada' : k !== 'portada').map(([k, l]) => `<option value="${k}" ${s.layout === k ? 'selected' : ''}>${esc(l.label)}</option>`).join('')}</select>
+      <span class="grow"></span>${i ? `<button class="btn tiny" data-mv="-1">↑</button><button class="btn tiny" data-mv="1">↓</button><button class="btn tiny" data-del>✕</button>` : ''}</div>
+      <p class="small muted" style="margin:0">${esc((CS.LAYOUTS[s.layout] || {}).help || '')}</p>${slideFields(s, i)}</div></div>`).join('');
+  box.querySelectorAll('.slide2').forEach(el => {
+    const i = +el.dataset.i;
+    let t;
+    el.querySelectorAll('[data-s]').forEach(x => x.oninput = () => { clearTimeout(t); t = setTimeout(() => { readSlides(); preview(i) }, 350) });
+    el.querySelector('[data-s="layout"]').onchange = () => { readSlides(); drawSlides() };
+    el.querySelectorAll('[data-mv]').forEach(b => b.onclick = () => { readSlides(); const j = i + +b.dataset.mv; if (j < 1 || j >= A.slides.length) return;[A.slides[i], A.slides[j]] = [A.slides[j], A.slides[i]]; drawSlides() });
+    el.querySelector('[data-del]') && (el.querySelector('[data-del]').onclick = () => { readSlides(); A.slides.splice(i, 1); drawSlides() });
+    el.querySelector('[data-dl]').onclick = async e => { e.target.disabled = true; try { const png = await renderPng(i); const a = document.createElement('a'); a.href = png; a.download = `area_${A.id}_${String(i + 1).padStart(2, '0')}.png`; a.click() } catch (err) { toast('No se pudo generar: ' + err.message) } e.target.disabled = false };
+  });
+  await document.fonts.ready;
+  for (let i = 0; i < (A.slides || []).length; i++) await preview(i);
+}
+async function preview(i) {
+  const el = document.querySelector(`.slide2[data-i="${i}"] .pvin`); if (!el) return;
+  await CS.mount(el, A.slides[i], await slideCtx(i));
+}
+function readSlides() {
+  const box = $('#slides'); if (!box) return;
+  A.slides = [...box.querySelectorAll('.slide2')].map((el, i) => {
+    const o = { ...(A.slides[i] || {}) };
+    el.querySelectorAll('[data-s]').forEach(x => {
+      const k = x.dataset.s, v = x.value;
+      o[k] = k === 'bullets' || k === 'chips' ? CS.lines(v) : k === 'cards' ? CS.cards(v) : v;
+    });
+    if (i === 0) o.layout = 'portada';
+    return o;
+  });
+}
 async function saveSlides() { readSlides(); try { await api('/api/articles/' + A.id, { method: 'PUT', body: JSON.stringify({ slides: A.slides }) }); toast('Carrusel guardado') } catch (e) { toast(e.message) } }
+async function renderPng(i) {
+  readSlides();
+  await document.fonts.ready;
+  const host = document.createElement('div'); host.style.cssText = 'position:fixed;left:-20000px;top:0;width:1080px;height:1350px;overflow:hidden';
+  document.body.appendChild(host);
+  try { const el = await CS.mount(host, A.slides[i], await slideCtx(i)); return await CS.toPng(el) } finally { host.remove() }
+}
+async function generatePngs() {
+  const b = $('#genPngs'); b.disabled = true;
+  try {
+    const out = [];
+    for (let i = 0; i < A.slides.length; i++) { b.innerHTML = `<span class="spin"></span> ${i + 1}/${A.slides.length}`; out.push(await renderPng(i)) }
+    await api('/api/articles/' + A.id, { method: 'PUT', body: JSON.stringify({ slides: A.slides }) });
+    const r = await post(`/api/articles/${A.id}/carousel/png`, { slides: out });
+    A.media = r.media; drawImages(); toast('Carrusel listo: está en Imágenes y en el ZIP');
+  } catch (e) { toast('No se pudo generar: ' + e.message) }
+  b.disabled = false; b.textContent = 'Generar imágenes del carrusel';
+}
 
 function drawImages() {
   const box = $('#imgs'), media = A.media || [], n = (A.slides || []).length;
@@ -342,7 +466,7 @@ function drawImages() {
   box.querySelectorAll('.tile').forEach(t => {
     const id = +t.dataset.m, m = media.find(x => x.id === id);
     t.querySelector('[data-sel]').onclick = async () => { m.selected = m.selected ? 0 : 1; await post(`/api/articles/${A.id}/media/${id}`, { selected: m.selected }); t.classList.toggle('sel', !!m.selected); t.querySelector('[data-sel]').textContent = m.selected ? '✓' : '' };
-    t.querySelector('[data-slide]').onchange = async e => { m.slide = e.target.value ? +e.target.value : null; if (m.slide && !m.selected) { m.selected = 1; t.classList.add('sel'); t.querySelector('[data-sel]').textContent = '✓' } await post(`/api/articles/${A.id}/media/${id}`, { slide: m.slide, selected: m.selected }) };
+    t.querySelector('[data-slide]').onchange = async e => { m.slide = e.target.value ? +e.target.value : null; if (m.slide && !m.selected) { m.selected = 1; t.classList.add('sel'); t.querySelector('[data-sel]').textContent = '✓' } await post(`/api/articles/${A.id}/media/${id}`, { slide: m.slide, selected: m.selected }); A.slides.forEach((_, j) => preview(j)) };
     t.querySelector('[data-dl]').onclick = () => download(`/api/media/${id}/file`, `area_${A.id}_${id}.jpg`);
     t.querySelector('[data-src]') && (t.querySelector('[data-src]').onclick = () => window.open(/^https?:/.test(m.source) ? m.source : m.url, '_blank', 'noopener'));
     t.querySelector('[data-rm]').onclick = async () => { await post(`/api/articles/${A.id}/media/${id}`, { delete: true }); A.media = A.media.filter(x => x.id !== id); drawImages() };
@@ -368,12 +492,16 @@ async function drawCanva() {
 
 /* ---------- Ajustes ---------- */
 async function settingsView(v) {
-  const [h, s, e, t] = await Promise.all([api('/api/health'), api('/api/sources'), api('/api/efemerides'), api('/api/canva/template').catch(() => ({}))]);
+  const [h, s, e, t, brandState] = await Promise.all([api('/api/health'), api('/api/sources'), api('/api/efemerides'), api('/api/canva/template').catch(() => ({})), api('/api/brand').catch(() => ({}))]);
   const blocks = s.blocks;
   v.innerHTML = `<div class="stack">
     <section class="card stack"><h3>Estado</h3>
       <p class="small">Redacción: <b>${h.draft_mode === 'ai' ? 'con IA (' + esc(h.ai_provider) + ')' : 'sin IA: borradores desde la fuente'}</b>. ${h.draft_mode === 'ai' ? '' : 'Añade GEMINI_API_KEY (gratis) en Railway para redactar con IA.'}</p>
       <div class="row wrap"><button class="btn small" id="aiCheck">Probar IA</button><button class="btn small" id="logout">Cerrar sesión</button></div><div id="aiOut" class="small"></div></section>
+    <section class="card stack"><h3>Logos de Área para los carruseles</h3>
+      <p class="small muted">PNG con fondo transparente. El blanco va en la pestaña roja de la portada; el de color, arriba a la derecha en las diapositivas claras. Sin logo se escribe «Área · Campo de Gibraltar».</p>
+      ${['blanco', 'color'].map(k => `<div class="row wrap"><b class="grow">Logo ${k}: ${brandState[k] ? '<span class="ok">subido</span>' : '<span class="muted">sin subir</span>'}</b>
+        <label class="btn small" style="display:inline-flex;align-items:center">Subir<input type="file" accept="image/png,image/*" data-logo="${k}" hidden></label>${brandState[k] ? `<button class="btn small" data-logodel="${k}">Quitar</button>` : ''}</div>`).join('')}</section>
     <section class="card stack"><h3>Canva · plantilla del carrusel</h3>
       ${!t.ready ? '<p class="small">Falta configurar en Railway: <span class="code">CANVA_CLIENT_ID</span>, <span class="code">CANVA_CLIENT_SECRET</span> y <span class="code">PUBLIC_BASE_URL</span>.</p>'
       : `<p class="small">${t.connected ? '<span class="ok">Conectado</span>' : 'No conectado'} · URL de retorno: <span class="code">${esc(t.callback)}</span></p><div class="row"><button class="btn small" id="canvaConnect">${t.connected ? 'Reconectar' : 'Conectar'} Canva</button></div>`}
@@ -399,6 +527,8 @@ async function settingsView(v) {
         <input id="eTitle" placeholder="Qué pasó"><input id="eNote" placeholder="Nota / fuente"><input id="eTowns" placeholder="Municipios"><label class="row" style="font-weight:600"><input type="checkbox" id="eVer" style="width:auto"> Contrastada</label><button class="btn small primary" id="eAdd">Añadir</button></div></details></section>
     <section class="card stack"><h3>Actividad</h3><div id="act" class="small muted"></div></section></div>`;
   $('#logout').onclick = logout;
+  v.querySelectorAll('[data-logo]').forEach(x => x.onchange = async () => { const fd = new FormData(); fd.append('file', x.files[0]); try { await api('/api/brand/logo/' + x.dataset.logo, { method: 'POST', body: fd }); toast('Logo guardado'); render() } catch (err) { toast(err.message) } });
+  v.querySelectorAll('[data-logodel]').forEach(x => x.onclick = async () => { await api('/api/brand/logo/' + x.dataset.logodel, { method: 'POST', body: new FormData() }); render() });
   $('#aiCheck').onclick = async () => { $('#aiOut').innerHTML = '<span class="spin"></span>'; try { const r = await api('/api/ai/check'); $('#aiOut').innerHTML = r.providers.map(p => `${esc(p.provider_name)}: ${p.configured ? (p.ok ? '<span class="ok">funciona</span>' : esc(p.message || 'error')) : 'sin clave'}`).join('<br>') } catch (err) { $('#aiOut').textContent = err.message } };
   $('#canvaConnect') && ($('#canvaConnect').onclick = async () => { try { location.href = (await api('/api/canva/connect')).url } catch (err) { toast(err.message) } });
   $('#tplSave').onclick = async () => { try { await api('/api/canva/template', { method: 'PUT', body: JSON.stringify({ template: $('#tplLink').value }) }); toast('Plantilla guardada'); render() } catch (err) { toast(err.message) } };

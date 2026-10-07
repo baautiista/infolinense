@@ -61,17 +61,24 @@ TOWNS_Q = '(Algeciras OR "La Línea" OR "San Roque" OR "Los Barrios" OR Tarifa O
 # (nombre, url, tipo, bloque, prioridad, oficial)
 # Bloques: Exclusivas · Obras y urbanismo · Agenda y cultura · Instituciones · Nacionales adaptables · Medios
 DEFAULT_SOURCES = [
-    # --- Contratación, boletines y edictos (la cantera de exclusivas) ---
-    ('Plataforma de Contratación · perfiles', 'https://contrataciondelsectorpublico.gob.es/sindicacion/sindicacion_643/licitacionesPerfilesContratanteCompleto3.atom', 'placsp', 'Exclusivas', 99, 1),
-    ('Plataforma de Contratación · Junta y agregadas', 'https://contrataciondelsectorpublico.gob.es/sindicacion/sindicacion_1044/PlataformasAgregadasSinMenores.atom', 'placsp', 'Exclusivas', 98, 1),
-    ('Gobierto · Ayuntamiento de Algeciras', 'https://contratos.gobierto.es/adjudicadores/ayuntamiento-de-algeciras', 'gobierto', 'Exclusivas', 95, 1),
-    ('Gobierto · Ayuntamiento de La Línea', 'https://contratos.gobierto.es/adjudicadores/alcaldia-del-ayuntamiento-de-la-linea-de-la-concepcion', 'gobierto', 'Exclusivas', 95, 1),
-    ('Gobierto · Ayuntamiento de San Roque', 'https://contratos.gobierto.es/adjudicadores/ayuntamiento-de-san-roque', 'gobierto', 'Exclusivas', 90, 1),
+    # --- LICITACIONES: todos los municipios, empresas municipales, Mancomunidad, puerto, Junta y Estado ---
+    # La Plataforma de Contratación recoge por ley todos los perfiles del contratante (y, en «agregadas», la de la Junta).
+    ('Plataforma de Contratación · perfiles', 'https://contrataciondelsectorpublico.gob.es/sindicacion/sindicacion_643/licitacionesPerfilesContratanteCompleto3.atom', 'placsp', 'Licitaciones', 99, 1),
+    ('Plataforma de Contratación · Junta y agregadas', 'https://contrataciondelsectorpublico.gob.es/sindicacion/sindicacion_1044/PlataformasAgregadasSinMenores.atom', 'placsp', 'Licitaciones', 98, 1),
+    ('Plataforma de Contratación · contratos menores', 'https://contrataciondelsectorpublico.gob.es/sindicacion/sindicacion_1143/contratosMenoresPerfilesContratantes.atom', 'placsp', 'Licitaciones', 92, 1),
+    ('Gobierto · Ayuntamiento de Algeciras', 'https://contratos.gobierto.es/adjudicadores/ayuntamiento-de-algeciras', 'gobierto', 'Licitaciones', 95, 1),
+    ('Gobierto · Ayuntamiento de La Línea', 'https://contratos.gobierto.es/adjudicadores/alcaldia-del-ayuntamiento-de-la-linea-de-la-concepcion', 'gobierto', 'Licitaciones', 95, 1),
+    ('Gobierto · Ayuntamiento de San Roque', 'https://contratos.gobierto.es/adjudicadores/ayuntamiento-de-san-roque', 'gobierto', 'Licitaciones', 90, 1),
+    ('Licitaciones en prensa · Algeciras', gnews('(Algeciras OR APBA OR "puerto de Algeciras" OR Emalgesa) (licitación OR licita OR adjudica OR adjudicación OR pliego) when:7d'), 'rss', 'Licitaciones', 86, 0),
+    ('Licitaciones en prensa · La Línea', gnews('"La Línea" (licitación OR licita OR adjudica OR adjudicación OR pliego) when:7d'), 'rss', 'Licitaciones', 86, 0),
+    ('Licitaciones en prensa · San Roque y Los Barrios', gnews('("San Roque" OR "Los Barrios" OR Sotogrande OR Palmones) (licitación OR licita OR adjudica OR adjudicación OR pliego) when:7d'), 'rss', 'Licitaciones', 86, 0),
+    ('Licitaciones en prensa · Tarifa, Jimena, Castellar y Tesorillo', gnews('(Tarifa OR Jimena OR Castellar OR Tesorillo) (licitación OR licita OR adjudica OR adjudicación OR pliego) ayuntamiento when:7d'), 'rss', 'Licitaciones', 84, 0),
+    ('Licitaciones en prensa · Mancomunidad, Junta y Estado', gnews('("Campo de Gibraltar" OR Mancomunidad OR Arcgisa) (licitación OR licita OR adjudica OR adjudicación OR pliego) when:7d'), 'rss', 'Licitaciones', 84, 0),
+    # --- Boletines y edictos ---
     ('BOP Cádiz · anuncios', 'https://bopcadiz.es/boletin/', 'bop', 'Exclusivas', 96, 1),
     ('BOE · contratación', 'https://www.boe.es/rss/boe.php?s=5A', 'rss', 'Exclusivas', 90, 1),
     ('BOE · otros anuncios', 'https://www.boe.es/rss/boe.php?s=5B', 'rss', 'Exclusivas', 85, 1),
     ('Tablón de edictos · La Línea', 'https://www.sedeelectronica.lalinea.es/edictos/edicto/buscar-edictos-filtro-pub?primeraBusqueda=true', 'edictos', 'Exclusivas', 92, 1),
-    ('Licitaciones y contratos indexados', gnews(TOWNS_Q + ' (licitación OR adjudicación OR adjudica OR "contrato de obras" OR "pliego") when:7d'), 'rss', 'Exclusivas', 90, 0),
     ('Presupuestos y plenos', gnews(TOWNS_Q + ' (presupuesto OR "modificación presupuestaria" OR pleno OR "junta de gobierno" OR subvención OR "fondos europeos") when:3d'), 'rss', 'Exclusivas', 85, 0),
     ('BOJA y BOP indexados', gnews(TOWNS_Q + ' (site:juntadeandalucia.es/boja OR site:bopcadiz.es) when:10d'), 'rss', 'Exclusivas', 88, 1),
     # --- Instituciones ---
@@ -159,6 +166,14 @@ def init_db():
     CREATE TABLE IF NOT EXISTS canva_oauth(id INTEGER PRIMARY KEY CHECK(id=1), access_token TEXT NOT NULL, refresh_token TEXT NOT NULL, expires_at INTEGER NOT NULL);
     CREATE TABLE IF NOT EXISTS canva_oauth_state(state TEXT PRIMARY KEY, verifier TEXT NOT NULL, expires_at INTEGER NOT NULL);
     ''')
+    have = {r[1] for r in c.execute('PRAGMA table_info(candidates)')}
+    for name, ddl in (('tstatus', "TEXT NOT NULL DEFAULT ''"), ('amount_value', 'REAL NOT NULL DEFAULT 0'), ('winner', 'TEXT')):
+        if name not in have:
+            c.execute('ALTER TABLE candidates ADD COLUMN %s %s' % (name, ddl))
+    c.execute("CREATE INDEX IF NOT EXISTS cand_block_idx ON candidates(block, status)")
+    # Las licitaciones pasan a su propio bloque (1.1)
+    c.execute("UPDATE sources SET block='Licitaciones' WHERE kind IN ('placsp','gobierto') OR name LIKE 'Licitaciones%'")
+    c.execute("UPDATE candidates SET block='Licitaciones' WHERE tag='licitacion' AND block IN ('Exclusivas','Instituciones','Obras y urbanismo')")
     for n, u, k, b, p, o in DEFAULT_SOURCES:
         c.execute('INSERT OR IGNORE INTO sources(name,url,kind,block,priority,official) VALUES(?,?,?,?,?,?)', (n, u, k, b, p, o))
     for n, u, r in DEFAULT_PRESS:

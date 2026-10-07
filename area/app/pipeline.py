@@ -167,7 +167,9 @@ def best_today():
     since = (datetime.now(timezone.utc) - timedelta(days=3)).isoformat()
     rows = db.rows("""SELECT * FROM candidates WHERE status='new' AND priority IN ('undecided','') AND area_state!='published'
                       AND block!='Nacionales adaptables' AND (published_at>=? OR tag='efemeride') ORDER BY score DESC LIMIT 40""", (since,))
-    rows.sort(key=lambda r: (r['exclusive'], r['score'], r['published_at'] or ''), reverse=True)
+    # Primero las licitaciones (exclusivas, con importe alto, de obras o servicios que cambian algo), después lo demás
+    rows.sort(key=lambda r: (r['block'] == 'Licitaciones' and r.get('tstatus') != 'MENOR', r['exclusive'], r['score'],
+                             r.get('amount_value') or 0, r['published_at'] or ''), reverse=True)
     return rows[0] if rows else None
 
 

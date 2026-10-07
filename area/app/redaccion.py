@@ -40,17 +40,71 @@ def _s(value, limit):
     return re.sub(r'[ \t]+', ' ', str(value or '')).strip()[:limit]
 
 
+LAYOUTS = ['portada', 'lista', 'caja', 'flujo', 'cifra_lista', 'ficha', 'pregunta', 'anotada', 'mapa', 'cifra', 'tarjetas', 'mosaico', 'documento']
+_OLD_ROLES = {'portada': 'portada', 'dato': 'lista', 'texto': 'lista', 'cierre': 'lista'}
+
+CAROUSEL_GUIDE = """CARRUSEL (estilo de Área, 1080x1350). La PRIMERA diapositiva es SIEMPRE la portada; el resto se COMBINA según lo que pida
+cada noticia (no repitas siempre la misma fórmula ni el mismo orden). Tipos disponibles (layout):
+- portada: foto a sangre con el titular en mayúsculas (title, máx. 90 caracteres, con el dato fuerte: «ADJUDICADA POR 4,5 MILLONES LA GRAN
+  REMODELACIÓN DE LA PLAZA…») y una entradilla corta (text, máx. 110: «Eiffage ejecutará una transformación integral durante 12 meses»).
+- lista: pregunta o idea como título («¿Por qué se actúa ahora?», «Más sombra, más verde y más estancia»), subtítulo (text) y 2-4 puntos (bullets).
+- caja: título + subtítulo + lista de lo que incluye dentro de una caja roja (bullets de 2-5 palabras, hasta 8): «¿Qué cambiará en la plaza?».
+- flujo: título, subtítulo, 2-3 etiquetas encadenadas con flechas (chips, 1-2 palabras cada una: «Pavimentos nuevos → Plataforma única →
+  Prioridad peatonal») y 2-3 frases (bullets).
+- cifra_lista: título, subtítulo, 2-3 puntos y una cifra al pie en píldora roja (figure «48.045 €» + figure_label «en mejoras sin coste…»).
+- ficha: un proyecto concreto: title (nombre), text (explicación), status («Ejecutado», «En licitación», «Adjudicado», «En obras»…) y figure («4,5 M. €»).
+- pregunta: fondo negro, la duda del vecino como título («¿Un trabajador de Gibraltar puede aparcar gratis?») y la respuesta (text).
+- anotada: foto con 2-3 rótulos y flechas (bullets cortos: «Mallado de agua potable con nuevas tuberías»); kicker = frase de contexto; title.
+- mapa: título + texto con una imagen insertada (mapa de la zona, plano o render del pliego).
+- cifra: estilo claro con una cifra gigante: kicker («¿Cómo se ha llegado hasta aquí?»), figure («+300 M€»), figure_label («de deuda
+  amortizada»), text (explicación de 1-2 frases).
+- tarjetas: estilo claro: kicker, title («De amortizar deuda a financiar la ciudad») y 2-4 cards {label, figure, text, icon}
+  (icon: euro, obras, familia, casa, calendario, agua, arbol, coche, persona, barco, luz, check).
+- mosaico: estilo claro: kicker y 2-5 cards {label, figure, text} con una foto cada una (varios proyectos o actuaciones).
+- documento: estilo claro, cuando la fuente es un documento oficial (pliego, informe, decreto): kicker («LO CERTIFICA»), title
+  («INTERVENCIÓN», «EL PLIEGO», «EL BOP»), text (qué dice exactamente) y se muestra el documento.
+En title, text y bullets marca con ==así== las 1-3 palabras clave que van resaltadas en rojo (no abuses). Textos breves: es Instagram.
+Para LICITACIONES, una buena combinación suele ser: portada → ficha (importe y estado) → caja o flujo (qué incluye la obra) → lista
+(¿por qué?/¿qué cambia?) → documento (lo que dice el pliego) o pregunta (dudas del vecino) → cifra (plazo o importe). Elige la que encaje."""
+
+
+def _lst(v, n, limit):
+    if isinstance(v, str):
+        v = [x for x in v.split('\n')]
+    return [_s(x, limit) for x in (v or []) if _s(x, limit)][:n]
+
+
+def _cards(v):
+    out = []
+    for c in (v or [])[:5]:
+        if isinstance(c, str):
+            parts = [x.strip() for x in c.split('|')] + ['', '', '', '']
+            c = {'label': parts[0], 'figure': parts[1], 'text': parts[2], 'icon': parts[3]}
+        if isinstance(c, dict) and (c.get('label') or c.get('text') or c.get('figure')):
+            out.append({'label': _s(c.get('label'), 60), 'figure': _s(c.get('figure'), 30), 'text': _s(c.get('text'), 160), 'icon': _s(c.get('icon'), 20)})
+    return out
+
+
 def _slides(raw):
     out = []
     for i, s in enumerate(raw if isinstance(raw, list) else []):
         if not isinstance(s, dict):
             continue
-        title, text = _s(s.get('title'), 90), _s(s.get('text'), 320)
-        if not (title or text):
-            continue
-        role = str(s.get('role') or ('portada' if i == 0 else 'texto')).lower()
-        out.append({'role': role if role in ('portada', 'dato', 'texto', 'cierre') else 'texto', 'kicker': _s(s.get('kicker'), 40),
-                    'title': title, 'text': text, 'image_hint': _s(s.get('image_hint'), 200)})
+        layout = str(s.get('layout') or _OLD_ROLES.get(str(s.get('role') or '').lower()) or ('portada' if i == 0 else 'lista')).lower()
+        layout = layout if layout in LAYOUTS else 'lista'
+        sl = {'layout': layout, 'kicker': _s(s.get('kicker'), 80), 'title': _s(s.get('title'), 140), 'text': _s(s.get('text'), 360),
+              'bullets': _lst(s.get('bullets'), 8, 160), 'chips': _lst(s.get('chips'), 4, 30), 'figure': _s(s.get('figure'), 30),
+              'figure_label': _s(s.get('figure_label'), 90), 'status': _s(s.get('status'), 30), 'cards': _cards(s.get('cards')),
+              'image_hint': _s(s.get('image_hint'), 200)}
+        if any(sl[k] for k in ('title', 'text', 'bullets', 'figure', 'cards', 'kicker')):
+            out.append(sl)
+    # La portada siempre va primero
+    covers = [x for x in out if x['layout'] == 'portada']
+    rest = [x for x in out if x['layout'] != 'portada']
+    if covers:
+        out = [covers[0]] + rest
+    elif out:
+        out[0]['layout'] = 'portada'
     return out[:10]
 
 
@@ -63,7 +117,11 @@ def _kind_rules(candidate):
     if tag == 'efemeride':
         return ('EFEMÉRIDE: pieza de historia con gancho actual («Tal día como hoy…», «El día en que…», «Se cumplen N años…»). Usa solo hechos '
                 'históricos bien establecidos; ante la duda, no lo afirmes y anótalo en missing para verificar.')
-    if tag in ('licitacion', 'edicto', 'presupuesto') or block == 'Exclusivas':
+    if (candidate.get('url') or '').startswith('resumen://'):
+        return ('RESUMEN DE LICITACIONES: pieza «Lo que licita…/Las licitaciones de la semana en…» con todas las del EXTRACTO. Titular con el total '
+                'y el número de contratos. En el carrusel usa un mosaico o tarjetas y una diapositiva por licitación importante (ficha), '
+                'y cierra con una cifra (importe total).')
+    if tag in ('licitacion', 'edicto', 'presupuesto') or block in ('Exclusivas', 'Licitaciones'):
         return ('EXCLUSIVA DOCUMENTAL: cuenta el documento como noticia (qué se va a hacer, dónde, por cuánto, en qué plazo, qué empresa si está '
                 'adjudicado, qué fase administrativa es). Si es una obra o un proyecto, valora un «Así será…». Destaca en el carrusel el importe, '
                 'el plazo y lo que cambia para el vecino.')
@@ -108,10 +166,12 @@ headline_options (lista de 5 titulares alternativos distintos, mismos criterios)
 entradilla (máximo 220 caracteres, información nueva respecto al titular),
 body (texto de la noticia para la web: entre 1.200 y 2.000 caracteres, párrafos de 2-4 frases separados por línea en blanco),
 instagram_copy (copy para Instagram según la guía, con hashtags al final),
-slides (carrusel de 5 a 8 diapositivas; cada una con role [portada|dato|texto|cierre], kicker (antetítulo corto, opcional), title (máx. 60 caracteres), text (máx. 200 caracteres; vacío en la portada si no hace falta) e image_hint (qué imagen poner: foto real concreta, imagen del pliego, plano, render o gráfico)),
+slides (carrusel de 4 a 8 diapositivas según la guía de CARRUSEL de abajo; cada una con layout y sus campos —kicker, title, text, bullets, chips, figure, figure_label, status, cards— más image_hint: qué imagen poner en esa diapositiva: foto real concreta, imagen o plano del pliego, render, mapa o el documento),
 render (objeto: recommended true si un render arquitectónico de «así quedaría» haría la pieza mucho más atractiva —obras, edificios, parques, calles, paseos—; why; prompt: descripción detallada en español del render a encargar o generar —lugar, elementos del proyecto según el documento, punto de vista, hora del día, estilo fotorrealista—; basis: en qué documento o imagen basarlo),
 photo_query (búsqueda de fotos reales de 3 a 6 palabras con el lugar concreto),
-missing (lista de datos que convendría confirmar o buscar antes de publicar; no van en el texto).'''
+missing (lista de datos que convendría confirmar o buscar antes de publicar; no van en el texto).
+
+{CAROUSEL_GUIDE}'''
     data, provider, _ = ask_json(style_guide(), prompt, max_tokens=6000)
     if not isinstance(data, dict) or not data.get('headline'):
         raise AIProviderError('La IA devolvió un borrador incompleto. Reintenta.', provider, kind='empty')
@@ -131,7 +191,7 @@ missing (lista de datos que convendría confirmar o buscar antes de publicar; no
         'provider': provider,
     }
     if len(out['slides']) < 3:
-        out['slides'] = slides_from_text(out['headline'], out['entradilla'], out['body'])
+        out['slides'] = slides_from_text(out['headline'], out['entradilla'], out['body'], candidate)
     return out
 
 
@@ -145,8 +205,8 @@ TEXTO: {(article.get('body') or '')[:2600]}
 INDICACIONES DEL EDITOR: {extra or 'ninguna'}'''
     asks = {
         'headlines': ('Propón 6 titulares nuevos y distintos (máx. 90 caracteres, con el dato fuerte). JSON {"headline_options": [...]}', 1200),
-        'slides': ('Rehaz el carrusel de Instagram (5 a 8 diapositivas: portada, interiores con un dato cada una, cierre). '
-                   'JSON {"slides": [{"role","kicker","title","text","image_hint"}]}', 2500),
+        'slides': ('Rehaz el carrusel de Instagram combinando los tipos de diapositiva que mejor cuenten esta noticia.\n' + CAROUSEL_GUIDE +
+                   '\nJSON {"slides": [{"layout","kicker","title","text","bullets","chips","figure","figure_label","status","cards","image_hint"}]}', 3500),
         'instagram': ('Rehaz el copy de Instagram según la guía. JSON {"instagram_copy": "..."}', 1500),
         'render': ('Valora si conviene un render arquitectónico de «así quedaría» y descríbelo. JSON {"render": {"recommended","why","prompt","basis"}}', 1500),
     }
@@ -167,16 +227,18 @@ INDICACIONES DEL EDITOR: {extra or 'ninguna'}'''
     return {'render': data.get('render') if isinstance(data.get('render'), dict) else {'recommended': False}}
 
 
-def slides_from_text(headline, entradilla, body):
-    """Carrusel básico sin IA: portada + una diapositiva por párrafo + cierre."""
-    slides = [{'role': 'portada', 'kicker': '', 'title': headline[:60], 'text': '', 'image_hint': 'Foto principal'}]
-    if entradilla:
-        slides.append({'role': 'texto', 'kicker': '', 'title': 'La clave', 'text': entradilla[:200], 'image_hint': ''})
-    for para in [p for p in re.split(r'\n\s*\n', body or '') if p.strip()][:4]:
-        first = re.split(r'(?<=[.!?])\s+', para.strip())
-        slides.append({'role': 'texto', 'kicker': '', 'title': first[0][:60], 'text': ' '.join(first[1:])[:200] or first[0][:200], 'image_hint': ''})
-    slides.append({'role': 'cierre', 'kicker': '', 'title': 'Síguenos para más', 'text': 'Toda la actualidad del Campo de Gibraltar en Área.', 'image_hint': ''})
-    return slides[:8]
+def slides_from_text(headline, entradilla, body, candidate=None):
+    """Carrusel básico sin IA: portada, ficha si hay importe, puntos del texto."""
+    c = candidate or {}
+    slides = [{'layout': 'portada', 'title': headline[:110], 'text': entradilla[:120], 'image_hint': 'Foto principal o render del proyecto'}]
+    if c.get('amount'):
+        status = {'PUB': 'En licitación', 'ADJ': 'Adjudicada', 'RES': 'Formalizada', 'MENOR': 'Contrato menor', 'PRE': 'Anuncio previo'}.get(c.get('tstatus') or '', 'En licitación')
+        slides.append({'layout': 'ficha', 'title': re.sub(r'^[^:]{3,30}:\s*', '', c.get('title') or headline)[:80], 'text': (c.get('organism') or '')[:200],
+                       'status': status, 'figure': c['amount'].replace(',00 €', ' €')})
+    sentences = [x for x in re.split(r'(?<=[.!?])\s+', body or '') if 30 <= len(x) <= 160][:3]
+    if sentences:
+        slides.append({'layout': 'lista', 'title': 'Las claves', 'bullets': sentences})
+    return _slides(slides)
 
 
 def free_draft(candidate, source_text=''):
@@ -194,7 +256,7 @@ def free_draft(candidate, source_text=''):
     tags = ' '.join(['#CampoDeGibraltar', HASHTAG_TOWN.get(town, ''), '#ÁreaCampoDeGibraltar']).strip()
     return {'focus': head, 'section': 'LICITACIONES' if candidate.get('tag') == 'licitacion' else 'SOCIEDAD', 'town': town,
             'headline': head, 'headline_options': [], 'entradilla': entr, 'body': body,
-            'instagram_copy': '%s\n\n%s\n\n%s' % (head, entr, tags), 'slides': slides_from_text(head, entr, body),
+            'instagram_copy': '%s\n\n%s\n\n%s' % (head, entr, tags), 'slides': slides_from_text(head, entr, body, candidate),
             'render': {'recommended': candidate.get('tag') in ('obras', 'asi_sera', 'licitacion'), 'why': 'Borrador sin IA: valóralo tú.', 'prompt': '', 'basis': ''},
             'photo_query': ' '.join(title.split()[:5]), 'missing': ['Borrador sin IA: revisa y completa el texto.'], 'provider': 'source'}
 

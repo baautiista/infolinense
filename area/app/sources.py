@@ -23,12 +23,12 @@ import requests
 from bs4 import BeautifulSoup
 
 from . import db
-from .config import MAX_CANDIDATE_AGE_DAYS, TENDER_WINDOW_DAYS, PLACSP_PAGES, AREA_FEED_PAGES
+from .config import MAX_CANDIDATE_AGE_DAYS, TENDER_WINDOW_DAYS, AREA_FEED_PAGES
 
 UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36'
 _scan_lock = threading.Lock()
 
-BLOCKS = ['Exclusivas', 'Obras y urbanismo', 'Agenda y cultura', 'Instituciones', 'Nacionales adaptables', 'Efemérides']
+BLOCKS = ['Licitaciones', 'Exclusivas', 'Obras y urbanismo', 'Agenda y cultura', 'Instituciones', 'Nacionales adaptables', 'Efemérides']
 
 # ---------------------------------------------------------------- municipios
 
@@ -92,10 +92,47 @@ def comarca_ok(text):
     return bool(_GIB.search(t) and _GIB_TOPIC.search(t))
 
 
+# Códigos postales del Campo de Gibraltar (1120x Algeciras; 113xx resto de la comarca)
+def town_from_postal(code):
+    code = re.sub(r'\D', '', str(code or ''))[:5]
+    if len(code) != 5:
+        return ''
+    n = int(code)
+    if 11200 <= n <= 11209:
+        return 'Algeciras'
+    for lo, hi, town in ((11300, 11309, 'La Línea'), (11310, 11319, 'San Roque'), (11320, 11339, 'Jimena'),
+                         (11340, 11349, 'San Martín del Tesorillo'), (11350, 11359, 'Castellar'), (11360, 11369, 'San Roque'),
+                         (11370, 11379, 'Los Barrios'), (11380, 11399, 'Tarifa')):
+        if lo <= n <= hi:
+            return town
+    return ''
+
+
+# Empresas y organismos de la comarca que licitan con nombre propio
+ORGANISMS = [
+    (re.compile(r'emalgesa|empresa municipal de aguas de algeciras|urbanismo de algeciras|algeciras (?:emprende|deportes)|fundaci[oó]n municipal de cultura de algeciras', re.I), 'Algeciras'),
+    (re.compile(r'aplicaciones de la l[ií]nea|emlisa|epicsa|empresa municipal.*l[ií]nea|l[ií]nea de la concepci', re.I), 'La Línea'),
+    (re.compile(r'emroque|emgisa|aguas de san roque|empresa municipal.*san roque|sociedad municipal.*san roque|sanroqueña', re.I), 'San Roque'),
+    (re.compile(r'urbanizadora tarife|aguas de tarifa|empresa municipal.*tarifa', re.I), 'Tarifa'),
+    (re.compile(r'empresa municipal.*los barrios|los barrios', re.I), 'Los Barrios'),
+    (re.compile(r'mancomunidad de municipios del campo de gibraltar|\barcgisa\b|agua y residuos del campo de gibraltar', re.I), 'Campo de Gibraltar'),
+    (re.compile(r'autoridad portuaria de la bah[ií]a de algeciras|\bapba\b', re.I), 'Algeciras'),
+    (re.compile(r'[aá]rea de gesti[oó]n sanitaria campo de gibraltar|hospital punta europa|hospital de la l[ií]nea', re.I), 'Campo de Gibraltar'),
+]
+
+
+def organism_town(name):
+    for rx, town in ORGANISMS:
+        if rx.search(name or ''):
+            return town
+    t = towns_in(name or '')
+    return t[0] if t else ''
+
+
 # ---------------------------------------------------------------- etiquetas y puntuación
 
 TAGS = [
-    ('licitacion', re.compile(r'licitaci|licita\b|licitar|pliego|adjudica|formaliza|contrato\s+de\s+(obras?|servicios?|suministro)|expediente\s+de\s+contrataci|concurso\s+p[uú]blico', re.I)),
+    ('licitacion', re.compile(r'^(contrato menor|contrato formalizado|anuncio previo|anulada|en evaluaci)|licitaci|licita\b|licitar|pliego|adjudica|formaliza|contrato\s+de\s+(obras?|servicios?|suministro)|expediente\s+de\s+contrataci|concurso\s+p[uú]blico', re.I)),
     ('edicto', re.compile(r'\bedicto|anuncio\s+de\s+informaci[oó]n\s+p[uú]blica|exposici[oó]n\s+p[uú]blica|informaci[oó]n\s+p[uú]blica|aprobaci[oó]n\s+(inicial|definitiva)', re.I)),
     ('presupuesto', re.compile(r'presupuest|modificaci[oó]n\s+de\s+cr[eé]dito|subvenci[oó]n|fondos\s+(europeos|feder|next)|inversi[oó]n|millones\s+de\s+euros|\bpleno\b|junta\s+de\s+gobierno', re.I)),
     ('obras', re.compile(r'\bobras?\b|urbanis|urbaniz|\bpgou\b|plan\s+general|reurbaniz|rehabilit|viviendas|construcci[oó]n|edificio|licencia|'
@@ -134,7 +171,7 @@ def money_value(text):
 
 def score_for(title, excerpt, source, tag, exclusive=False, covered=0):
     score = round(int(source.get('priority') or 60) * 0.35)
-    score += {'licitacion': 30, 'edicto': 24, 'presupuesto': 22, 'obras': 20, 'asi_sera': 26, 'agenda': 12, 'efemeride': 14}.get(tag, 0)
+    score += {'licitacion': 34, 'edicto': 24, 'presupuesto': 22, 'obras': 20, 'asi_sera': 26, 'agenda': 12, 'efemeride': 14}.get(tag, 0)
     if source.get('official'):
         score += 8
     amount = money_value((title or '') + ' ' + (excerpt or ''))
@@ -445,11 +482,14 @@ def placsp_entry(entry):
     party = _find(status_el, 'LocatedContractingParty')
     organism = _text(party, 'PartyName', 'Name') if party is not None else ''
     party_city = _text(party, 'CityName') if party is not None else ''
+    party_zip = _text(party, 'PostalZone') if party is not None else ''
+    folder = _text(status_el, 'ContractFolderID')
     project = _find(status_el, 'ProcurementProject')
     pname = _text(project, 'Name') if project is not None else ''
     ptype = _text(project, 'TypeCode') if project is not None else ''
     place_city = _text(project, 'RealizedLocation', 'CityName') if project is not None else ''
     place_area = _text(project, 'RealizedLocation', 'CountrySubentity') if project is not None else ''
+    place_zip = _text(project, 'RealizedLocation', 'PostalZone') if project is not None else ''
     budget = ''
     if project is not None:
         for key in ('TaxExclusiveAmount', 'TotalAmount', 'EstimatedOverallContractAmount'):
@@ -471,6 +511,7 @@ def placsp_entry(entry):
             docs.append({'name': name[:160], 'kind': kind, 'url': uri})
     return {'title': pname or title, 'url': link, 'updated': updated, 'status': status, 'organism': organism,
             'party_city': party_city, 'place_city': place_city, 'place_area': place_area, 'budget': budget, 'type': ptype,
+            'party_zip': party_zip, 'place_zip': place_zip, 'folder': folder,
             'deadline': deadline, 'winner': winner, 'awarded': awarded, 'docs': docs[:20]}
 
 
@@ -482,30 +523,58 @@ def _euros(value):
     return ('{:,.2f} €'.format(v)).replace(',', 'X').replace('.', ',').replace('X', '.')
 
 
-def placsp_item(e):
+def placsp_town(e):
+    """Municipio de un expediente: lugar de ejecución, código postal, organismo o ciudad del órgano."""
+    for t in (towns_in(e.get('place_city') or ''), [town_from_postal(e.get('place_zip'))], [organism_town(e.get('organism'))],
+              [town_from_postal(e.get('party_zip'))], towns_in(e.get('party_city') or '')):
+        t = [x for x in t if x]
+        if t:
+            return t[0]
+    return 'Campo de Gibraltar' if comarca_ok(e.get('title') or '') else ''
+
+
+VERBS = {'ADJ': 'Adjudicación', 'RES': 'Contrato formalizado', 'PRE': 'Anuncio previo', 'ANUL': 'Anulada', 'EV': 'En evaluación',
+         'PUB': 'Licitación', 'MENOR': 'Contrato menor'}
+
+
+def placsp_item(e, menor=False):
     """Convierte un expediente en propuesta si es del Campo de Gibraltar."""
-    where = ' '.join([e['organism'], e['party_city'], e['place_city']])
-    if not (towns_in(where) or _COMARCA.search(where) or re.search(r'algeciras|l[ií]nea de la concepci|san roque|los barrios|tarifa|jimena|castellar|tesorillo',
-                                                                    where, re.I) or comarca_ok(e['title'])):
+    town = placsp_town(e)
+    if not town:
         return None
-    status = e['status'] or 'PUB'
-    verb = {'ADJ': 'Adjudicación', 'RES': 'Contrato formalizado', 'PRE': 'Anuncio previo', 'ANUL': 'Anulada', 'EV': 'En evaluación'}.get(status, 'Licitación')
-    amount = _euros(e['awarded'] if status in ('ADJ', 'RES') and e['awarded'] else e['budget'])
+    status = 'MENOR' if menor else (e['status'] or 'PUB')
+    verb = VERBS.get(status, 'Licitación')
+    value = e['awarded'] if status in ('ADJ', 'RES', 'MENOR') and e['awarded'] else e['budget']
+    amount = _euros(value)
     bits = [e['organism'], _PLACSP_TYPE.get(e['type'], ''), ('Importe: ' + amount) if amount else '',
             ('Plazo hasta ' + e['deadline'][:10]) if e['deadline'] and status == 'PUB' else '',
             ('Adjudicataria: ' + e['winner']) if e['winner'] else '', ('Lugar: ' + e['place_city']) if e['place_city'] else '',
-            'Estado: ' + _PLACSP_STATUS.get(status, status)]
+            ('Expediente ' + e['folder']) if e.get('folder') else '', 'Estado: ' + (_PLACSP_STATUS.get(status, 'Contrato menor'))]
+    try:
+        amount_value = float(value)
+    except (TypeError, ValueError):
+        amount_value = 0.0
     return {'title': '%s: %s' % (verb, e['title'][:240]), 'url': (e['url'] or '') + '#estado=' + status,
             'excerpt': ' · '.join(b for b in bits if b), 'published_at': e['updated'], 'organism': e['organism'],
-            'amount': amount, 'deadline': e['deadline'][:10], 'docs': e['docs'], 'towns_hint': where}
+            'amount': amount, 'amount_value': amount_value, 'deadline': e['deadline'][:10], 'docs': e['docs'],
+            'towns_hint': town, 'town': town, 'tstatus': status, 'winner': e.get('winner') or ''}
 
 
 def parse_placsp(source):
-    """ATOM de la Plataforma de Contratación: se leen las páginas más recientes y se filtra el Campo de Gibraltar."""
-    out, url, pages = [], source['url'], 0
+    """ATOM de la Plataforma de Contratación (toda España, 500 expedientes por página, de lo más nuevo a lo más antiguo).
+    Se sigue la cadena de páginas hasta llegar a lo ya leído en la búsqueda anterior, así no se escapa ninguna licitación
+    de la comarca. La primera vez se leen como máximo PLACSP_FIRST_PAGES páginas; después, hasta PLACSP_MAX_PAGES."""
+    from .config import PLACSP_FIRST_PAGES, PLACSP_MAX_PAGES
+    key = 'placsp_seen_' + re.sub(r'\W+', '_', source['url'])[-60:]
+    seen_raw = db.setting(key)
+    seen = publication_datetime(seen_raw) if seen_raw else None
     limit = datetime.now(timezone.utc) - timedelta(days=TENDER_WINDOW_DAYS)
-    while url and pages < max(1, PLACSP_PAGES):
-        r = fetch(url, timeout=90)
+    stop_at = max(seen, limit) if seen else limit
+    max_pages = PLACSP_MAX_PAGES if seen else PLACSP_FIRST_PAGES
+    menor = 'menor' in (source['url'] + ' ' + (source.get('name') or '')).lower()
+    out, url, pages, newest = [], source['url'], 0, None
+    while url and pages < max(1, max_pages):
+        r = fetch(url, timeout=120)
         r.raise_for_status()
         pages += 1
         next_url, oldest = '', None
@@ -517,14 +586,18 @@ def parse_placsp(source):
                 e = placsp_entry(el)
                 if e:
                     d = publication_datetime(e['updated'])
-                    oldest = d if d and (oldest is None or d < oldest) else oldest
-                    item = placsp_item(e)
+                    if d:
+                        oldest = d if oldest is None or d < oldest else oldest
+                        newest = d if newest is None or d > newest else newest
+                    item = placsp_item(e, menor)
                     if item:
                         out.append(item)
                 el.clear()
-        if oldest and oldest < limit:
+        if oldest and oldest < stop_at:
             break
         url = next_url
+    if newest:
+        db.set_setting(key, newest.isoformat())
     return out
 
 
@@ -633,7 +706,7 @@ todo toda todos todas otro otra otros otras nuevo nueva nuevos nuevas donde cuan
 fue son estan tiene tienen hace hacen campo gibraltar algeciras linea concepcion roque barrios tarifa jimena castellar frontera ayuntamiento
 municipal ciudad vecinos comarca comarcal edicto licitacion adjudicacion contrato servicio servicios obras estado plazo importe noticia hoy ayer
 manana junta andalucia gobierno euros millones'''.split())
-_TENDER = re.compile(r'^(licitaci|adjudicaci|contrato formalizado|anuncio previo|anulada|en evaluaci|edicto)', re.I)
+_TENDER = re.compile(r'^(licitaci|adjudicaci|contrato formalizado|contrato menor|anuncio previo|anulada|en evaluaci|edicto)', re.I)
 
 
 def _fold(t):
@@ -719,6 +792,34 @@ def find_story(title, exclude=None, days=5):
     return None
 
 
+def tender_status(title):
+    t = (title or '').lower()
+    for k, rx in (('MENOR', r'^contrato menor'), ('RES', r'^contrato formalizado|formaliza'), ('ADJ', r'^adjudicaci|adjudica'),
+                  ('PRE', r'^anuncio previo'), ('ANUL', r'^anulada|desiert|desist'), ('PUB', r'licita|pliego')):
+        if re.search(rx, t):
+            return k
+    return 'PUB'
+
+
+def find_tender(title, town='', days=60):
+    """La misma licitación vista en otra fuente (Plataforma, Gobierto, BOP, prensa) y en la MISMA fase."""
+    since = (datetime.now(timezone.utc) - timedelta(days=days)).strftime('%Y-%m-%d %H:%M:%S')
+    mine, phase = story_tokens(title), tender_status(title)
+    if len(mine) < 3:
+        return None
+    for c in db.rows("""SELECT id,title,towns,tstatus FROM candidates WHERE block='Licitaciones' AND status NOT IN ('merged')
+                        AND created_at>=? ORDER BY id DESC LIMIT 800""", (since,)):
+        if (c.get('tstatus') or tender_status(c['title'])) != phase:
+            continue
+        if town and c.get('towns') and town not in c['towns'].split(','):
+            continue
+        other = story_tokens(c['title'])
+        shared = len(mine & other)
+        if shared >= 3 and shared / max(1, min(len(mine), len(other))) >= 0.75:
+            return c['id']
+    return None
+
+
 def attach_link(cid, item, source_name):
     db.exec_('INSERT OR IGNORE INTO candidate_links(candidate_id,source_name,outlet,url,title,excerpt,published_at) VALUES(?,?,?,?,?,?,?)',
              (cid, source_name, clean(item.get('outlet'))[:120], item['url'], clean(item['title'])[:260], clean(item.get('excerpt'))[:2000],
@@ -752,28 +853,37 @@ def add_candidate(item, source, force=False):
     block = source.get('block') or 'Instituciones'
     hay = ' '.join([title, excerpt[:1500], item.get('towns_hint') or '', item.get('organism') or ''])
     towns = towns_in(hay)
-    if block != 'Nacionales adaptables' and not force and not comarca_ok(hay):
+    if block != 'Nacionales adaptables' and not force and not item.get('town') and not comarca_ok(hay):
         return None
     if db.row('SELECT 1 FROM candidates WHERE url=?', (url,)) or db.row('SELECT 1 FROM candidate_links WHERE url=?', (url,)):
         return None
-    same = find_story(title)
+    tag = tag_for(title, excerpt, kind)
+    is_tender = kind in ('placsp', 'gobierto') or tag == 'licitacion'
+    same = find_tender(title, item.get('town') or (towns[0] if towns else '')) if is_tender else find_story(title)
     if same:
         attach_link(same, item, source.get('name') or '')
         return None
-    tag = tag_for(title, excerpt, kind)
-    if block == 'Instituciones' and tag in ('licitacion', 'edicto', 'presupuesto'):
+    if is_tender and block in ('Instituciones', 'Exclusivas', 'Obras y urbanismo'):
+        block = 'Licitaciones'
+    elif block == 'Instituciones' and tag in ('licitacion', 'edicto', 'presupuesto'):
         block = 'Exclusivas'
     elif block == 'Instituciones' and tag in ('obras', 'asi_sera'):
         block = 'Obras y urbanismo'
     elif block == 'Instituciones' and tag == 'agenda':
         block = 'Agenda y cultura'
-    if not towns and block == 'Nacionales adaptables':
-        towns = []
+    if item.get('town') and item['town'] != 'Campo de Gibraltar' and item['town'] not in towns:
+        towns = [item['town']] + towns
+    elif not towns and item.get('organism'):
+        t = organism_town(item['organism'])
+        towns = [t] if t and t != 'Campo de Gibraltar' else []
+    amount_value = item.get('amount_value') or money_value((item.get('amount') or '') + ' ' + title + ' ' + excerpt[:600])
+    tstatus = item.get('tstatus') or (tender_status(title) if is_tender else '')
     cid = db.exec_('''INSERT OR IGNORE INTO candidates(source_id,source_name,outlet,title,url,published_at,excerpt,image_hint,block,tag,towns,
-                      organism,amount,deadline,docs_json,status) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'new')''',
+                      organism,amount,deadline,docs_json,status,tstatus,amount_value,winner) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'new',?,?,?)''',
                    (source.get('id'), source.get('name'), clean(item.get('outlet'))[:120], title, url, published, excerpt,
                     item.get('image') or '', block, tag, ','.join(towns), clean(item.get('organism'))[:200], item.get('amount') or '',
-                    item.get('deadline') or '', json.dumps(item.get('docs') or [], ensure_ascii=False)))
+                    item.get('deadline') or '', json.dumps(item.get('docs') or [], ensure_ascii=False), tstatus, float(amount_value or 0),
+                    clean(item.get('winner'))[:200]))
     if cid:
         apply_coverage(cid)
     return cid
@@ -862,7 +972,7 @@ def archive_stale():
     n = 0
     for r in db.rows("""SELECT id,published_at,created_at,tag,block,deadline FROM candidates
                         WHERE status IN ('new','in_area') AND priority IN ('undecided','')"""):
-        days = TENDER_WINDOW_DAYS if r['block'] == 'Exclusivas' else MAX_CANDIDATE_AGE_DAYS + 1
+        days = TENDER_WINDOW_DAYS if r['block'] in ('Exclusivas', 'Licitaciones') else MAX_CANDIDATE_AGE_DAYS + 1
         if r['tag'] == 'efemeride':
             days = 11
         date = publication_datetime(r['published_at']) or publication_datetime((r['created_at'] or '').replace(' ', 'T') + '+00:00')
@@ -918,3 +1028,10 @@ def fetch_article_text(url):
         return clean(main.get_text(' ', strip=True) if main else soup.get_text(' ', strip=True))[:18000]
     except Exception:
         return ''
+
+
+def backfill():
+    """Datos de licitación (fase e importe) para propuestas guardadas antes de la 1.1."""
+    for r in db.rows("SELECT id,title,amount,excerpt FROM candidates WHERE block='Licitaciones' AND (tstatus='' OR tstatus IS NULL)"):
+        db.exec_('UPDATE candidates SET tstatus=?,amount_value=CASE WHEN amount_value>0 THEN amount_value ELSE ? END WHERE id=?',
+                 (tender_status(r['title']), money_value((r.get('amount') or '') + ' ' + (r.get('title') or '') + ' ' + (r.get('excerpt') or '')[:600]), r['id']))

@@ -1,6 +1,15 @@
-# Área Campo de Gibraltar Desk 1.0
+# Área Campo de Gibraltar Desk 1.1
 
 Mesa de exclusivas de Área Campo de Gibraltar. Misma forma de trabajar que InfoLinense Desk, en rojo, sin publicar en ningún sitio: busca, redacta y te deja todo listo para **copiar y descargar**.
+
+## Novedades 1.1
+
+- **Licitaciones primero.** En Ordenar, la vista principal es «Licitaciones de la comarca»: todas las de los 8 municipios, sus empresas municipales (Emalgesa, Emgisa…), la Mancomunidad/Arcgisa, la APBA, la Junta y el Estado, con filtros por municipio, fase (en plazo, adjudicada, formalizada, contrato menor…), importe, plazo y buscador.
+  - Plataforma de Contratación completa: se sigue la cadena del ATOM hasta lo ya leído, así no se escapa ninguna (también **contratos menores**). El municipio sale del lugar de ejecución, el código postal o el organismo.
+  - La misma licitación en varias fuentes se une; la adjudicación posterior es otra propuesta (es otra noticia).
+  - Marca varias y pulsa **Pieza resumen** («Las licitaciones de la semana en…»).
+  - La pieza del día prioriza licitaciones.
+- **Carruseles con el estilo de Área.** La portada va siempre primero y el resto combina, según la noticia, 12 tipos de diapositiva: lista con barras, caja roja, pasos con flechas, lista + cifra, ficha de proyecto, pregunta y respuesta, foto anotada, texto + mapa, cifra gigante, tarjetas con iconos, mosaico y documento oficial. Vista previa en el panel, ==resaltado== en rojo, y **Generar imágenes del carrusel** crea los PNG 1080×1350 (van al ZIP). Logos en Ajustes.
 
 ## Qué hace
 
@@ -30,7 +39,7 @@ Mesa de exclusivas de Área Campo de Gibraltar. Misma forma de trabajar que Info
    - Canva (opcional): `CANVA_CLIENT_ID`, `CANVA_CLIENT_SECRET`. URL de retorno en Canva Developers: `https://<dominio>/api/canva/callback`. Permisos: `asset:read asset:write brandtemplate:content:read design:content:read design:content:write design:meta:read`.
 4. Genera dominio y abre `https://<dominio>/api/health`.
 
-Otras variables: `SCAN_INTERVAL_MINUTES` (45), `DAILY_PICK_HOUR` (7), `PLACSP_PAGES` (3), `TENDER_WINDOW_DAYS` (20), `AUTO_DRAFT` (true).
+Otras variables: `SCAN_INTERVAL_MINUTES` (45), `DAILY_PICK_HOUR` (7), `PLACSP_FIRST_PAGES` (12, primera lectura), `PLACSP_MAX_PAGES` (40), `TENDER_WINDOW_DAYS` (20), `AUTO_DRAFT` (true).
 
 ## Plantilla de Canva del carrusel
 

@@ -40,7 +40,8 @@ SCAN_INTERVAL_MINUTES = int(os.getenv('SCAN_INTERVAL_MINUTES', '45'))
 MAX_CANDIDATE_AGE_DAYS = int(os.getenv('MAX_CANDIDATE_AGE_DAYS', '3'))
 TENDER_WINDOW_DAYS = int(os.getenv('TENDER_WINDOW_DAYS', '20'))
 # Páginas del ATOM de la Plataforma de Contratación que se leen en cada búsqueda (cada una trae ~500 expedientes de toda España)
-PLACSP_PAGES = int(os.getenv('PLACSP_PAGES', '3'))
+PLACSP_FIRST_PAGES = int(os.getenv('PLACSP_FIRST_PAGES', '12'))
+PLACSP_MAX_PAGES = int(os.getenv('PLACSP_MAX_PAGES', '40'))
 # Redactar sola la propuesta del día y lo que se marca como Urgente/Hoy
 AUTO_DRAFT = _on('AUTO_DRAFT', 'true')
 # Hora (Madrid) a la que se elige y redacta la propuesta del día

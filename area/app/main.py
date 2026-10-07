@@ -311,6 +311,12 @@ def update_article(aid: int, body: dict):
     if 'slides' in body and isinstance(body['slides'], list):
         db.exec_('UPDATE articles SET slides_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=?',
                  (json.dumps(redaccion._slides(body['slides']), ensure_ascii=False), aid))
+    if 'headline' in body or 'entradilla' in body:  # la portada lleva siempre el titular y la entradilla
+        a = _article(aid)
+        sl = _json(a.get('slides_json'), [])
+        if sl and sl[0].get('layout') == 'portada':
+            sl[0]['title'], sl[0]['text'] = a.get('headline') or '', a.get('entradilla') or ''
+            db.exec_('UPDATE articles SET slides_json=? WHERE id=?', (json.dumps(sl, ensure_ascii=False), aid))
     if 'render' in body and isinstance(body['render'], dict):
         db.exec_('UPDATE articles SET render_json=? WHERE id=?', (json.dumps(body['render'], ensure_ascii=False), aid))
     return article(aid)
@@ -579,9 +585,13 @@ def canva_callback(code: str = '', state: str = '', error: str = ''):
 def canva_template():
     out = {'template_id': canva.template_id(), 'ready': canva.ready(), 'connected': canva.connected() if canva.ready() else False,
            'callback': canva.callback_url() if PUBLIC_BASE_URL else ''}
+    out['guide'] = canva.field_guide()
+    out['pages'] = db.setting('canva_pages')
     if out['connected'] and out['template_id']:
         try:
             out['fields'] = canva.template_fields()
+            out['typed'] = [canva.inst_name(l, n) for l, n in canva.typed_instances(out['fields'])]
+            out['page_order'] = canva.page_order(out['fields'])
         except ValueError as exc:
             out['error'] = str(exc)
     return out
@@ -592,7 +602,10 @@ def canva_template_set(body: dict):
     tid = canva.template_from_link(str(body.get('template') or ''))
     if body.get('template') and not tid:
         raise HTTPException(400, 'No reconozco ese enlace. Pega el enlace de la plantilla de marca de Canva.')
-    db.set_setting('canva_template', tid)
+    if tid or body.get('template') == '':
+        db.set_setting('canva_template', tid)
+    if 'pages' in body:
+        db.set_setting('canva_pages', ','.join(x.strip().upper() for x in re.split(r'[,\n]', str(body.get('pages') or '')) if x.strip()))
     return canva_template()
 
 
@@ -600,17 +613,15 @@ def canva_template_set(body: dict):
 def article_canva(aid: int):
     a = _article(aid)
     slides = _json(a.get('slides_json'), [])
-    media = db.rows("SELECT * FROM media WHERE article_id=? AND selected=1 AND kind!='canva' ORDER BY COALESCE(slide,99), id", (aid,))
-    if not media:
-        raise HTTPException(400, 'Marca al menos una imagen (con ✓) para el carrusel')
-    by_slide = {m['slide']: m for m in media if m.get('slide')}
-    loose = [m for m in media if not m.get('slide')] or media
-    paths = []
+    base = db.rows("SELECT * FROM media WHERE article_id=? AND kind NOT IN ('canva','carrusel') ORDER BY id", (aid,))
+    slide_images = []
     for i in range(len(slides)):
-        m = by_slide.get(i + 1) or loose[i % len(loose)]
-        paths.append(_local(m))
+        lst = [m for m in base if m.get('slide') == i + 1]
+        if not lst and i == 0:
+            lst = [m for m in base if m.get('selected')][:1]
+        slide_images.append([_local(m) for m in lst])
     try:
-        res = canva.create_carousel(a, slides, paths)
+        res = canva.create_any(a, slides, slide_images)
     except ValueError as exc:
         db.exec_('UPDATE articles SET canva_error=? WHERE id=?', (str(exc)[:300], aid))
         _bad(exc)
@@ -623,7 +634,11 @@ def article_canva_export(aid: int):
     if not a.get('canva_design_id'):
         raise HTTPException(400, 'Primero crea el carrusel en Canva')
     try:
-        canva.export_carousel(aid, a['canva_design_id'], len(_json(a.get('slides_json'), [])), a.get('canva_url') or '')
+        plan = _json(db.setting('canva_pages_%s' % aid), None)
+        if plan:
+            canva.export_pages(aid, a['canva_design_id'], plan['pages'], plan['slides'], a.get('canva_url') or '')
+        else:
+            canva.export_carousel(aid, a['canva_design_id'], len(_json(a.get('slides_json'), [])), a.get('canva_url') or '')
     except ValueError as exc:
         _bad(exc)
     return article(aid)

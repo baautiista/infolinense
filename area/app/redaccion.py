@@ -40,7 +40,7 @@ def _s(value, limit):
     return re.sub(r'[ \t]+', ' ', str(value or '')).strip()[:limit]
 
 
-LAYOUTS = ['portada', 'lista', 'caja', 'flujo', 'cifra_lista', 'ficha', 'pregunta', 'anotada', 'mapa', 'cifra', 'tarjetas', 'mosaico', 'documento']
+LAYOUTS = ['portada', 'lista', 'caja', 'flujo', 'cifra_lista', 'ficha', 'pregunta', 'anotada', 'mapa', 'cifra', 'tarjetas', 'mosaico', 'documento', 'calles']
 _OLD_ROLES = {'portada': 'portada', 'dato': 'lista', 'texto': 'lista', 'cierre': 'lista'}
 
 CAROUSEL_GUIDE = """CARRUSEL (estilo de Área, 1080x1350). La PRIMERA diapositiva es SIEMPRE la portada; el resto se COMBINA según lo que pida
@@ -63,9 +63,20 @@ cada noticia (no repitas siempre la misma fórmula ni el mismo orden). Tipos dis
 - mosaico: estilo claro: kicker y 2-5 cards {label, figure, text} con una foto cada una (varios proyectos o actuaciones).
 - documento: estilo claro, cuando la fuente es un documento oficial (pliego, informe, decreto): kicker («LO CERTIFICA»), title
   («INTERVENCIÓN», «EL PLIEGO», «EL BOP»), text (qué dice exactamente) y se muestra el documento.
+- calles: listado de calles o lugares y qué se hace en cada uno: title («Estas son las calles que cambian»), text opcional y
+  cards {label: nombre de la calle, text: qué se hace allí: «se cambia la tubería de agua», «nuevo asfaltado y aceras»}; hasta 6 por
+  diapositiva (si hay más, usa otra diapositiva calles con el resto).
+La PORTADA lleva exactamente el titular y la entradilla de la pieza.
 En title, text y bullets marca con ==así== las 1-3 palabras clave que van resaltadas en rojo (no abuses). Textos breves: es Instagram.
-Para LICITACIONES, una buena combinación suele ser: portada → ficha (importe y estado) → caja o flujo (qué incluye la obra) → lista
-(¿por qué?/¿qué cambia?) → documento (lo que dice el pliego) o pregunta (dudas del vecino) → cifra (plazo o importe). Elige la que encaje."""
+CÓMO COMBINAR según la noticia (orientativo, adapta a lo que haya en la fuente):
+- OBRA en un parque, plaza, edificio o equipamiento: portada → una diapositiva principal de «¿Qué se va a hacer?» (flujo o lista) →
+  una lista con barras de lo que se mejora → dos diapositivas más que detallen los elementos concretos (juegos, pavimentos, sombras,
+  redes, alumbrado…; cifra_lista, caja o anotada) → ficha con importe, plazo y empresa → pregunta si hay una duda clara del vecino.
+- OBRAS EN VARIAS CALLES: portada → calles (cada calle con lo que se hace en ella; varias diapositivas si hacen falta) → mapa si hay
+  plano → ficha con importe y plazo.
+- LICITACIÓN o ADJUDICACIÓN de servicios o suministros: portada → ficha → caja (qué incluye) → documento (lo que dice el pliego) → cifra.
+- AGENDA o PROGRAMACIÓN: portada → tarjetas o mosaico (una cita por tarjeta: día, hora, lugar) → lista con lo imprescindible.
+- DATOS, PRESUPUESTOS o NACIONALES ADAPTADAS: portada → cifra → tarjetas → lista o documento."""
 
 
 def _lst(v, n, limit):
@@ -74,9 +85,9 @@ def _lst(v, n, limit):
     return [_s(x, limit) for x in (v or []) if _s(x, limit)][:n]
 
 
-def _cards(v):
+def _cards(v, n=5):
     out = []
-    for c in (v or [])[:5]:
+    for c in (v or [])[:n]:
         if isinstance(c, str):
             parts = [x.strip() for x in c.split('|')] + ['', '', '', '']
             c = {'label': parts[0], 'figure': parts[1], 'text': parts[2], 'icon': parts[3]}
@@ -96,6 +107,8 @@ def _slides(raw):
               'bullets': _lst(s.get('bullets'), 8, 160), 'chips': _lst(s.get('chips'), 4, 30), 'figure': _s(s.get('figure'), 30),
               'figure_label': _s(s.get('figure_label'), 90), 'status': _s(s.get('status'), 30), 'cards': _cards(s.get('cards')),
               'image_hint': _s(s.get('image_hint'), 200)}
+        if layout == 'calles':
+            sl['cards'] = _cards(s.get('cards'), 8)
         if any(sl[k] for k in ('title', 'text', 'bullets', 'figure', 'cards', 'kicker')):
             out.append(sl)
     # La portada siempre va primero
@@ -161,9 +174,9 @@ Devuelve JSON con exactamente estas claves:
 focus (la verdadera noticia en una frase),
 section (una de: {', '.join(SECTIONS)}),
 town (municipio principal; «Campo de Gibraltar» si es comarcal),
-headline (titular, máximo 90 caracteres),
+headline (TITULAR breve: lo ideal entre 45 y 85 caracteres, que en la portada son 2-4 líneas; si la noticia no da para más, 2 líneas está bien; nunca tan largo que ocupe 5 líneas, unos 100 caracteres. Cuenta la noticia con el dato fuerte: «Así será el nuevo centro comercial que abrirá en 2027», «Algeciras adjudica por 374.000 euros la reforma del parque María Cristina»),
 headline_options (lista de 5 titulares alternativos distintos, mismos criterios),
-entradilla (máximo 220 caracteres, información nueva respecto al titular),
+entradilla (ENTRADILLA: NUNCA repite el titular ni sus palabras; especifica la noticia con los datos principales que el titular no dice —dónde, quién, cuánto, plazo, empresa—, en 1-2 frases y máximo 200 caracteres. Ejemplo: titular «Así será el nuevo centro comercial que abrirá en 2027» → entradilla «En La Línea, el Ayuntamiento ha aprobado una partida de 3 millones y 12 meses de obra para transformar la antigua zona comercial»),
 body (texto de la noticia para la web: entre 1.200 y 2.000 caracteres, párrafos de 2-4 frases separados por línea en blanco),
 instagram_copy (copy para Instagram según la guía, con hashtags al final),
 slides (carrusel de 4 a 8 diapositivas según la guía de CARRUSEL de abajo; cada una con layout y sus campos —kicker, title, text, bullets, chips, figure, figure_label, status, cards— más image_hint: qué imagen poner en esa diapositiva: foto real concreta, imagen o plano del pliego, render, mapa o el documento),
@@ -190,8 +203,12 @@ missing (lista de datos que convendría confirmar o buscar antes de publicar; no
         'missing': [_s(m, 200) for m in (data.get('missing') or []) if _s(m, 200)][:8],
         'provider': provider,
     }
+    fix_head_entr(out, candidate)
     if len(out['slides']) < 3:
         out['slides'] = slides_from_text(out['headline'], out['entradilla'], out['body'], candidate)
+    elif out['slides'][0]['layout'] == 'portada':
+        # La portada lleva exactamente el titular y la entradilla
+        out['slides'][0]['title'], out['slides'][0]['text'] = out['headline'], out['entradilla']
     return out
 
 
@@ -241,23 +258,143 @@ def slides_from_text(headline, entradilla, body, candidate=None):
     return _slides(slides)
 
 
+# ---------------------------------------------------------------- titular y entradilla
+
+HEAD_IDEAL = (45, 85)      # 2-4 líneas en la portada (orientativo)
+HEAD_MAX = 100             # a partir de aquí serían 5 líneas: demasiado
+_VERB = {'PUB': 'licita', 'ADJ': 'adjudica', 'RES': 'formaliza', 'MENOR': 'contrata', 'PRE': 'prepara', 'EV': 'estudia las ofertas para',
+         'ANUL': 'anula'}
+
+
+def _words(t):
+    t = re.sub(r'[^a-z0-9ñáéíóúü ]', ' ', str(t or '').lower())
+    return {w for w in t.split() if len(w) > 3}
+
+
+def too_similar(a, b):
+    """¿La entradilla repite el titular?"""
+    a, b = str(a or '').strip(), str(b or '').strip()
+    if not a or not b:
+        return True
+    if b.lower().startswith(a.lower()[:40]) or a.lower() in b.lower():
+        return True
+    wa, wb = _words(a), _words(b)
+    return bool(wa and wb) and len(wa & wb) / min(len(wa), len(wb)) >= 0.7
+
+
+def euros_text(amount, value=0):
+    """«374.094 euros», «1,2 millones de euros»."""
+    try:
+        v = float(value or 0)
+    except (TypeError, ValueError):
+        v = 0
+    if not v:
+        m = re.search(r'([\d.]+),?(\d*)', str(amount or ''))
+        if m:
+            try:
+                v = float(m.group(1).replace('.', '') + '.' + (m.group(2) or '0'))
+            except ValueError:
+                v = 0
+    if not v:
+        return ''
+    if v >= 1_000_000:
+        n = ('%.1f' % (v / 1_000_000)).replace('.', ',').replace(',0', '')
+        return '%s millones de euros' % n
+    return '{:,.0f} euros'.format(v).replace(',', '.')
+
+
+def _object(title):
+    """«Reconstrucción del parque infantil María Cristina» → «la reconstrucción del parque infantil María Cristina»."""
+    t = re.sub(r'^[^:]{3,40}:\s*', '', str(title or '')).strip().rstrip('.')
+    t = re.sub(r'^(contrato|expediente|licitaci[oó]n|procedimiento|servicio de|suministro de)\s+(de|para|del)?\s*', lambda m: m.group(0) if 'servicio' in m.group(0).lower() or 'suministro' in m.group(0).lower() else '', t, flags=re.I)
+    if not t:
+        return ''
+    first = t.split()[0].lower()
+    art = 'el' if first.endswith(('o', 'or', 'miento', 'aje')) or first in ('servicio', 'suministro', 'proyecto', 'plan', 'mantenimiento', 'asfaltado') else \
+          'los' if first.endswith('os') else 'las' if first.endswith('as') else 'la'
+    return '%s %s%s' % (art, t[0].lower(), t[1:])
+
+
+def tender_headline(c):
+    town = (c.get('towns') or '').split(',')[0] or 'Campo de Gibraltar'
+    verb = _VERB.get(c.get('tstatus') or 'PUB', 'licita')
+    money = euros_text(c.get('amount'), c.get('amount_value'))
+    obj = _object(c.get('title'))
+    head = '%s %s%s %s' % (town if town != 'Campo de Gibraltar' else 'La Mancomunidad', verb, (' por ' + money) if money else '', obj)
+    return re.sub(r'\s+', ' ', head).strip()[:HEAD_MAX + 20]
+
+
+def facts_entradilla(c, headline=''):
+    """Entradilla con los datos que NO están en el titular: dónde, quién, plazo, empresa, tipo de contrato."""
+    ex = str(c.get('excerpt') or '')
+    town = (c.get('towns') or '').split(',')[0]
+    org = re.sub(r'^Junta de Gobierno Local del\s+', '', c.get('organism') or '').strip()
+    bits = []
+    winner = c.get('winner') or (re.search(r'Adjudicataria:\s*([^·]+)', ex).group(1).strip() if re.search(r'Adjudicataria:\s*([^·]+)', ex) else '')
+    kind = (re.search(r'·\s*(Obras|Servicios|Suministros|Concesión de servicios|Concesión de obras)\s*·', ex) or [None, ''])[1]
+    lead = ('En %s, ' % town) if town and town.lower() not in (headline or '').lower() else ''
+    who = org or 'la administración'
+    if org and not re.match(r'(el|la|los|las)\s', org, re.I):
+        fem = re.match(r'(junta|mancomunidad|autoridad|agencia|empresa|sociedad|diputaci|consejer|direcci|delegaci|universidad|fundaci|confederaci|demarcaci|subdelegaci)', org, re.I)
+        who = ('la ' if fem else 'el ') + org
+    if winner:
+        bits.append('%s%s ha elegido a %s para ejecutar este contrato%s' % (lead, who, winner, (' de ' + kind.lower()) if kind else ''))
+    elif c.get('tstatus') in ('PUB', None, '') and c.get('deadline'):
+        d = c['deadline']
+        try:
+            from datetime import date
+            dd = date.fromisoformat(d[:10]); d = '%s de %s' % (dd.day, ['enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio', 'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre'][dd.month - 1])
+        except Exception:
+            pass
+        bits.append('%s%s abre el plazo para presentar ofertas hasta el %s%s' % (lead, who, d, (' en este contrato de ' + kind.lower()) if kind else ''))
+    else:
+        bits.append('%s%s publica el expediente en la Plataforma de Contratación del Sector Público' % (lead, who))
+    plazo = re.search(r'(\d+)\s*(meses|mes|semanas|días|años)', ex + ' ' + str(c.get('title') or ''), re.I)
+    if plazo:
+        bits.append('con un plazo de ejecución de %s %s' % (plazo.group(1), plazo.group(2)))
+    out = ', '.join(bits).strip()
+    out = out[0].upper() + out[1:] if out else ''
+    return (out.rstrip('.') + '.')[:230]
+
+
+def fix_head_entr(out, c):
+    """Titular breve (2-4 líneas) y entradilla que no repite el titular."""
+    head = out.get('headline') or ''
+    if len(head) > HEAD_MAX and out.get('headline_options'):
+        short = [h for h in out['headline_options'] if HEAD_IDEAL[0] <= len(h) <= HEAD_MAX]
+        if short:
+            out['headline_options'] = [head] + [h for h in out['headline_options'] if h != short[0]]
+            out['headline'] = head = short[0]
+    if len(head) > HEAD_MAX:
+        out.setdefault('missing', []).insert(0, 'El titular es largo (unas 5 líneas en la portada): conviene acortarlo.')
+    if too_similar(head, out.get('entradilla')):
+        out['entradilla'] = facts_entradilla(c, head)
+    return out
+
+
 def free_draft(candidate, source_text=''):
     def tidy(v):
         v = BeautifulSoup(v or '', 'html.parser').get_text(' ', strip=True)
         return re.sub(r'\s+', ' ', v).strip(' .:;—-')
-    title = re.sub(r'^(Licitación|Adjudicación|Edicto[^:]*|Anuncio previo|Contrato formalizado):\s*', '', tidy(candidate.get('title')))
-    excerpt = tidy(candidate.get('excerpt'))
+    c = candidate
+    raw_title = tidy(c.get('title'))
+    title = re.sub(r'^(Licitación|Adjudicación|Edicto[^:]*|Anuncio previo|Contrato formalizado|Contrato menor|En evaluación|Anulada):\s*', '', raw_title)
+    excerpt = tidy(c.get('excerpt'))
     text = tidy(source_text)
-    sentences = [s for s in re.split(r'(?<=[.!?])\s+', text) if 60 <= len(s) <= 320][:6]
-    town = (candidate.get('towns') or 'Campo de Gibraltar').split(',')[0]
-    head = title[:140]
-    entr = (excerpt[:217] + '…') if len(excerpt) > 220 else excerpt
-    body = '\n\n'.join([s for s in [excerpt] + sentences if s])[:2000]
+    sentences = [x for x in re.split(r'(?<=[.!?])\s+', text) if 60 <= len(x) <= 320][:6]
+    town = (c.get('towns') or 'Campo de Gibraltar').split(',')[0]
+    tender = c.get('block') == 'Licitaciones' or c.get('tag') == 'licitacion'
+    head = tender_headline(c) if tender else title[:HEAD_MAX]
+    entr = facts_entradilla(c, head) if tender else ''
+    if not entr or too_similar(head, entr):
+        cand = [x for x in [excerpt] + sentences if x and not too_similar(head, x)]
+        entr = (cand[0][:217] + '…') if cand and len(cand[0]) > 220 else (cand[0] if cand else facts_entradilla(c, head))
+    body = '\n\n'.join(dict.fromkeys([x for x in [entr, excerpt] + sentences if x]))[:2000]
     tags = ' '.join(['#CampoDeGibraltar', HASHTAG_TOWN.get(town, ''), '#ÁreaCampoDeGibraltar']).strip()
-    return {'focus': head, 'section': 'LICITACIONES' if candidate.get('tag') == 'licitacion' else 'SOCIEDAD', 'town': town,
-            'headline': head, 'headline_options': [], 'entradilla': entr, 'body': body,
-            'instagram_copy': '%s\n\n%s\n\n%s' % (head, entr, tags), 'slides': slides_from_text(head, entr, body, candidate),
-            'render': {'recommended': candidate.get('tag') in ('obras', 'asi_sera', 'licitacion'), 'why': 'Borrador sin IA: valóralo tú.', 'prompt': '', 'basis': ''},
+    return {'focus': head, 'section': 'LICITACIONES' if tender else 'SOCIEDAD', 'town': town,
+            'headline': head, 'headline_options': [title] if title != head else [], 'entradilla': entr, 'body': body,
+            'instagram_copy': '%s\n\n%s\n\n%s' % (head, entr, tags), 'slides': slides_from_text(head, entr, body, c),
+            'render': {'recommended': c.get('tag') in ('obras', 'asi_sera', 'licitacion'), 'why': 'Borrador sin IA: valóralo tú.', 'prompt': '', 'basis': ''},
             'photo_query': ' '.join(title.split()[:5]), 'missing': ['Borrador sin IA: revisa y completa el texto.'], 'provider': 'source'}
 
 

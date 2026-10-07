@@ -14,9 +14,10 @@ const CS = (() => {
     tarjetas: { label: 'Tarjetas con iconos', fields: ['kicker', 'title', 'cards'], help: 'Estilo claro: 2-4 tarjetas con icono, cifra y texto.' },
     mosaico: { label: 'Mosaico de fotos', fields: ['kicker', 'cards'], help: 'Estilo claro: 2-5 fotos con rótulo rojo y texto.' },
     documento: { label: 'Documento oficial', fields: ['kicker', 'title', 'text'], help: 'Estilo claro: «Lo certifica… Intervención» con el documento.' },
+    calles: { label: 'Listado de calles', fields: ['title', 'text', 'streets'], help: 'Cada calle o lugar con lo que se hace en ella (hasta 6 por diapositiva).' },
   };
   const FIELD_LABEL = { kicker: 'Antetítulo', title: 'Título', text: 'Texto', bullets: 'Puntos (uno por línea)', chips: 'Etiquetas con flechas (una por línea)',
-    figure: 'Cifra', figure_label: 'Texto de la cifra', status: 'Estado', cards: 'Tarjetas (una por línea: rótulo | cifra | texto | icono)' };
+    figure: 'Cifra', figure_label: 'Texto de la cifra', status: 'Estado', cards: 'Tarjetas (una por línea: rótulo | cifra | texto | icono)', streets: 'Calles (una por línea: calle | qué se hace)' };
   const ICONS = {
     obras: '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M19.4 13a7.6 7.6 0 0 0 0-2l2.1-1.6-2-3.5-2.5 1a7 7 0 0 0-1.7-1L15 3h-4l-.4 2.9a7 7 0 0 0-1.7 1l-2.5-1-2 3.5L6.6 11a7.6 7.6 0 0 0 0 2l-2.1 1.6 2 3.5 2.5-1a7 7 0 0 0 1.7 1L11 21h4l.4-2.9a7 7 0 0 0 1.7-1l2.5 1 2-3.5zM13 15.5A3.5 3.5 0 1 1 13 8.5a3.5 3.5 0 0 1 0 7z"/></svg>',
     familia: '<svg viewBox="0 0 24 24" fill="currentColor"><circle cx="7" cy="6" r="3"/><circle cx="17" cy="6" r="3"/><path d="M2 20v-6a4 4 0 0 1 4-4h2a4 4 0 0 1 4 4v6zM12 20v-6a4 4 0 0 1 4-4h2a4 4 0 0 1 4 4v6z"/></svg>',
@@ -109,6 +110,10 @@ const CS = (() => {
           <div class="cs-li fit" style="left:70px;right:55px;top:200px">${s.kicker ? `<div class="cs-kick">${esc(plain(s.kicker))}</div>` : '<div class="cs-kick"></div>'}
           <div class="cs-grid ${n === 2 ? 'n2' : ''}">${cs.map((c, i) => `<div class="cs-tile ${n === 4 || (n === 5 && i >= 3) ? 'w' : ''}">${im[i] ? `<img class="im" src="${im[i]}" alt="">` : '<div class="im"></div>'}
             ${c.label || c.figure ? `<h5>${esc(plain(c.figure ? c.figure + (c.label ? ' · ' + c.label : '') : c.label))}</h5>` : ''}${c.text ? `<p>${rich(c.text)}</p>` : ''}</div>`).join('')}</div></div></div>`;
+      }
+      case 'calles': {
+        const rows = cards(s.cards).slice(0, 6);
+        return dark(`<div class="cs-in fit">${T(s.title, [[24, 104], [44, 92], [999, 80]])}${S(s.text)}<div class="cs-streets">${rows.map(c => `<div class="cs-street"><h4>${rich(c.label)}</h4>${c.text ? `<p>${rich(c.text)}</p>` : ''}</div>`).join('')}</div></div>`);
       }
       case 'documento':
         return `<div class="cs cs-light"><div class="cs-logo">${logo(ctx, false)}</div><div class="cs-sheet" style="${bg(im[0])}"></div>

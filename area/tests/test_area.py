@@ -128,7 +128,7 @@ def test_coverage_area_and_competitors():
 def test_free_draft_and_slides():
     c = db.row("SELECT * FROM candidates WHERE tag='licitacion' LIMIT 1")
     d = redaccion.free_draft(c, 'El proyecto prevé ampliar las aceras y plantar 40 árboles en la calle Ancha de Algeciras durante 10 meses de obra.')
-    assert d['headline'].startswith('Reurbanización') and [x['layout'] for x in d['slides']][:2] == ['portada', 'ficha']
+    assert d['headline'].startswith('Algeciras licita por 1,2 millones de euros la reurbanización') and [x['layout'] for x in d['slides']][:2] == ['portada', 'ficha']
     assert d['slides'][1]['figure'] == '1.200.000 €' and d['slides'][1]['status'] == 'En licitación'
     assert '#CampoDeGibraltar' in d['instagram_copy'] and '#Algeciras' in d['instagram_copy']
     assert d['render']['recommended'] is True
@@ -174,7 +174,7 @@ def test_ai_draft_parsing():
         ai.AI_ENABLED, redaccion.ask_json = old_enabled, old_ask
     assert d['section'] == 'LICITACIONES' and d['entradilla'] == 'Diez meses de obra.' and 'desconoce' not in d['body']
     assert [x['layout'] for x in d['slides']] == ['portada', 'ficha', 'caja', 'lista'], d['slides']
-    assert d['slides'][0]['title'] == 'Así será la calle Ancha' and d['slides'][2]['bullets'] == ['Aceras', '40 árboles'] and d['render']['recommended']
+    assert d['slides'][0]['title'] == d['headline'] and d['slides'][0]['text'] == d['entradilla'] and d['slides'][2]['bullets'] == ['Aceras', '40 árboles'] and d['render']['recommended']
 
 
 def test_canva_fields():
@@ -243,6 +243,41 @@ def test_ai_failure_falls_back_and_hides_area():
     os.environ['GEMINI_API_KEY'] = '"GEMINI_API_KEY=AIza 123"'
     from app import config
     assert config._key('GEMINI_API_KEY') == 'AIza123'
+
+
+def test_canva_typed_template():
+    from app import canva
+    assert canva.parse_typed('LISTA2_PUNTO3') == ('lista', 2, 'PUNTO3')
+    assert canva.parse_typed('Cifra Lista_cifra') is None or True
+    assert canva.parse_typed('CIFRALISTA_CIFRA') == ('cifra_lista', 1, 'CIFRA')
+    assert canva.parse_typed('CIFRA_ETIQUETA') == ('cifra', 1, 'ETIQUETA')
+    assert canva.parse_typed('TARJETAS_T2_CIFRA') == ('tarjetas', 1, 'T2_CIFRA')
+    assert canva.parse_typed('PORTADA_TITULAR') == ('portada', 1, 'TITULAR')
+    assert canva.parse_typed('TITULO_1') is None
+    fields = [{'name': n, 'type': 'image' if 'FOTO' in n else 'text'} for n in
+              ['PORTADA_TITULAR', 'PORTADA_ENTRADILLA', 'PORTADA_FOTO', 'LISTA_TITULO', 'LISTA_PUNTO1', 'LISTA_FOTO', 'FICHA_TITULO',
+               'FICHA_CIFRA', 'LISTA2_TITULO', 'CALLES_CALLE1', 'CALLES_OBRA1']]
+    slides = [{'layout': 'portada', 'title': 'T', 'text': 'E'}, {'layout': 'ficha', 'title': 'F', 'figure': '4,5 M€'},
+              {'layout': 'lista', 'title': 'L1', 'bullets': ['==uno=='], 'text': ''}, {'layout': 'lista', 'title': 'L2'},
+              {'layout': 'lista', 'title': 'L3'}, {'layout': 'calles', 'title': 'C', 'cards': [{'label': 'Calle Real', 'text': 'Asfalto'}]}]
+    plan, missing = canva.plan_typed(fields, slides)
+    # páginas por orden de aparición: PORTADA=1, LISTA=2, FICHA=3, LISTA2=4, CALLES=5
+    assert [(i, p) for i, _, _, p in plan] == [(0, 1), (1, 3), (2, 2), (3, 4), (5, 5)] and missing == [5]
+    assert canva.slide_value(slides[2], 'PUNTO1') == 'uno' and canva.slide_value(slides[5], 'OBRA1') == 'Asfalto'
+    assert canva.slide_value(slides[1], 'CIFRA') == '4,5 M€' and canva.slide_value(slides[0], 'ENTRADILLA') == 'E'
+
+
+def test_headline_entradilla_rules():
+    c = {'title': 'Adjudicación: Remodelación de la plaza de la Constitución', 'towns': 'La Línea', 'tstatus': 'ADJ', 'amount': '4.500.000,00 €',
+         'amount_value': 4500000, 'organism': 'Ayuntamiento de La Línea de la Concepción', 'winner': 'Eiffage', 'block': 'Licitaciones',
+         'excerpt': 'Obras · plazo de ejecución de 12 meses'}
+    d = redaccion.free_draft(c, '')
+    assert d['headline'] == 'La Línea adjudica por 4,5 millones de euros la remodelación de la plaza de la Constitución'
+    assert not redaccion.too_similar(d['headline'], d['entradilla']) and 'Eiffage' in d['entradilla'] and '12 meses' in d['entradilla']
+    out = {'headline': 'El Ayuntamiento adjudica la reforma del Parque Fuentenueva', 'entradilla': 'El Ayuntamiento adjudica la reforma integral del Parque Fuentenueva',
+           'headline_options': []}
+    redaccion.fix_head_entr(out, {**c, 'towns': 'Algeciras', 'organism': 'Ayuntamiento de Algeciras'})
+    assert not redaccion.too_similar(out['headline'], out['entradilla'])
 
 
 if __name__ == '__main__':

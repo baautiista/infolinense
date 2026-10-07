@@ -43,6 +43,10 @@ Otras variables: `SCAN_INTERVAL_MINUTES` (45), `DAILY_PICK_HOUR` (7), `PLACSP_FI
 
 ## Plantilla de Canva del carrusel
 
+**Por tipos (recomendada):** una página por tipo de diapositiva y los cuadros nombrados `TIPO_CAMPO` (ver `guia/guia_canva_area.png` y Ajustes → Canva). Ejemplos: `PORTADA_TITULAR`, `PORTADA_ENTRADILLA`, `PORTADA_FOTO`, `LISTA_TITULO`, `LISTA_PUNTO1…4`, `FICHA_CIFRA`, `CALLES_CALLE1`/`CALLES_OBRA1`… Para repetir un tipo se duplica la página: `LISTA2_TITULO`. La app rellena solo las páginas que usa el carrusel y exporta esas, en orden. Gráficos fijos en la plantilla; el resaltado de palabras sueltas (==así==) no se puede hacer con Autocompletar, solo en los PNG que genera el panel.
+
+**Numerada (antigua):**
+
 Plantilla de marca con una página por diapositiva y estos nombres en Autocompletar: `TITULO_1`, `TEXTO_1`, `FOTO_1`, `ANTETITULO_1` … (1 = portada), además de `MUNICIPIO` y `NUM`. Se pega el enlace en Ajustes → Canva y el panel muestra qué campos reconoce.
 
 ## Estilo

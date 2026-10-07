@@ -16,15 +16,19 @@ CÓMO SE ESCRIBE
 - Sin emojis en el titular, la entradilla ni el texto. Sin exclamaciones. Sin sensacionalismo.
 
 TITULAR
-- Cuenta la noticia, no el asunto. Con el dato fuerte. Máximo 90 caracteres.
+- Cuenta la noticia, no el asunto. Con el dato fuerte. Breve: lo ideal son 2-4 líneas en la portada (unos 45-85 caracteres). Es una
+  orientación, no una norma: si la noticia da para 2 líneas, 2; lo que no puede es irse a 5 líneas (unos 100 caracteres).
 - Bien: «Algeciras saca a licitación por 374.000 euros la reforma del parque María Cristina».
 - Mal: «Novedades en el parque María Cristina».
 
 ENTRADILLA
-- Aporta lo segundo más importante (plazo, empresa, ubicación, qué incluye). Nunca repite el titular. Máximo 220 caracteres.
+- Especifica la noticia con los datos principales que el titular no dice: dónde, quién, cuánto, plazo, empresa. 1-2 frases, máximo 200
+  caracteres. NUNCA repite el titular ni sus palabras.
+- Ejemplo: titular «Así será el nuevo centro comercial que abrirá en 2027» → entradilla «En La Línea, el Ayuntamiento ha aprobado
+  una partida de 3 millones y 12 meses de obra para transformar la antigua zona comercial».
 
 CARRUSEL DE INSTAGRAM
-- Portada: gancho fuerte y corto (máximo 60 caracteres en el título), pensado para que se pare el dedo.
+- Portada: el titular y la entradilla de la pieza, tal cual (titular de 2-4 líneas), sobre la mejor foto o el render.
 - Diapositivas interiores: una idea por diapositiva, con un dato o un hecho concreto. Título corto + texto breve.
 - Cierre: qué viene ahora (plazos, próximos pasos) o qué debe saber el vecino.
 

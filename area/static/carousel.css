@@ -125,3 +125,10 @@
 .cs .cs-doc-t{font-family:"AB";font-weight:800;font-size:calc(var(--k)*var(--ts,190px));line-height:.9;text-transform:uppercase;color:var(--red)}
 .cs .cs-doc-s{font-weight:500;font-size:calc(var(--k)*50px);line-height:1.25;margin-top:40px;color:#111}
 .cs .cs-sheet{position:absolute;left:75px;right:120px;top:800px;height:900px;background:#fff center top/cover no-repeat;transform:rotate(-4.5deg);box-shadow:0 30px 60px rgba(0,0,0,.28)}
+
+/* listado de calles */
+.cs .cs-streets{display:flex;flex-direction:column;gap:calc(var(--k)*40px);margin-top:calc(var(--k)*70px)}
+.cs .cs-street{position:relative}
+.cs .cs-street::before{content:"";position:absolute;left:-50px;top:.25em;width:16px;height:calc(var(--k)*50px);background:var(--red)}
+.cs .cs-street h4{font-weight:800;font-size:calc(var(--k)*50px);line-height:1.1;letter-spacing:-.02em}
+.cs .cs-street p{font-weight:500;font-size:calc(var(--k)*38px);line-height:1.22;margin-top:6px;opacity:.95}

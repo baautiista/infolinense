@@ -270,7 +270,8 @@ async function editorView(v) {
       ${field('headline', 'Titular', A.headline, 2, 90)}
       ${(A.headline_options || []).length ? `<div class="alt">${A.headline_options.map(h => `<button data-alt="${esc(h)}">${esc(h)}</button>`).join('')}</div>` : ''}
       <div class="row"><button class="link" data-regen="headlines">Otros titulares</button></div>
-      ${field('entradilla', 'Entradilla', A.entradilla, 3, 220)}
+      ${field('entradilla', 'Entradilla', A.entradilla, 3, 200)}
+      <p class="small muted" style="margin:-6px 0 0">La entradilla da los datos que no están en el titular (dónde, quién, cuánto, plazo). Nunca lo repite.</p>
       ${field('body', 'Texto', A.body, 12)}
       ${field('instagram_copy', 'Copy de Instagram', A.instagram_copy, 9, 2200)}
       <div class="row"><button class="link" data-regen="instagram">Rehacer copy</button></div>
@@ -319,9 +320,18 @@ function docsState(s) {
   if (s.error) return 'Expediente: ' + s.error;
   return `Expediente: ${s.documents_read || 0} documentos leídos · ${s.images || 0} imágenes nuevas${(s.errors || []).length ? ' · ' + s.errors.length + ' sin abrir' : ''}${!(s.documents || []).length ? ' · no se encontraron documentos' : ''}`;
 }
+function headLines(t) {  /* líneas aproximadas en la portada (mayúsculas condensadas, ~24 caracteres por línea) */
+  const words = String(t || '').trim().split(/\s+/).filter(Boolean); let lines = words.length ? 1 : 0, cur = 0;
+  for (const w of words) { if (cur && cur + 1 + w.length > 24) { lines++; cur = w.length } else cur += (cur ? 1 : 0) + w.length }
+  return lines;
+}
 function counters() {
   document.querySelectorAll('[data-count]').forEach(el => {
     const t = document.querySelector(`[data-f="${el.dataset.count}"]`); const n = t.value.length, max = Number(el.dataset.max);
+    if (el.dataset.count === 'headline') {
+      const l = headLines(t.value);
+      el.textContent = `${n} caracteres · ≈${l} líneas en portada${l >= 5 ? ' (demasiado largo)' : l <= 1 ? ' (muy corto)' : ''}`; el.classList.toggle('over', l >= 5); return;
+    }
     el.textContent = max ? `${n}/${max}` : `${n}`; el.classList.toggle('over', max && n > max);
   });
 }
@@ -334,7 +344,15 @@ function slidesText() {
 }
 function bindEditor(v) {
   counters();
-  v.querySelectorAll('[data-f]').forEach(t => t.oninput = counters);
+  let syncT;
+  v.querySelectorAll('[data-f]').forEach(t => t.oninput = () => {
+    counters();
+    if (['headline', 'entradilla'].includes(t.dataset.f) && A.slides && A.slides[0]) {  /* la portada sigue al titular y la entradilla */
+      const el = document.querySelector(`.slide2[data-i="0"] [data-s="${t.dataset.f === 'headline' ? 'title' : 'text'}"]`);
+      if (el) el.value = t.value;
+      clearTimeout(syncT); syncT = setTimeout(() => { readSlides(); preview(0) }, 400);
+    }
+  });
   v.querySelectorAll('[data-copy]').forEach(b => b.onclick = () => copy(document.querySelector(`[data-f="${b.dataset.copy}"]`).value, b));
   v.querySelectorAll('[data-alt]').forEach(b => b.onclick = () => { const t = document.querySelector('[data-f="headline"]'); const old = t.value; t.value = b.dataset.alt; b.dataset.alt = old; b.textContent = old; counters() });
   $('#copyAll').onclick = e => { const t = textsNow(); copy(`${t.headline}\n\n${t.entradilla}\n\n${t.body}\n\n—\n\n${t.instagram_copy}`, e.target) };
@@ -392,10 +410,11 @@ async function slideCtx(i) {
 }
 function slideFields(s, i) {
   const L = CS.LAYOUTS[s.layout] || CS.LAYOUTS.lista, F = CS.FIELD_LABEL;
-  const val = k => k === 'bullets' || k === 'chips' ? (s[k] || []).join('\n') : k === 'cards' ? CS.cards(s.cards).map(c => [c.label, c.figure, c.text, c.icon].map(x => x || '').join(' | ')).join('\n') : (s[k] || '');
+  const val = k => k === 'bullets' || k === 'chips' ? (s[k] || []).join('\n') : k === 'cards' ? CS.cards(s.cards).map(c => [c.label, c.figure, c.text, c.icon].map(x => x || '').join(' | ')).join('\n')
+    : k === 'streets' ? CS.cards(s.cards).map(c => (c.label || '') + ' | ' + (c.text || '')).join('\n') : (s[k] || '');
   return L.fields.map(k => {
-    const multi = ['text', 'bullets', 'chips', 'cards'].includes(k) || (k === 'title' && s.layout === 'portada');
-    return `<label class="small">${F[k]}${multi ? `<textarea data-s="${k}" rows="${k === 'cards' || k === 'bullets' ? 4 : 2}">${esc(val(k))}</textarea>` : `<input data-s="${k}" value="${esc(val(k))}">`}</label>`;
+    const multi = ['text', 'bullets', 'chips', 'cards', 'streets'].includes(k) || (k === 'title' && s.layout === 'portada');
+    return `<label class="small">${F[k]}${multi ? `<textarea data-s="${k}" rows="${['cards', 'bullets', 'streets'].includes(k) ? 5 : 2}">${esc(val(k))}</textarea>` : `<input data-s="${k}" value="${esc(val(k))}">`}</label>`;
   }).join('') + `<label class="small">Imagen sugerida<input data-s="image_hint" value="${esc(s.image_hint || '')}"></label>`;
 }
 async function drawSlides() {
@@ -428,7 +447,9 @@ function readSlides() {
     const o = { ...(A.slides[i] || {}) };
     el.querySelectorAll('[data-s]').forEach(x => {
       const k = x.dataset.s, v = x.value;
-      o[k] = k === 'bullets' || k === 'chips' ? CS.lines(v) : k === 'cards' ? CS.cards(v) : v;
+      o[k] = k === 'bullets' || k === 'chips' ? CS.lines(v) : k === 'cards' ? CS.cards(v)
+        : k === 'streets' ? CS.lines(v).map(l => { const [label, ...rest] = l.split('|'); return { label: (label || '').trim(), text: rest.join('|').trim() } }) : v;
+      if (k === 'streets') { o.cards = o.streets; delete o.streets }
     });
     if (i === 0) o.layout = 'portada';
     return o;
@@ -488,7 +509,7 @@ async function drawCanva() {
         : `<p class="small muted">Se rellena la plantilla con cada diapositiva y las imágenes marcadas (por su número de diapositiva o en orden).</p>`}
     ${A.canva_error ? `<p class="error small">${esc(A.canva_error)}</p>` : ''}
     ${pages.length ? `<p class="small">${pages.length} páginas exportadas: están arriba en «Carrusel Canva» y en el ZIP.</p>` : ''}`;
-  $('#canvaMake').onclick = async e => { e.target.disabled = true; e.target.innerHTML = '<span class="spin"></span> Creando en Canva…'; try { await saveAll(true); const r = await post(`/api/articles/${A.id}/canva`); A = { ...A, ...r.article }; drawImages(); drawCanva(); toast('Carrusel creado') } catch (err) { toast(err.message); drawCanva() } };
+  $('#canvaMake').onclick = async e => { e.target.disabled = true; e.target.innerHTML = '<span class="spin"></span> Creando en Canva…'; try { await saveAll(true); const r = await post(`/api/articles/${A.id}/canva`); A = { ...A, ...r.article }; drawImages(); drawCanva(); toast((r.missing_slides || []).length ? `Creado en Canva. Las diapositivas ${r.missing_slides.join(', ')} no tienen página en tu plantilla: descárgalas con «Generar imágenes del carrusel»` : 'Carrusel creado en Canva') } catch (err) { toast(err.message); drawCanva() } };
   $('#canvaExport') && ($('#canvaExport').onclick = async e => { e.target.disabled = true; try { const r = await post(`/api/articles/${A.id}/canva/export`); A = { ...A, ...r }; drawImages(); toast('PNG actualizados') } catch (err) { toast(err.message) } e.target.disabled = false });
 }
 
@@ -511,7 +532,13 @@ async function settingsView(v) {
       <div class="row"><button class="btn small" id="tplSave">Guardar plantilla</button></div>
       ${t.error ? `<p class="error small">${esc(t.error)}</p>` : ''}
       ${(t.fields || []).length ? `<p class="small">Campos encontrados: ${t.fields.map(f => `<span class="code" style="${f.role ? '' : 'opacity:.5'}">${esc(f.name)}${f.role ? ' → ' + f.role + (f.slide ? ' ' + f.slide : '') : ''}</span>`).join(' ')}</p>` : ''}
-      <p class="small muted">Nombres de los cuadros en la plantilla (Aplicaciones → Autocompletar): <span class="code">TITULO_1</span>, <span class="code">TEXTO_1</span>, <span class="code">FOTO_1</span>, <span class="code">ANTETITULO_1</span>… hasta la última diapositiva (1 = portada). También <span class="code">MUNICIPIO</span> y <span class="code">NUM</span>.</p></section>
+      ${(t.typed || []).length ? `<p class="small">Páginas reconocidas: ${t.typed.map(x => `<span class="code">${esc(x)}</span>`).join(' ')}</p>` : ''}
+      <label>Orden de las páginas de la plantilla (una por línea o separadas por comas)<textarea id="tplPages" rows="3" placeholder="PORTADA, LISTA, FICHA, CAJA…">${esc(t.pages || (t.page_order || []).join(', '))}</textarea></label>
+      <div class="row"><button class="btn small" id="tplPagesSave">Guardar orden</button></div>
+      <details class="peek"><summary>Cómo nombrar los cuadros en Canva (plantilla por tipos)</summary>
+        <p class="small">Una página por tipo de diapositiva. En cada página, abre <b>Aplicaciones → Autocompletar (Bulk/Data autofill)</b> y pon a cada cuadro de texto o foto el nombre de la lista. Los gráficos (barras rojas, flechas, cajas, degradados, marco) son fijos: la app solo pone textos y fotos. Si un tipo puede salir dos veces, duplica la página y numera el tipo: <span class="code">LISTA2_TITULO</span>. No hace falta tener todos los tipos: lo que falte se puede descargar desde «Generar imágenes del carrusel».</p>
+        ${(t.guide || []).map(g => `<p class="small" style="margin:6px 0"><b>${esc((CS.LAYOUTS[g.layout] || {}).label || g.layout)}</b><br>${g.fields.map(f => `<span class="code">${esc(f)}</span>`).join(' ')}</p>`).join('')}
+        <p class="small muted">Antigua (numerada): <span class="code">TITULO_1</span>, <span class="code">TEXTO_1</span>, <span class="code">FOTO_1</span>… por número de diapositiva.</p></details></section>
     <section class="card stack"><h3>Fuentes del radar (${s.sources.length})</h3>
       ${blocks.filter(b => b !== 'Efemérides').map(b => `<div class="sect">${esc(b)}</div>${s.sources.filter(x => x.block === b).map(x => srcRow(x)).join('') || '<p class="small muted">Ninguna</p>'}`).join('')}
       <details class="peek"><summary>Añadir fuente</summary><div class="stack" style="margin-top:8px">
@@ -533,6 +560,7 @@ async function settingsView(v) {
   v.querySelectorAll('[data-logodel]').forEach(x => x.onclick = async () => { await api('/api/brand/logo/' + x.dataset.logodel, { method: 'POST', body: new FormData() }); render() });
   $('#aiCheck').onclick = async () => { $('#aiOut').innerHTML = '<span class="spin"></span>'; try { const r = await api('/api/ai/check'); $('#aiOut').innerHTML = r.providers.map(p => `${esc(p.provider_name)}: ${p.configured ? (p.ok ? '<span class="ok">funciona</span>' : esc(p.message || 'error')) : 'sin clave'}`).join('<br>') } catch (err) { $('#aiOut').textContent = err.message } };
   $('#canvaConnect') && ($('#canvaConnect').onclick = async () => { try { location.href = (await api('/api/canva/connect')).url } catch (err) { toast(err.message) } });
+  $('#tplPagesSave').onclick = async () => { try { await api('/api/canva/template', { method: 'PUT', body: JSON.stringify({ pages: $('#tplPages').value }) }); toast('Orden guardado'); render() } catch (err) { toast(err.message) } };
   $('#tplSave').onclick = async () => { try { await api('/api/canva/template', { method: 'PUT', body: JSON.stringify({ template: $('#tplLink').value }) }); toast('Plantilla guardada'); render() } catch (err) { toast(err.message) } };
   v.querySelectorAll('[data-tog]').forEach(b => b.onclick = async () => { await post(`/api/sources/${b.dataset.tog}/toggle`); render() });
   v.querySelectorAll('[data-ptog]').forEach(b => b.onclick = async () => { await post(`/api/sources/${b.dataset.ptog}/toggle?press=1`); render() });

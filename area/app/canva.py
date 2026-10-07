@@ -1,9 +1,11 @@
 """Canva: conexión OAuth y carrusel desde la plantilla de marca de Área (autocompletar + exportar PNG).
 
-Convención de campos en la plantilla (Aplicaciones → Autocompletar → nombres de los cuadros):
-  TITULO_1, TEXTO_1, FOTO_1, ANTETITULO_1 … TITULO_8, TEXTO_8, FOTO_8  (el número es la diapositiva; 1 = portada)
-  También vale TITULAR/HEADLINE, ENTRADILLA/SUMMARY/TEXT, IMAGEN/PHOTO, KICKER/SECCION, MUNICIPIO, NUM.
-  Un campo sin número es de la portada (MUNICIPIO sin número va en todas).
+PLANTILLA POR TIPOS (la recomendada): una página por tipo de diapositiva, con los cuadros nombrados TIPO_CAMPO
+(PORTADA_TITULAR, LISTA_TITULO, LISTA_PUNTO1…). Para tener dos diapositivas del mismo tipo se duplica la página y se numera
+el tipo: LISTA2_TITULO… La app rellena las páginas que usa el carrusel y exporta solo esas, en el orden del carrusel.
+Los gráficos (barras, flechas, cajas, degradados) son fijos en la plantilla; la app solo pone textos y fotos.
+
+PLANTILLA NUMERADA (antigua): TITULO_1, TEXTO_1, FOTO_1 … por número de diapositiva.
 """
 import base64
 import hashlib
@@ -267,3 +269,182 @@ def template_from_link(value):
     m = re.search(r'brand-templates/([A-Za-z0-9_-]{8,})', value) or re.search(r'[?&]template=([A-Za-z0-9_-]{8,})', value) \
         or re.fullmatch(r'([A-Za-z0-9_-]{8,})', value)
     return m.group(1) if m else ''
+
+
+
+# ---------------------------------------------------------------- plantilla por tipos
+
+# tipo de diapositiva → prefijo en Canva y campos (CAMPO → de dónde sale)
+TYPES = {
+    'portada': ('PORTADA', ['TITULAR', 'ENTRADILLA', 'FOTO']),
+    'lista': ('LISTA', ['TITULO', 'SUBTITULO', 'PUNTO1', 'PUNTO2', 'PUNTO3', 'PUNTO4', 'FOTO']),
+    'caja': ('CAJA', ['TITULO', 'SUBTITULO', 'LISTA', 'FOTO']),
+    'flujo': ('FLUJO', ['TITULO', 'SUBTITULO', 'PASO1', 'PASO2', 'PASO3', 'FRASE1', 'FRASE2', 'FRASE3', 'FOTO']),
+    'cifra_lista': ('CIFRALISTA', ['TITULO', 'SUBTITULO', 'PUNTO1', 'PUNTO2', 'PUNTO3', 'CIFRA', 'FOTO']),
+    'ficha': ('FICHA', ['TITULO', 'TEXTO', 'ESTADO', 'CIFRA', 'FOTO']),
+    'pregunta': ('PREGUNTA', ['PREGUNTA', 'RESPUESTA']),
+    'anotada': ('ANOTADA', ['CONTEXTO', 'TITULO', 'NOTA1', 'NOTA2', 'NOTA3', 'FOTO']),
+    'mapa': ('MAPA', ['TITULO', 'TEXTO', 'FOTO', 'IMAGEN']),
+    'cifra': ('CIFRA', ['ANTETITULO', 'CIFRA', 'ETIQUETA', 'TEXTO', 'FOTO']),
+    'tarjetas': ('TARJETAS', ['ANTETITULO', 'TITULO'] + ['T%s_%s' % (n, f) for n in (1, 2, 3) for f in ('ROTULO', 'CIFRA', 'TEXTO')] + ['FOTO']),
+    'mosaico': ('MOSAICO', ['ANTETITULO'] + ['M%s_%s' % (n, f) for n in (1, 2, 3, 4, 5) for f in ('ROTULO', 'TEXTO', 'FOTO')]),
+    'documento': ('DOCUMENTO', ['ANTETITULO', 'TITULO', 'TEXTO', 'DOCUMENTO']),
+    'calles': ('CALLES', ['TITULO', 'SUBTITULO'] + ['%s%s' % (f, n) for n in range(1, 7) for f in ('CALLE', 'OBRA')] + ['FOTO']),
+}
+PREFIXES = sorted(((v[0], k) for k, v in TYPES.items()), key=lambda x: -len(x[0]))
+IMAGE_FIELDS = re.compile(r'^(FOTO|IMAGEN|DOCUMENTO|M\d_FOTO)$')
+
+
+def _up(name):
+    t = unicodedata.normalize('NFD', str(name or '').upper())
+    t = ''.join(c for c in t if unicodedata.category(c) != 'Mn')
+    return re.sub(r'[^A-Z0-9]+', '_', t).strip('_')
+
+
+def parse_typed(name):
+    """«LISTA2_PUNTO3» → ('lista', 2, 'PUNTO3'); si no sigue la convención, None."""
+    n = _up(name)
+    for prefix, layout in PREFIXES:
+        m = re.match(r'^%s(\d*)_(.+)$' % prefix, n)
+        if m and m.group(2) in TYPES[layout][1]:
+            return layout, int(m.group(1) or 1), m.group(2)
+    return None
+
+
+def _plain(t):
+    return re.sub(r'==|\+\+|\*\*', '', str(t or '')).strip()
+
+
+def slide_value(slide, field):
+    s, at = slide, lambda lst, i: _plain(lst[i]) if i < len(lst) else ''
+    bullets, chips, cards = s.get('bullets') or [], s.get('chips') or [], s.get('cards') or []
+    m = re.match(r'^(PUNTO|NOTA|FRASE|PASO)(\d)$', field)
+    if m:
+        return at(chips if m.group(1) == 'PASO' else bullets, int(m.group(2)) - 1)
+    m = re.match(r'^(CALLE|OBRA)(\d)$', field) or re.match(r'^[TM](\d)_(ROTULO|CIFRA|TEXTO)$', field)
+    if m:
+        if field.startswith(('CALLE', 'OBRA')):
+            i, key = int(m.group(2)) - 1, 'label' if m.group(1) == 'CALLE' else 'text'
+        else:
+            i, key = int(m.group(1)) - 1, {'ROTULO': 'label', 'CIFRA': 'figure', 'TEXTO': 'text'}[m.group(2)]
+        return _plain(cards[i].get(key)) if i < len(cards) else ''
+    if field == 'LISTA':
+        return '\n'.join(_plain(b) for b in bullets)
+    if field == 'CIFRA':
+        fig = _plain(s.get('figure'))
+        return (fig + ' ' + _plain(s.get('figure_label'))).strip() if s.get('layout') == 'cifra_lista' else fig
+    key = {'TITULAR': 'title', 'TITULO': 'title', 'PREGUNTA': 'title', 'ENTRADILLA': 'text', 'SUBTITULO': 'text', 'TEXTO': 'text',
+           'RESPUESTA': 'text', 'CONTEXTO': 'kicker', 'ANTETITULO': 'kicker', 'ESTADO': 'status', 'ETIQUETA': 'figure_label'}.get(field)
+    return _plain(s.get(key)) if key else ''
+
+
+def slide_image(images, field):
+    m = re.match(r'^M(\d)_FOTO$', field)
+    i = int(m.group(1)) - 1 if m else (1 if field == 'IMAGEN' else 0)
+    if not images:
+        return None
+    return images[i] if i < len(images) else (images[0] if field != 'IMAGEN' else images[-1])
+
+
+def typed_instances(fields):
+    """Instancias de la plantilla en el orden en que aparecen: [('portada',1), ('lista',1), ('lista',2)…]."""
+    out = []
+    for f in fields:
+        p = parse_typed(f['name'])
+        if p and (p[0], p[1]) not in out:
+            out.append((p[0], p[1]))
+    return out
+
+
+def inst_name(layout, n):
+    return TYPES[layout][0] + ('' if n == 1 else str(n))
+
+
+def page_order(fields):
+    """Orden de páginas: el guardado en Ajustes o, si no, el de aparición de los campos."""
+    saved = [_up(x) for x in (db.setting('canva_pages') or '').replace('\n', ',').split(',') if x.strip()]
+    if saved:
+        return saved
+    return [inst_name(l, n) for l, n in typed_instances(fields)]
+
+
+def plan_typed(fields, slides):
+    """Qué página de la plantilla usa cada diapositiva. Devuelve ([(slide_index, layout, n, page)], [diapositivas sin página])."""
+    available = typed_instances(fields)
+    order = page_order(fields)
+    used, plan, missing = set(), [], []
+    for i, s in enumerate(slides):
+        layout = s.get('layout') or 'lista'
+        inst = next(((l, n) for l, n in available if l == layout and (l, n) not in used), None)
+        if not inst or inst_name(*inst) not in order:
+            missing.append(i + 1)
+            continue
+        used.add(inst)
+        plan.append((i, inst[0], inst[1], order.index(inst_name(*inst)) + 1))
+    return plan, missing
+
+
+def create_typed(article, slides, slide_images, fields):
+    plan, missing = plan_typed(fields, slides)
+    if not plan:
+        raise ValueError('La plantilla no tiene páginas para los tipos de este carrusel.')
+    by_inst = {(l, n): i for i, l, n, _ in plan}
+    data, uploads = {}, {}
+    for f in fields:
+        p = parse_typed(f['name'])
+        if not p:
+            continue
+        layout, n, field = p
+        i = by_inst.get((layout, n))
+        if f['type'] == 'text':
+            data[f['name']] = {'type': 'text', 'text': (slide_value(slides[i], field) if i is not None else '') or ' '}
+        elif f['type'] == 'image' and i is not None:
+            path = slide_image(slide_images[i], field)
+            if path:
+                if path not in uploads:
+                    uploads[path] = _upload(path, 'Area-%s-%s%s' % (article['id'], len(uploads) + 1, Path(path).suffix))
+                data[f['name']] = {'type': 'image', 'asset_id': uploads[path]}
+    job = _api('POST', '/autofills', json={'type': 'create_from_brand_template', 'brand_template_id': template_id(),
+                                          'title': 'Área · ' + (article.get('headline') or '')[:100], 'data': data})
+    design = _design_from_job(_wait('/autofills/' + job['job']['id'], job))
+    if not design.get('id'):
+        raise ValueError('Canva no devolvió el diseño')
+    url = design.get('url') or (design.get('urls') or {}).get('edit_url') or 'https://www.canva.com/design/%s/edit' % design['id']
+    pages = [p for _, _, _, p in plan]
+    db.exec_('UPDATE articles SET canva_design_id=?,canva_url=?,canva_error=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=?',
+             (design['id'], url, article['id']))
+    db.set_setting('canva_pages_%s' % article['id'], json.dumps({'pages': pages, 'slides': [i + 1 for i, _, _, _ in plan]}))
+    export_pages(article['id'], design['id'], pages, [i + 1 for i, _, _, _ in plan], url)
+    return {'url': url, 'design_id': design['id'], 'pages': len(pages), 'missing_slides': missing}
+
+
+def export_pages(article_id, design_id, pages, slide_numbers, url=''):
+    for old in RENDER_DIR.glob('area_%s_*.png' % article_id):
+        try:
+            old.unlink()
+        except OSError:
+            pass
+    db.exec_("DELETE FROM media WHERE article_id=? AND kind='canva'", (article_id,))
+    paths = _export_pages(design_id, article_id, pages)
+    for p, n in zip(paths, slide_numbers):
+        db.exec_("INSERT INTO media(article_id,kind,url,local_path,caption,slide,selected) VALUES(?,?,?,?,?,?,1)",
+                 (article_id, 'canva', url, p, 'Diapositiva %s (Canva)' % n, n))
+
+
+def create_any(article, slides, slide_images):
+    """Usa la plantilla por tipos si la plantilla sigue esa convención; si no, la numerada."""
+    if not ready() or not connected():
+        raise ValueError('Conecta Canva desde Ajustes')
+    fields = template_fields()
+    if any(parse_typed(f['name']) for f in fields):
+        return create_typed(article, slides, slide_images, fields)
+    flat = [(imgs[0] if imgs else None) for imgs in slide_images]
+    flat = [p for p in flat if p] or [p for imgs in slide_images for p in imgs]
+    if not flat:
+        raise ValueError('Asigna al menos una foto al carrusel')
+    return create_carousel(article, slides, [flat[i % len(flat)] for i in range(len(slides))])
+
+
+def field_guide():
+    """Nombres de cuadros que espera la plantilla por tipos (para Ajustes)."""
+    return [{'layout': k, 'prefix': v[0], 'fields': ['%s_%s' % (v[0], f) for f in v[1]]} for k, v in TYPES.items()]

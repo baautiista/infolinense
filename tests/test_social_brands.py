@@ -41,7 +41,7 @@ class BrandTests(unittest.TestCase):
         self.assertIn('Gran Poder y Ángeles', names); self.assertIn('La Línea Cofrade', names)
 
     def test_settings_and_templates(self):
-        self.assertEqual(canva.template_for('Titular', 'cofrade'), 'EAHXQHp9uXw')  # plantilla publicada por defecto
+        self.assertEqual(canva.template_for('Titular', 'cofrade'), 'EAHXWt4MRSY')  # plantilla publicada por defecto
         b = brands.save_settings('carnaval', {'templates': {'main': 'https://www.canva.com/brand/brand-templates/EAHcarnav12'},
                                               'sections': 'Agrupaciones, Concurso'})
         self.assertEqual(b['templates']['main'], 'EAHcarnav12')

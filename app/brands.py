@@ -26,7 +26,7 @@ BRANDS = {
                              'Almas y Angustias', 'Perdón y Salud', 'Amor y Esperanza', 'Misericordia y Amargura',
                              'Cristo del Mar y Luz', 'Santo Entierro y Soledad', 'Inmaculada Concepción', 'Hermandad del Rocío',
                              'General', 'Ocasiones especiales'],
-                'templates': {'main': 'EAHXQHp9uXw'}, 'page_mode': 'section', 'carousel_page': 19,
+                'templates': {'main': 'EAHXWt4MRSY'}, 'page_mode': 'section', 'carousel_page': 19,
                 'headline_lines': 3, 'line_chars': 24,  # el titular ocupa 3 líneas de unos 24 caracteres (letra de 44 px)
                 'free_title_section': 'General'},
     'carnaval': {'name': 'Carnavalinense', 'short': 'Carnaval', 'color': '#E72E79', 'text': '#FFFFFF', 'env': 'CARNAVAL_',
@@ -81,8 +81,8 @@ def init_tables():
 
 
 # Plantillas sustituidas por una versión nueva (p. ej. letra del titular más pequeña)
-_TEMPLATE_UPGRADES = {}
-_TEMPLATE_LINE_CHARS = {}  # caracteres por línea del titular según la plantilla
+_TEMPLATE_UPGRADES = {'EAHXQHp9uXw': 'EAHXWt4MRSY'}  # Cofrade: titular de 44 px → 37 px
+_TEMPLATE_LINE_CHARS = {'EAHXWt4MRSY': 32}  # caracteres por línea del titular según la plantilla
 
 
 def settings(slug):

@@ -208,6 +208,27 @@ def init_db():
                   (n,u,'social',85 if 'La Línea' in n else 75,0,1,'carnaval'))
     c.execute("INSERT OR IGNORE INTO sources(name,url,kind,priority,official,local_scope,brand) VALUES(?,?,?,?,?,?,?)",
               ('Carnaval · noticias de La Línea',news('"La Línea" (carnaval OR chirigota OR comparsa OR murga OR cuarteto OR agrupación) when:3d'),'rss',75,0,0,'carnaval'))
+    # Lista ampliada de fuentes (6.4.5): cada grupo busca solo lo que menciona La Línea en esos medios
+    more=[
+      ('Plataforma de Contratación · Ayuntamiento de La Línea','https://contrataciondelestado.es/sindicacion/sindicacion_643/licitacionesPerfilesContratanteCompleto3.atom','procurement',96,1,1),
+      ('Medios nacionales (Público, infoLibre, Vozpópuli, HuffPost, Servimedia, Newtral, Maldita)',news('"La Línea de la Concepción" (site:publico.es OR site:infolibre.es OR site:vozpopuli.com OR site:huffingtonpost.es OR site:servimedia.es OR site:newtral.es OR site:maldita.es) when:3d'),'rss',72,0,0),
+      ('Radio y agencias (SER, COPE, Onda Cero, Europa Press, EFE)',news('"La Línea" (site:cadenaser.com OR site:cope.es OR site:ondacero.es OR site:europapress.es OR site:efe.com) when:2d'),'rss',80,0,0),
+      ('Prensa andaluza (Grupo Joly, SUR, Ideal, Córdoba, La Voz del Sur…)',news('"La Línea de la Concepción" (site:diariodesevilla.es OR site:malagahoy.es OR site:granadahoy.com OR site:huelvainformacion.es OR site:diariodecadiz.es OR site:diariodejerez.es OR site:diariosur.es OR site:ideal.es OR site:diariocordoba.com OR site:cordopolis.es OR site:lavozdelsur.es OR site:cadizdirecto.com OR site:andaluciainformacion.es OR site:granadadigital.es) when:3d'),'rss',78,0,0),
+      ('Canal Sur, ABC Sevilla y Europa Press Andalucía',news('"La Línea de la Concepción" (site:canalsur.es OR site:abc.es/sevilla OR site:europapress.es/andalucia) when:3d'),'rss',76,0,0),
+      ('Junta de Andalucía · noticias',news('"La Línea de la Concepción" site:juntadeandalucia.es when:7d'),'rss',84,1,0),
+      ('Diputación de Cádiz',news('"La Línea" site:dipucadiz.es when:7d'),'rss',82,1,0),
+      ('Mancomunidad del Campo de Gibraltar',news('"La Línea" (site:mancomunidadcg.es OR Mancomunidad "Campo de Gibraltar") when:7d'),'rss',80,1,0),
+      ('Prensa del Campo de Gibraltar (Área, 8Directo, HoraSur, Europa Sur, Radio Algeciras, Onda Cero)',news('"La Línea" (site:diarioarea.com OR site:8directo.com OR site:horasur.com OR site:europasur.es OR site:cadenaser.com OR site:ondacero.es) when:2d'),'rss',88,0,0),
+      ('Prensa de Gibraltar (Chronicle, GBC, YGTV, Panorama, Insight, InfoGibraltar, Olive Press)',news('("La Linea" OR "La Línea" OR Spain OR frontier OR border) (site:chronicle.gi OR site:gbc.gi OR site:yourgibraltartv.com OR site:panorama.gi OR site:gibraltarinsight.com OR site:infogibraltar.com OR site:theolivepress.es) when:2d'),'rss',72,0,0),
+      ('Gibraltar · Policía y Puerto',news('("La Linea" OR Spain OR Spanish) (site:police.gi OR site:gibraltarport.com) when:7d'),'rss',62,1,0),
+      ('Cultura de La Línea (Museo Cruz Herrera, Manolo Alés, Teatro, Palacio de Congresos, Biblioteca)',news('("Museo Cruz Herrera" OR "Manolo Alés" OR "Teatro Paseo de la Velada" OR "Palacio de Congresos" OR "Biblioteca José Riquelme" OR "Biblioteca Municipal José Riquelme") "La Línea" when:7d'),'rss',84,1,1),
+      ('Redes municipales (Turismo, Museo, Galería, Teatro, Palacio, Biblioteca)',news('("Turismo La Línea" OR "Museo Cruz Herrera" OR "Manolo Alés" OR "Teatro Paseo de la Velada" OR "Palacio de Congresos de La Línea" OR "José Riquelme") (site:facebook.com OR site:instagram.com) when:7d'),'rss',70,1,1),
+      ('Áreas municipales (Urbanismo, Infraestructuras, EMUSVIL, Medio Ambiente, Movilidad, Deportes, Festejos, Seguridad)',news('"La Línea" (Urbanismo OR Infraestructuras OR EMUSVIL OR "Medio Ambiente" OR Movilidad OR Deportes OR Festejos OR "Seguridad Ciudadana") Ayuntamiento when:3d'),'rss',82,1,0),
+      ('Transparencia y publicaciones oficiales del Ayuntamiento',news('"La Línea de la Concepción" (transparencia OR "Junta de Gobierno" OR pleno OR decreto OR ordenanza) when:7d'),'rss',80,1,0),
+      ('BOE · La Línea',news('"La Línea de la Concepción" site:boe.es when:7d'),'rss',80,1,0),
+    ]
+    for n,u,k,p,o,scope in more:
+        c.execute('INSERT OR IGNORE INTO sources(name,url,kind,priority,official,local_scope) VALUES(?,?,?,?,?,?)',(n,u,k,p,o,scope))
     # El tablón de edictos es fuente prioritaria: se reactiva una vez (5.6)
     # Solo La Línea (5.7): «Campo de Gibraltar» trae otros municipios; Gibraltar pasa por el filtro de temas
     if not c.execute("SELECT 1 FROM settings WHERE key='solo_linea_57'").fetchone():

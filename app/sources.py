@@ -263,6 +263,38 @@ def parse_licitacionesio(source):
     return out
 
 
+PLACSP_FEED = 'https://contrataciondelestado.es/sindicacion/sindicacion_643/licitacionesPerfilesContratanteCompleto3.atom'
+_LINEA = re.compile(r'L[ií]nea de la Concepci[oó]n', re.I)
+
+
+def parse_placsp(source):
+    """Plataforma de Contratación del Sector Público: su fuente abierta (Atom) con las últimas licitaciones de toda España.
+    Se queda con las del Ayuntamiento de La Línea (y organismos con sede en La Línea)."""
+    url = source.get('url') or ''
+    if 'sindicacion' not in url:
+        url = PLACSP_FEED  # el enlace del perfil del contratante no se puede leer: se usa la fuente abierta oficial
+    r = requests.get(url, timeout=(15, 90), headers={'User-Agent': UA, 'Accept': 'application/atom+xml,application/xml'})
+    r.raise_for_status()
+    text = r.content.decode('utf-8', 'ignore')
+    if '<entry' not in text:
+        raise ValueError('La Plataforma de Contratación no devolvió licitaciones')
+    out = []
+    for raw in re.findall(r'<entry\b.*?</entry>', text, re.S):
+        plain = clean(re.sub(r'<[^>]+>', ' ', raw))
+        if not _LINEA.search(plain):
+            continue
+        title = clean(re.sub(r'<[^>]+>', ' ', (re.search(r'<title[^>]*>(.*?)</title>', raw, re.S) or [None, ''])[1]))
+        link = (re.search(r'<link[^>]*href="([^"]+)"', raw) or [None, ''])[1].replace('&amp;', '&')
+        updated = (re.search(r'<updated>([^<]+)</updated>', raw) or [None, ''])[1]
+        summary = clean(re.sub(r'<[^>]+>', ' ', (re.search(r'<summary[^>]*>(.*?)</summary>', raw, re.S) or [None, ''])[1]))
+        if not title or not link:
+            continue
+        if re.search(r'Estado:\s*(RES|ANUL|ADJ)', summary) and not recent_enough(updated, 3):
+            continue  # resueltas o anuladas antiguas: no interesan
+        out.append({'title': 'Licitación: ' + title[:240], 'url': link, 'excerpt': summary[:500], 'published_at': updated})
+    return out
+
+
 def _dmy(value):
     m = re.search(r'(\d{1,2})/(\d{1,2})/(\d{4})', value or '')
     if not m: return ''
@@ -731,6 +763,8 @@ def read_source(source):
         return parse_edictos(source)  # el tablón siempre con su lector (sesión + plan B), se haya añadido como se haya añadido
     if 'licitaciones.io/' in (source.get('url') or ''):
         return parse_licitacionesio(source)
+    if 'contrataciondelestado.es' in (source.get('url') or '') and 'news.google' not in (source.get('url') or ''):
+        return parse_placsp(source)
     if source['kind'] == 'rss':
         try:
             items = parse_rss(source)

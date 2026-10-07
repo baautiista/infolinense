@@ -122,3 +122,22 @@ class HidePublishedTests(unittest.TestCase):
             self.assertTrue(main.delete_article(aid)['hidden'])
             self.assertNotIn(aid, [r['id'] for r in main.to_publish()])
         self.assertEqual(db.row('SELECT status FROM articles WHERE id=?', (aid,))['status'], 'published')
+
+
+class PlacspTests(unittest.TestCase):
+    def test_only_la_linea_tenders(self):
+        from app import sources
+        feed = '''<feed xmlns="http://www.w3.org/2005/Atom">
+<entry><title>Suministro de luminarias LED</title><link href="https://contrataciondelestado.es/wps/poc?uri=deeplink:detalle_licitacion&amp;idEvl=AAA"/>
+<summary type="text">Id licitación: 12/2026; Órgano de Contratación: Alcaldía del Ayuntamiento de La Línea de la Concepción; Importe: 120000 EUR; Estado: PUB</summary>
+<updated>2026-10-07T10:00:00+02:00</updated></entry>
+<entry><title>Obras en Madrid</title><link href="https://contrataciondelestado.es/x"/><summary>Órgano de Contratación: Ayuntamiento de Madrid; Estado: PUB</summary><updated>2026-10-07T10:00:00+02:00</updated></entry>
+</feed>'''
+        class R:
+            content = feed.encode(); ok = True
+            def raise_for_status(self): pass
+        with patch.object(sources.requests, 'get', return_value=R()):
+            items = sources.read_source({'url': sources.PLACSP_FEED, 'kind': 'procurement'})
+        self.assertEqual(len(items), 1)
+        self.assertIn('luminarias', items[0]['title'])
+        self.assertIn('idEvl=AAA', items[0]['url'])

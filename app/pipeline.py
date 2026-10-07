@@ -26,7 +26,8 @@ def investigate_candidate(cid):
     c = db.row('SELECT * FROM candidates WHERE id=?', (cid,))
     if not c: raise RuntimeError('Candidata no existe')
     if c['status'] not in ('new', 'needs_config'): raise ValueError('La noticia ya ha avanzado desde el radar')
-    src_text = sources.fetch_article_text(c.get('url', ''))
+    manual = str(c.get('url') or '').startswith('manual:')
+    src_text = c.get('raw_text') or '' if manual else sources.fetch_article_text(c.get('url', ''))  # subida a mano: su propio texto
     if len(src_text or '') < 300 and len(c.get('excerpt') or '') > len(src_text or ''):
         src_text = c.get('excerpt') or src_text  # si la página no se deja leer, al menos el resumen completo de la fuente
     extra = sources.links_for([cid]).get(cid, [])[:3]  # la misma noticia en otras fuentes: se combinan
@@ -61,11 +62,18 @@ def draft_candidate(cid):
     quick = (c['score'] or 0) <= QUICK_SCORE_MAX
     draft = ai.draft(c, c.get('raw_text') or '', json.dumps(research_data, ensure_ascii=False), quick=quick)
     try:
-        image_candidates = photos.search_real_photos(c, draft.get('section', 'CIUDAD'), draft.get('photo_query'))
+        image_candidates = photos.search_real_photos(c, draft.get('section', 'CIUDAD'), draft.get('photo_query')) \
+            if not str(c.get('url') or '').startswith('manual:') else photos.internet_images(draft.get('photo_query') or c.get('title') or '')
     except Exception:
         image_candidates = []
-    # Se elige la primera foto válida (normalmente la de la propia noticia); el editor puede cambiarla.
-    chosen, local = photos.first_usable(image_candidates)
+    if c.get('manual_photo'):  # foto que subió la redacción: va la primera
+        own = {'url': 'upload:' + os.path.basename(c['manual_photo']).rsplit('.', 1)[0], 'source': 'Fotografía propia', 'license': '',
+               'author': '', 'kind': 'user_upload', 'publish_safe': True}
+        image_candidates = [own] + image_candidates
+        chosen, local = own, c['manual_photo']
+    else:
+        # Se elige la primera foto válida (normalmente la de la propia noticia); el editor puede cambiarla.
+        chosen, local = photos.first_usable(image_candidates)
     body = (draft.get('body') or '')[:2200]
     workflow = 'source_draft' if not ai.AI_ENABLED else ('quick' if quick else 'researched')
     old = db.row("SELECT id FROM articles WHERE candidate_id=? AND status='rejected'", (cid,))
@@ -110,8 +118,8 @@ def finish_article(aid):
         db.log('headline_error', f'{aid}: {str(exc)[:200]}')
     from zoneinfo import ZoneInfo
     today = _dt.now(ZoneInfo('Europe/Madrid')).date().isoformat()
-    for_today = a.get('editorial_priority') in ('urgent', 'today') or str(a.get('planned_at') or '')[:10] <= today
-    if not for_today or db.get_setting('auto_canva', '1') != '1' or not a.get('image_local'):
+    # En cuanto una noticia se aprueba (cualquier día), su imagen de Canva se hace sola
+    if db.get_setting('auto_canva', '1') != '1' or not a.get('image_local'):
         return
     from . import canva
     if not (canva.ready() and canva.connected()):

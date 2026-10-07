@@ -13,7 +13,7 @@ from . import db, sources, pipeline, publishers, photos, canva, ai, planner, lay
 from .auth import login, require_auth
 from .config import BASE_DIR, RENDER_DIR, UPLOAD_DIR, SCAN_INTERVAL_MINUTES, AUTO_PIPELINE, OPENAI_API_KEY, ADMIN_PASSWORD, JWT_SECRET, PUBLISH_MODE, CORS_ORIGINS, PUBLIC_BASE_URL, AUTO_PUBLISH
 
-VERSION='6.2.1'
+VERSION='6.3.0'
 app=FastAPI(title='InfoLinense Desk',version=VERSION)
 app.add_middleware(CORSMiddleware,allow_origins=CORS_ORIGINS,allow_credentials=False,allow_methods=['*'],allow_headers=['Authorization','Content-Type'])
 db.init_db()
@@ -301,6 +301,50 @@ def move_article(aid:int,m:MoveIn):
             result['message']+='. '+str(e)
     db.log('move',f'Noticia {aid} → {when}')
     return result
+
+@app.post('/api/manual',dependencies=[Depends(require_auth)])
+async def manual_news(text:str=Form(''),title:str=Form(''),link:str=Form(''),brand:str=Form('infolinense'),priority:str=Form('today'),
+                      files:list[UploadFile]=File(default=[])):
+    """«Subir»: la redacción manda su propia noticia (texto, PDF y/o foto) y se redacta como las demás."""
+    from uuid import uuid4
+    texts=[text.strip()] if text.strip() else []
+    photo=None
+    for f in files or []:
+        data=await f.read(25_000_001)
+        if len(data)>25_000_000: raise HTTPException(400,f'«{f.filename}» pesa más de 25 MB')
+        name=(f.filename or '').lower()
+        if data[:4]==b'%PDF' or name.endswith('.pdf'):
+            try:
+                from pypdf import PdfReader
+                reader=PdfReader(BytesIO(data))
+                texts.append(sources.clean(' '.join((pg.extract_text() or '') for pg in reader.pages[:20]))[:20000])
+            except Exception as e: raise HTTPException(400,f'No se pudo leer el PDF «{f.filename}»: {str(e)[:120]}')
+        elif name.endswith(('.txt','.md')):
+            texts.append(data.decode('utf-8','ignore')[:20000])
+        else:
+            try:
+                from PIL import Image
+                im=Image.open(BytesIO(data)); im.load()
+                if im.format not in ('JPEG','PNG','WEBP','MPO'): raise ValueError('formato no permitido')
+                dest=UPLOAD_DIR/(uuid4().hex+'.jpg'); im.convert('RGB').save(dest,'JPEG',quality=93); photo=str(dest)
+            except Exception as e: raise HTTPException(400,f'«{f.filename}» no es un PDF, un texto ni una foto válida ({str(e)[:80]})')
+    body='\n\n'.join(t for t in texts if t)
+    if len(body)<40: raise HTTPException(400,'Escribe o pega la información de la noticia, o sube un PDF')
+    first=re.sub(r'\s+',' ',title.strip() or body.split('\n',1)[0])[:200]
+    brand=brand if brand in brands.BRANDS else brands.DEFAULT
+    pr={'tomorrow':'this_week'}.get(priority,priority)
+    if pr not in ('urgent','today','this_week','future'): pr='today'
+    plan_day=(datetime.now(MADRID).date()+timedelta(days=1)).isoformat() if priority=='tomorrow' else None
+    url=link.strip() if link.strip().startswith('http') else 'manual:'+uuid4().hex
+    cid=db.exec_('''INSERT INTO candidates(source_name,outlet,title,url,published_at,excerpt,raw_text,score,relevance,status,editorial_priority,plan_day,brand,manual_photo)
+                    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
+                 ('Redacción','Redacción',first,url,datetime.now(timezone.utc).isoformat(),body[:4000],body,80,'high','new',pr,plan_day,brand,photo))
+    if not url.startswith('manual:'):  # con enlace: se lee también la página, pero manda lo que ha pegado la redacción
+        db.exec_("UPDATE candidates SET url=? WHERE id=?",('manual:'+uuid4().hex+'#'+url[:300],cid))
+    planner.rebuild_schedule()
+    pipeline.queue_auto_write(cid,pr)
+    db.log('manual',f'Noticia subida por la redacción: {first[:80]}')
+    return {'ok':True,'id':cid,'title':first,'chars':len(body),'photo':bool(photo)}
 
 @app.post('/api/articles/{aid}/shorten',dependencies=[Depends(require_auth)])
 def shorten(aid:int):

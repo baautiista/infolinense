@@ -426,7 +426,25 @@ def pexels_images(query, limit=20):
             for p in r.json().get('photos', [])]
 
 
-PROVIDERS = (('Google (SerpApi)', serpapi_images), ('Google Imágenes', google_images), ('Pexels', pexels_images), ('Bing Imágenes', web_images), ('DuckDuckGo', duckduckgo_images),
+def brave_images(query, limit=30):
+    """Brave Search (BRAVE_API_KEY, 2.000 búsquedas gratis al mes): resultados de toda la web, muy parecidos a Google."""
+    key = os.getenv('BRAVE_API_KEY', '').strip()
+    if not key:
+        return []
+    r = requests.get('https://api.search.brave.com/res/v1/images/search', timeout=20,
+                     headers={'X-Subscription-Token': key, 'Accept': 'application/json'},
+                     params={'q': query, 'count': min(limit, 50), 'country': 'ES', 'search_lang': 'es', 'safesearch': 'strict'})
+    r.raise_for_status()
+    out = []
+    for it in r.json().get('results', []):
+        props = it.get('properties') or {}
+        u = props.get('url') or ''
+        if u.startswith('http') and not _JUNK.search(u):
+            out.append(dict(_item(u, it.get('url') or u, 'google'), w=props.get('width') or 0, h=props.get('height') or 0))
+    return out
+
+
+PROVIDERS = (('Google (SerpApi)', serpapi_images), ('Brave', brave_images), ('Google Imágenes', google_images), ('Pexels', pexels_images), ('Bing Imágenes', web_images), ('DuckDuckGo', duckduckgo_images),
              ('Yahoo Imágenes', yahoo_images), ('Noticias', news_images), ('Openverse', openverse_images),
              ('Fotos guardadas', local_images))
 
@@ -561,7 +579,7 @@ def search_photos(query):
     """Búsqueda libre desde el panel: lo mismo que saldría en Google, en su orden, y luego el resto de buscadores.
     Se quitan las fotos pequeñas conocidas (la imagen final es 1080x1350)."""
     merged, results = _run_all(query)
-    google = [x for name in ('Google (SerpApi)', 'Google Imágenes') for x in results.get(name, [])]
+    google = [x for name in ('Google (SerpApi)', 'Google Imágenes', 'Brave') for x in results.get(name, [])]
     rest = rank([x for x in merged if x not in google], query)
     out = _unique(google + rest)
     if len(out) < 8:

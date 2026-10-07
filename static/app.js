@@ -88,13 +88,13 @@ function currentHash() { return view === 'editor' ? `editor/${editorId}` : view 
 function go(target, fromHash) {
   const [v, id] = target.split('/');
   if (view !== 'editor' && v === 'editor') editorFrom = view === 'settings' ? 'review' : view;
-  view = ['sort', 'writing', 'review', 'publish', 'settings', 'editor'].includes(v) ? v : 'sort';
+  view = ['sort', 'writing', 'review', 'publish', 'settings', 'editor', 'upload'].includes(v) ? v : 'sort';
   document.body.classList.toggle('wide', view === 'review');
   document.body.classList.toggle('editing', view === 'editor');
   editorId = view === 'editor' ? Number(id) : null;
   if (!fromHash) location.hash = currentHash();
   document.querySelectorAll('.tabs button').forEach(b => b.classList.toggle('on', b.dataset.view === (view === 'editor' ? editorFrom : view)));
-  $('#title').textContent = { sort: 'Ordenar', writing: 'Redacción', review: 'Revisar', publish: 'Publicar', settings: 'Ajustes', editor: 'Noticia' }[view];
+  $('#title').textContent = { sort: 'Ordenar', writing: 'Redacción', review: 'Revisar', publish: 'Publicar', settings: 'Ajustes', editor: 'Noticia', upload: 'Subir noticia' }[view];
   $('#backBtn').hidden = view !== 'editor';
   $('#scanBtn').hidden = view !== 'sort';
   render(); counts();
@@ -109,7 +109,7 @@ async function counts() {
 async function render() {
   blobUrls.forEach(URL.revokeObjectURL); blobUrls = [];
   const v = $('#view'); v.innerHTML = '<p class="empty">Cargando…</p>'; window.scrollTo(0, 0);
-  try { await ({ sort: sortView, writing: writingView, review: reviewView, publish: publishView, settings, editor }[view])(v) }
+  try { await ({ sort: sortView, writing: writingView, review: reviewView, publish: publishView, settings, editor, upload: uploadView }[view])(v) }
   catch (e) { if (token) v.innerHTML = `<p class="empty">${esc(e.message)}</p>` }
 }
 function nextPhase(label, target, note = '') { return `<div class="next"><p>${note}</p><button class="btn primary" onclick="go('${target}')">${label}</button></div>` }
@@ -216,6 +216,42 @@ window.decide = async (id, p) => {
     drawSort(); counts();
   } catch (e) { toast(e.message); resetCard() }
 };
+
+/* ---------- Subir: noticias propias (texto, PDF, foto) ---------- */
+let upFiles = [];
+function uploadView(v) {
+  upFiles = [];
+  const brandOpts = BRANDS.map(b => `<label><input type="radio" name="brand" value="${b.slug}" ${b.slug === netBrand() ? 'checked' : ''}><span>${esc(b.name)}</span></label>`).join('');
+  const when = [['urgent', 'Urgente'], ['today', 'Hoy'], ['tomorrow', 'Mañana'], ['this_week', 'Esta semana'], ['future', 'Más adelante']]
+    .map(([k, t]) => `<label><input type="radio" name="priority" value="${k}" ${k === 'today' ? 'checked' : ''}><span>${t}</span></label>`).join('');
+  v.innerHTML = `<form class="up" id="upForm">
+    <div><h2>Sube tu noticia</h2><p class="muted small">Pega la información o sube un PDF (nota de prensa, bando, cartel…). Se redacta, se le busca foto y se hace la imagen de Canva igual que las demás.</p></div>
+    ${BRANDS.length > 1 ? `<div><p class="small" style="font-weight:700;margin:0 0 6px">Medio</p><div class="seg">${brandOpts}</div></div>` : ''}
+    <label>Información de la noticia<textarea name="text" rows="9" placeholder="Pega aquí el texto, los datos o lo que te han contado…"></textarea></label>
+    <div class="drop" id="drop" tabindex="0" role="button" aria-label="Añadir PDF o foto"><b>Añadir PDF o foto</b><span class="muted small">Pulsa o arrastra aquí. Si subes una foto, será la de la noticia.</span>
+      <input type="file" id="upFile" multiple accept="application/pdf,.pdf,.txt,image/jpeg,image/png,image/webp"></div>
+    <div class="files" id="upList"></div>
+    <details class="alts"><summary>Título y enlace (opcional)</summary>
+      <label>Título orientativo<input name="title" maxlength="200" placeholder="Si lo dejas vacío, lo escribe la IA"></label>
+      <label>Enlace de la fuente<input name="link" type="url" placeholder="https://…"></label></details>
+    <div><p class="small" style="font-weight:700;margin:0 0 6px">¿Cuándo?</p><div class="seg">${when}</div></div>
+    <button class="btn primary" id="upBtn">Redactar noticia</button></form>`;
+  const drop = $('#drop'), input = $('#upFile');
+  const show = () => { $('#upList').innerHTML = upFiles.map((f, i) => `<span>${esc(f.name)} <button type="button" class="link" data-x="${i}" aria-label="Quitar">✕</button></span>`).join(''); $('#upList').querySelectorAll('[data-x]').forEach(b => b.onclick = () => { upFiles.splice(+b.dataset.x, 1); show() }) };
+  const add = list => { upFiles.push(...[...list].slice(0, 6)); show() };
+  drop.onclick = () => input.click(); drop.onkeydown = e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); input.click() } };
+  input.onchange = () => add(input.files);
+  drop.ondragover = e => { e.preventDefault(); drop.classList.add('over') }; drop.ondragleave = () => drop.classList.remove('over');
+  drop.ondrop = e => { e.preventDefault(); drop.classList.remove('over'); add(e.dataTransfer.files) };
+  $('#upForm').onsubmit = async e => {
+    e.preventDefault();
+    const fd = new FormData(e.target); fd.delete('files'); upFiles.forEach(f => fd.append('files', f));
+    if ((fd.get('text') || '').trim().length < 40 && !upFiles.length) return toast('Escribe la información o sube un PDF');
+    const b = $('#upBtn'); b.disabled = true; b.textContent = 'Enviando…';
+    try { const r = await api('/api/manual', { method: 'POST', body: fd }); toast(`Recibida: «${r.title.slice(0, 60)}». Se está redactando`); counts(); go('writing') }
+    catch (er) { toast(er.message); b.disabled = false; b.textContent = 'Redactar noticia' }
+  };
+}
 
 /* ---------- Fase 2: Redacción ---------- */
 async function writingView(v) {

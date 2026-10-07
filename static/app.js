@@ -259,11 +259,11 @@ async function writingView(v) {
   const ready = rows.filter(r => r.state === 'ready').length;
   v.innerHTML = rows.length ? `<div class="bar"><span style="width:${Math.round(100 * ready / rows.length)}%"></span></div>
     <p class="progress">${ready} de ${rows.length} listas para revisar</p>
-    <div class="list">${rows.map(r => `<article class="item row-${r.state}"><div class="meta">${brandBadge(r.brand)}<span>${esc(PRIO_LABEL[r.editorial_priority] || '')}</span>${r.planned_at ? `<span>${esc(String(r.planned_at).slice(11, 16))}</span>` : ''}</div>
+    <div class="list">${rows.map(r => `<article class="item row-${r.state}" data-cid="${r.id}" ${r.article_id ? `data-aid="${r.article_id}"` : ''}><div class="meta">${brandBadge(r.brand)}<span>${esc(PRIO_LABEL[r.editorial_priority] || '')}</span>${r.planned_at ? `<span>${esc(String(r.planned_at).slice(11, 16))}</span>` : ''}</div>
       <h3>${esc(r.headline || r.title)}</h3>
       <div class="state">${r.state === 'ready' ? `<button class="btn small primary" onclick="go('editor/${r.article_id}')">Revisar</button>` :
         r.state === 'error' ? `<span class="error">${esc(jparse(r.work_error, {}).message || 'No se pudo redactar')}</span><button class="btn small" onclick="retry(${r.id})">Reintentar</button>` :
-        `<span class="spin"></span><span class="muted">${r.state === 'working' ? 'Redactando…' : 'En cola'}</span>`}</div></article>`).join('')}</div>
+        `<span class="spin"></span><span class="muted">${r.state === 'working' ? 'Redactando…' : 'En cola'}</span>`}<button class="btn small danger icon" title="Eliminar" aria-label="Eliminar" onclick="discardCandidate(${r.id},${r.article_id || 0})">🗑</button></div></article>`).join('')}</div>
     ${ready ? nextPhase('Pasar a Revisar', 'review') : ''}`
     : `<p class="empty">No hay nada redactándose. Marca noticias en Ordenar.</p>${nextPhase('Ir a Ordenar', 'sort')}`;
   if (rows.some(r => r.state === 'queued' || r.state === 'working')) setTimeout(() => { if (view === 'writing') { writingView(v); counts() } }, 6000);
@@ -324,7 +324,7 @@ async function reviewView(v) {
   const rows = (await api('/api/drafting')).filter(r => r.state === 'ready')
     .sort((a, b) => String(a.planned_at || '9999').localeCompare(String(b.planned_at || '9999')));
   reviewIds = rows.map(r => r.article_id);
-  const card = r => `<article class="rv-card" style="--bc:${brandOf(r.brand).color}">
+  const card = r => `<article class="rv-card" data-aid="${r.article_id}" style="--bc:${brandOf(r.brand).color}">
       <div class="meta">${brandBadge(r.brand)}${r.section ? secBadge(r.section, r.brand) : ''}<span class="rv-time">${esc(whenLabel(r.planned_at))}</span>${r.editorial_priority === 'urgent' ? '<span class="flag">Urgente</span>' : ''}${r.has_photo ? '' : '<span class="muted small">sin foto</span>'}</div>
       <h3><a href="#editor/${r.article_id}">${esc(r.headline || r.title)}</a></h3>
       ${r.subtitle ? `<p class="rv-sub">${esc(r.subtitle)}</p>` : ''}
@@ -358,9 +358,16 @@ window.moveSheet = aid => {
     sheet.remove(); moveTo(aid, d, sl, t);
   };
 };
+// Eliminar al momento, sin preguntar: la tarjeta desaparece y la noticia no vuelve a salir
+function dropCard(sel) { document.querySelectorAll(sel).forEach(c => { c.style.transition = 'opacity .2s'; c.style.opacity = '0'; setTimeout(() => c.remove(), 200) }) }
 window.removeArticle = async aid => {
-  if (!confirm('¿Eliminar esta noticia? No se publicará y no volverá a salir.')) return;
-  try { await api(`/api/articles/${aid}`, { method: 'DELETE' }); toast('Eliminada'); render(); counts() } catch (e) { toast(e.message) }
+  dropCard(`[data-aid="${aid}"]`);
+  try { await api(`/api/articles/${aid}`, { method: 'DELETE' }); toast('Eliminada'); counts(); if (view === 'editor') go('review') } catch (e) { toast(e.message); render() }
+};
+window.discardCandidate = async (cid, aid) => {
+  if (aid) return removeArticle(aid);
+  dropCard(`[data-cid="${cid}"]`);
+  try { await api(`/api/candidates/${cid}/triage`, { method: 'POST', body: JSON.stringify({ priority: 'no_interest' }) }); toast('Eliminada'); counts() } catch (e) { toast(e.message); render() }
 };
 
 /* ---------- Fase 4: Publicar ---------- */
@@ -395,7 +402,7 @@ async function publishView(v) {
     const actions = r.status === 'draft' ? `<div class="rv-actions"><button class="btn small primary" onclick="go('editor/${r.id}')">Revisar</button><button class="btn small" onclick="moveSheet(${r.id})">Mover</button><button class="btn small danger icon" title="Eliminar" aria-label="Eliminar" onclick="removeArticle(${r.id})">🗑</button></div>`
       : done ? `<div class="row wrap">${r.publish_url ? `<a class="net ok" href="${safeUrl(r.publish_url)}" target="_blank" rel="noopener">Web ✓</a>` : ''}${netStatus(r)}</div>`
       : r.scheduled_at ? `<div class="sched"><b>⏰ Se publica sola ${esc(whenText(r.scheduled_at))}</b> · ${schedNets(r)}</div>
-         <div class="rv-actions"><button class="btn small" onclick="publishNow(${r.id},this)">Publicar ahora</button><button class="btn small" onclick="moveSheet(${r.id})">Mover</button><button class="link" onclick="unschedule(${r.id})">Cancelar</button></div>`
+         <div class="rv-actions"><button class="btn small" onclick="publishNow(${r.id},this)">Publicar ahora</button><button class="btn small" onclick="moveSheet(${r.id})">Mover</button><button class="link" onclick="unschedule(${r.id})">Cancelar</button><button class="btn small danger icon" title="Eliminar" aria-label="Eliminar" onclick="removeArticle(${r.id})">🗑</button></div>`
       : `${r.schedule_error ? `<p class="error small">No se pudo publicar a su hora: ${esc(r.schedule_error)}</p>` : ''}
          <div class="rv-actions"><button class="btn small primary" onclick="scheduleAt(${r.id},'${esc(r._at)}',this)">Programar${r._at ? ' ' + esc(String(r._at).slice(11, 16)) : ''}</button><button class="btn small" onclick="publishNow(${r.id},this)">Publicar ahora</button><button class="btn small" onclick="moveSheet(${r.id})">Mover</button><button class="btn small danger icon" title="Eliminar" aria-label="Eliminar" onclick="removeArticle(${r.id})">🗑</button></div>`;
     return `<article class="rv-card ${done ? 'done' : ''}" ${done ? '' : 'draggable="true"'} data-aid="${r.id}" style="--bc:${brandOf(r.brand).color}">
@@ -527,6 +534,7 @@ async function editor(v) {
     <button class="btn" onclick="save(true)">Guardar</button>
     <button class="btn" onclick="copyText()">Copiar</button>
     ${published ? '<span class="muted">Publicada</span>' : a.status === 'draft' ? `<button class="btn primary" onclick="reviewed()">Revisada</button>` : `<button class="btn primary" id="pubBtn" onclick="publish()">Publicar</button>`}
+    ${published ? '' : `<button class="btn danger" onclick="removeArticle(${a.id})">🗑 Eliminar</button>`}
   </div>`;
   const f = id => $(`#f-${id}`);
   const fit = () => {

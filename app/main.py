@@ -13,7 +13,7 @@ from . import db, sources, pipeline, publishers, photos, canva, ai, planner, lay
 from .auth import login, require_auth
 from .config import BASE_DIR, RENDER_DIR, UPLOAD_DIR, SCAN_INTERVAL_MINUTES, AUTO_PIPELINE, OPENAI_API_KEY, ADMIN_PASSWORD, JWT_SECRET, PUBLISH_MODE, CORS_ORIGINS, PUBLIC_BASE_URL, AUTO_PUBLISH
 
-VERSION='6.3.4'
+VERSION='6.4.0'
 app=FastAPI(title='InfoLinense Desk',version=VERSION)
 app.add_middleware(CORSMiddleware,allow_origins=CORS_ORIGINS,allow_credentials=False,allow_methods=['*'],allow_headers=['Authorization','Content-Type'])
 db.init_db()
@@ -851,7 +851,7 @@ def schedule_article(aid:int,body:ScheduleIn):
     if when.tzinfo is None: when=when.replace(tzinfo=MADRID)
     if when<datetime.now(timezone.utc)-timedelta(minutes=2): raise HTTPException(400,'Esa hora ya ha pasado: elige una hora futura o pulsa «Publicar ahora»')
     ok=social_publish.connected_networks(a.get('brand') or brands.DEFAULT)
-    nets=[n for n in (body.networks or []) if n in ok]
+    nets=ok if body.networks is None else [n for n in body.networks if n in ok]  # sin elegir: todas las de su medio
     if not nets and brands.valid(a.get('brand'))!=brands.DEFAULT and not brands.web_enabled(a.get('brand')):
         name=brands.BRANDS[brands.valid(a.get('brand'))]['name']
         raise HTTPException(400,f'{name} no tiene web: marca al menos una red conectada (Instagram, Facebook o TikTok) para programarla.' if ok

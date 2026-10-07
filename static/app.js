@@ -358,7 +358,7 @@ window.removeArticle = async aid => {
 
 /* ---------- Fase 4: Publicar ---------- */
 const NET_NAMES = { web: 'Web', instagram: 'Instagram', facebook: 'Facebook', tiktok: 'TikTok' };
-function netPrefs(available) { let saved = null; try { saved = JSON.parse(localStorage.getItem('nets') || 'null') } catch (e) { } return available.filter(n => !saved || saved.includes(n)) }
+function netPrefs(available) { return available }  // todas las redes conectadas, siempre
 function saveNetPrefs() { try { localStorage.setItem('nets', JSON.stringify([...document.querySelectorAll('.netpick input:checked')].map(i => i.value))) } catch (e) { } }
 function netStatus(r) { const n = r.networks || {}; return Object.keys(n).map(k => n[k].status === 'published' ? (n[k].url ? `<a class="net ok" href="${safeUrl(n[k].url)}" target="_blank" rel="noopener">${NET_NAMES[k]} ✓</a>` : `<span class="net ok">${NET_NAMES[k]} ✓</span>`) : `<span><button class="net bad" title="${esc(n[k].message)}" onclick="retryNet(${r.id},'${k}',this)">${NET_NAMES[k]}: reintentar</button><small class="neterr">${esc(String(n[k].message || '').slice(0, 160))}</small></span>`).join('') }
 async function publishView(v) {
@@ -372,7 +372,7 @@ async function publishView(v) {
   const chosen = netPrefs(available);
   const bname = b => (BRANDS.find(x => x.slug === b) || {}).short || b;
   const offline = slugs.flatMap(b => NETS.filter(n => !(byBrand[b][n] || {}).connected).map(n => (slugs.length > 1 ? bname(b) + ' · ' : '') + NET_NAMES[n]));
-  const picker = `<div class="netpick row wrap"><span class="muted small">${slugs.length > 1 ? 'Publicar también en (cada noticia en las cuentas de su medio):' : 'Publicar también en:'}</span>${available.map(n => `<label class="switch"><input type="checkbox" value="${n}" ${chosen.includes(n) ? 'checked' : ''} onchange="saveNetPrefs()"> ${NET_NAMES[n]}</label>`).join('')}
+  const picker = `<div class="netpick row wrap"><span class="muted small">${slugs.length > 1 ? 'Se publica a la vez en (cada noticia en las cuentas de su medio):' : 'Se publica a la vez en:'}</span>${available.map(n => `<label class="switch"><input type="checkbox" value="${n}" ${chosen.includes(n) ? 'checked' : ''} "> ${NET_NAMES[n]}</label>`).join('')}
     ${offline.map(t => `<a class="switch off" href="#settings" title="Sin conectar">${esc(t)}: sin conectar</a>`).join('')}</div>`;
   const noNets = b => !NETS.some(n => (byBrand[b] && byBrand[b][n] || {}).connected);
   const today = new Date().toLocaleDateString('sv-SE', { timeZone: 'Europe/Madrid' });
@@ -381,11 +381,11 @@ async function publishView(v) {
       <div class="meta">${brandBadge(r.brand)}${secBadge(r.section, r.brand)}<span class="st st-${r.status}">${STATUS[r.status]}</span><span>${r.canva_exported ? 'Imagen lista' : r.has_photo ? 'Con foto' : 'Sin foto'}</span></div>
       <h3><a href="#editor/${r.id}">${esc(r.headline)}</a></h3>
       ${r.status !== 'published' && (r.brand || 'infolinense') !== 'infolinense' && noNets(r.brand) ? `<p class="error small">${esc(bname(r.brand))} no tiene Instagram ni Facebook conectados: no se publicará en ningún sitio. <a href="#settings">Conectar en Ajustes</a></p>` : ''}
-      ${r.status === 'published' ? `<div class="row wrap">${r.publish_url ? `<a class="net ok" href="${safeUrl(r.publish_url)}" target="_blank" rel="noopener">Web ✓</a>` : ''}${netStatus(r)}${r.canva_exported ? `<button class="net" onclick="shareFb(${r.id},this)">Compartir en Facebook</button>` : ''}</div>` :
+      ${r.status === 'published' ? `<div class="row wrap">${r.publish_url ? `<a class="net ok" href="${safeUrl(r.publish_url)}" target="_blank" rel="noopener">Web ✓</a>` : ''}${netStatus(r)}</div>` :
         r.scheduled_at ? `<div class="sched"><b>⏰ Se publica sola ${esc(whenText(r.scheduled_at))}</b> · ${schedNets(r)}</div>
          <div class="row wrap"><button class="btn small" onclick="publishNow(${r.id},this)">Publicar ahora</button><button class="link" onclick="unschedule(${r.id})">Cancelar programación</button></div>` :
         `${r.schedule_error ? `<p class="error small">No se pudo publicar a su hora: ${esc(r.schedule_error)}</p>` : ''}<div class="row wrap"><input type="datetime-local" id="when-${r.id}" value="${esc(defaultWhen(r.planned_at))}">
-         <button class="btn small primary" onclick="scheduleNow(${r.id},this)">Programar</button><button class="btn small" onclick="publishNow(${r.id},this)">Publicar ahora</button>${r.canva_exported ? `<button class="btn small" onclick="shareFb(${r.id},this)">Compartir en Facebook</button>` : ''}</div>`}</div></article>`;
+         <button class="btn small primary" onclick="scheduleNow(${r.id},this)">Programar</button><button class="btn small" onclick="publishNow(${r.id},this)">Publicar ahora</button></div>`}</div></article>`;
   const todayRows = rows.filter(isTodayRow), later = rows.filter(r => !isTodayRow(r));
   v.innerHTML = rows.length ? `${picker}<h2 class="day">Hoy</h2><div class="list">${todayRows.map(row).join('') || '<p class="muted">Nada para hoy.</p>'}</div>
     ${later.length ? `<h2 class="day">Próximos días</h2><div class="list">${later.map(row).join('')}</div>` : ''}`
@@ -399,14 +399,14 @@ function schedNets(r) { let n = []; try { n = JSON.parse(r.scheduled_networks ||
 window.scheduleNow = async (id, b) => {
   const at = ($('#when-' + id) || {}).value; if (!at) return toast('Elige día y hora');
   b.disabled = true; b.textContent = 'Programando…';
-  try { const r = await api(`/api/articles/${id}/schedule`, { method: 'POST', body: JSON.stringify({ at, networks: pickedNets() || [] }) }); toast('Programada: se publicará sola ' + whenText(r.scheduled_at)); render(); counts() }
+  try { const r = await api(`/api/articles/${id}/schedule`, { method: 'POST', body: JSON.stringify({ at, networks: pickedNets() }) }); toast('Programada: se publicará sola ' + whenText(r.scheduled_at)); render(); counts() }
   catch (e) { toast(e.message); b.disabled = false; b.textContent = 'Programar' }
 };
 window.unschedule = async id => { try { await api(`/api/articles/${id}/unschedule`, { method: 'POST' }); toast('Programación cancelada'); render() } catch (e) { toast(e.message) } };
 window.setTime = async (id, p, value) => { if (!value) return; try { await api(`/api/candidates/${id}/triage`, { method: 'POST', body: JSON.stringify({ priority: p, planned_at: value + ':00' }) }); toast('Hora fijada'); render() } catch (e) { toast(e.message) } };
-function pickedNets() { const boxes = document.querySelectorAll('.netpick input'); if (boxes.length) return [...boxes].filter(i => i.checked).map(i => i.value); let saved = null; try { saved = JSON.parse(localStorage.getItem('nets') || 'null') } catch (e) { } return saved }
+function pickedNets() { const boxes = [...document.querySelectorAll('.netpick input')]; if (!boxes.length || boxes.every(i => i.checked)) return null; return boxes.filter(i => i.checked).map(i => i.value) }
 function publishReport(r) { const lines = (r.results || []).filter(x => x.message).map(x => (x.ok ? '✓ ' : '✗ ') + x.message); toast(lines.join(' · ') || (r.published ? 'Publicada' : r.message || 'Aprobada')) }
-window.publishNow = async (id, b) => { b.disabled = true; b.textContent = 'Publicando…'; try { const r = await api(`/api/articles/${id}/publish`, { method: 'POST', body: JSON.stringify({ networks: pickedNets() }) }); publishReport(r); render(); counts(); if (r.published && !fbDone(r)) offerFacebook(id) } catch (e) { toast(e.message); b.disabled = false; b.textContent = 'Publicar' } };
+window.publishNow = async (id, b) => { b.disabled = true; b.textContent = 'Publicando…'; try { const r = await api(`/api/articles/${id}/publish`, { method: 'POST', body: JSON.stringify({ networks: pickedNets() }) }); publishReport(r); render(); counts() } catch (e) { toast(e.message); b.disabled = false; b.textContent = 'Publicar' } };
 // Facebook personal: Meta no deja publicar en perfiles por programa, así que se comparte a mano.
 // 1.ª pulsación: prepara imagen y texto. 2.ª: abre el menú «Compartir» del móvil (o descarga la imagen y abre Facebook).
 const shareKits = {};
@@ -490,7 +490,6 @@ async function editor(v) {
   <div class="actions">
     <button class="btn" onclick="save(true)">Guardar</button>
     <button class="btn" onclick="copyText()">Copiar</button>
-    ${a.status !== 'draft' ? `<button class="btn" onclick="shareFb(${a.id},this)">Compartir en Facebook</button>` : ''}
     ${published ? '<span class="muted">Publicada</span>' : a.status === 'draft' ? `<button class="btn primary" onclick="reviewed()">Revisada</button>` : `<button class="btn primary" id="pubBtn" onclick="publish()">Publicar</button>`}
   </div>`;
   const f = id => $(`#f-${id}`);

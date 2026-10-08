@@ -859,7 +859,7 @@ def probe_source(sid):
         source_health(sid, error=str(exc))
         return {'ok': False, 'items_seen': 0, 'error': str(exc)[:250]}
 
-_scan_state = {'busy': False, 'phase': '', 'added': 0, 'started': 0, 'finished': 0, 'errors': []}
+_scan_state = {'busy': False, 'phase': '', 'added': 0, 'started_at': 0, 'finished_at': 0, 'errors': []}
 
 
 def is_priority(source):
@@ -905,7 +905,7 @@ def _read_batch(sources, added, errors):
 def scan_all():
     if not _scan_lock.acquire(blocking=False):
         return {'added': [], 'errors': [], 'busy': True}
-    _scan_state.update(busy=True, phase='Ayuntamiento, edictos y licitaciones', added=0, started=time.time(), errors=[])
+    _scan_state.update(busy=True, phase='Ayuntamiento, edictos y licitaciones', added=0, started_at=time.time(), errors=[])
     try:
         added, errors = [], []
         _deep['n'] = 0
@@ -946,7 +946,7 @@ def scan_all():
         _scan_state.update(added=len(added), errors=errors[:20])
         return {'added': added, 'errors': errors, 'sources_checked': len(active), 'busy': False}
     finally:
-        _scan_state.update(busy=False, phase='', finished=time.time())
+        _scan_state.update(busy=False, phase='', finished_at=time.time())
         _scan_lock.release()
 
 def auto_ayto(ids):

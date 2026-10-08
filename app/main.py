@@ -13,7 +13,7 @@ from . import db, sources, pipeline, publishers, photos, canva, ai, planner, lay
 from .auth import login, require_auth
 from .config import BASE_DIR, RENDER_DIR, UPLOAD_DIR, SCAN_INTERVAL_MINUTES, AUTO_PIPELINE, OPENAI_API_KEY, ADMIN_PASSWORD, JWT_SECRET, PUBLISH_MODE, CORS_ORIGINS, PUBLIC_BASE_URL, AUTO_PUBLISH
 
-VERSION='6.5.0'
+VERSION='6.5.1'
 app=FastAPI(title='InfoLinense Desk',version=VERSION)
 app.add_middleware(CORSMiddleware,allow_origins=CORS_ORIGINS,allow_credentials=False,allow_methods=['*'],allow_headers=['Authorization','Content-Type'])
 db.init_db()
@@ -155,14 +155,18 @@ def _scan_and_plan():
 def scan(wait:int=0):
     """«Buscar»: empieza en segundo plano (primero Ayuntamiento, edictos y licitaciones) y el panel va mostrando lo que llega."""
     if wait: return _scan_and_plan()
-    if sources._scan_state['busy']: return {'started':False,'busy':True,**sources._scan_state}
+    if sources._scan_state['busy'] or sources._scan_lock.locked():
+        return {**sources._scan_state,'started':False,'busy':True}
+    sources._scan_state.update(busy=True,phase='Empezando',added=0,started_at=time.time())  # ya «buscando» desde este momento
     threading.Thread(target=_scan_and_plan,daemon=True).start()
-    time.sleep(0.2)
-    return {'started':True,'busy':True,**sources._scan_state}
+    return {**sources._scan_state,'started':True,'busy':True}
 
 @app.get('/api/scan/status',dependencies=[Depends(require_auth)])
 def scan_status():
-    return dict(sources._scan_state)
+    st=dict(sources._scan_state)
+    # buscando = hay una búsqueda con el candado, o se acaba de pulsar «Buscar» y está arrancando
+    st['busy']=bool(sources._scan_lock.locked() or (st['busy'] and time.time()-st.get('started_at',0)<10))
+    return st
 @app.get('/api/social',dependencies=[Depends(require_auth)])
 def social_items():
     """Panel de redes: quejas y noticias públicas de páginas y grupos de Facebook de La Línea."""

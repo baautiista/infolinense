@@ -189,3 +189,23 @@ class ScanOrderTests(unittest.TestCase):
         self.assertTrue(prio)
         self.assertEqual(set(order[:len(prio)]), set(prio))
         self.assertFalse(sources._scan_state['busy'])
+
+
+class ScanEndpointTests(unittest.TestCase):
+    def test_scan_reports_busy_until_done(self):
+        import threading as th, time as tm
+        from app import sources
+        gate = th.Event()
+        def slow():
+            with sources._scan_lock:
+                sources._scan_state.update(busy=True); gate.wait(3)
+            sources._scan_state.update(busy=False, finished_at=tm.time())
+            return {'added': [], 'busy': False}
+        with patch.object(main, '_scan_and_plan', side_effect=slow):
+            r = main.scan()
+            self.assertTrue(r['started']); self.assertTrue(r['busy'])
+            tm.sleep(0.2)
+            self.assertTrue(main.scan_status()['busy'])
+            self.assertFalse(main.scan()['started'])  # no arranca otra a la vez
+            gate.set(); tm.sleep(0.3)
+            self.assertFalse(main.scan_status()['busy'])

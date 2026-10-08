@@ -642,6 +642,12 @@ ayuntamiento municipal ciudad vecinos edicto licitacion noticia hoy ayer manana 
 _TENDER = re.compile(r'licitaci|adjudica|edicto|contrataci', re.I)
 
 
+# raíces que cambian según el medio («detenido»/«detiene», «robo»/«robar»…)
+_SAME_ROOT = {'deten': 'deten', 'detie': 'deten', 'robar': 'rob', 'robos': 'rob', 'roban': 'rob', 'roba': 'rob',
+              'falle': 'muert', 'muere': 'muert', 'muert': 'muert', 'herid': 'herid', 'inaug': 'inaug', 'arran': 'inici',
+              'comie': 'inici', 'empie': 'inici'}
+
+
 def _story_tokens(title):
     t = re.sub(r'\s+[-–|]\s+[^-–|]{3,40}$', '', title or '')  # quita « - Europa Sur»
     t = unicodedata.normalize('NFD', t.lower())
@@ -651,7 +657,7 @@ def _story_tokens(title):
         if w.isdigit():
             if not re.fullmatch(r'20[12]\d', w): out.add(w)  # las cifras distinguen noticias; los años no
         elif len(w) >= 4 and w not in _STORY_STOP:
-            out.add(w[:6])
+            out.add(_SAME_ROOT.get(w[:5], w[:6]))
     return out
 
 
@@ -660,19 +666,31 @@ def same_story(a, b):
     ta, tb = _story_tokens(a), _story_tokens(b)
     if min(len(ta), len(tb)) < 3: return False
     shared = len(ta & tb)
-    if shared >= 3 and shared / min(len(ta), len(tb)) >= 0.6:
+    if shared >= 3 and shared / min(len(ta), len(tb)) >= 0.4:
         return True
     norm = lambda t: ' '.join(sorted(_story_tokens(t)))
-    return difflib.SequenceMatcher(None, norm(a), norm(b)).ratio() >= 0.85
+    return difflib.SequenceMatcher(None, norm(a), norm(b)).ratio() >= 0.8
 
 
-def find_story(title, exclude=None, days=4):
+def story_match(a, ea, b, eb):
+    """Misma noticia contada por distintos medios: por el titular o, si los titulares difieren, por titular + entradilla."""
+    if same_story(a, b):
+        return True
+    ta, tb = _story_tokens(a), _story_tokens(b)
+    if len(ta & tb) < 2:
+        return False
+    xa, xb = _story_tokens(a + ' ' + (ea or '')[:400]), _story_tokens(b + ' ' + (eb or '')[:400])
+    shared = len(xa & xb)
+    return shared >= 6 and shared / max(1, min(len(xa), len(xb))) >= 0.45
+
+
+def find_story(title, exclude=None, days=4, excerpt=''):
     """Noticia abierta del radar (últimos días) que cuenta lo mismo."""
     if _TENDER.search(title or ''): return None  # cada edicto o licitación es un documento distinto
     since = (datetime.now(timezone.utc) - timedelta(days=days)).strftime('%Y-%m-%d %H:%M:%S')
-    for c in db.rows("""SELECT id,title FROM candidates WHERE status NOT IN ('archived','rejected','merged')
+    for c in db.rows("""SELECT id,title,excerpt FROM candidates WHERE status NOT IN ('archived','rejected','merged')
                         AND created_at>=? ORDER BY id""", (since,)):
-        if c['id'] != exclude and not _TENDER.search(c['title'] or '') and same_story(title, c['title']):
+        if c['id'] != exclude and not _TENDER.search(c['title'] or '') and story_match(title, excerpt, c['title'], c.get('excerpt')):
             return c['id']
     return None
 
@@ -725,7 +743,7 @@ def merge_duplicates(days=7):
     for i, a in enumerate(rows):
         if a['id'] in gone: continue
         for b in rows[i + 1:]:
-            if b['id'] in gone or not same_story(a['title'], b['title']): continue
+            if b['id'] in gone or not story_match(a['title'], a.get('excerpt'), b['title'], b.get('excerpt')): continue
             keep, drop = (a, b) if rank(a) >= rank(b) else (b, a)
             if drop.get('article_id') or drop['status'] not in ('new', 'needs_config', 'researched'):
                 continue  # algo ya en redacción no se toca
@@ -764,7 +782,7 @@ def add_candidate(title, url, excerpt, source_name, source_id=None, published_at
     if not source_meta.get('local_scope'):
         if tender:
             if not tender_ok(title, excerpt): return None  # edictos y licitaciones de otros ayuntamientos, fuera
-        elif not place_ok(title + ' ' + excerpt, source_name):
+        elif not place_ok(title + ' ' + excerpt, outlet if re.search(r'gibraltar|\.gi\b|chronicle|gbc', outlet or '', re.I) else ''):
             angle = comarca_angle(url) if _COMARCA.search(title + ' ' + excerpt) else ''
             if not angle:
                 return None  # comarcal sin nada de La Línea, o de otro municipio
@@ -776,7 +794,7 @@ def add_candidate(title, url, excerpt, source_name, source_id=None, published_at
     if url and (db.row('SELECT 1 FROM candidates WHERE url=?', (url,)) or db.row('SELECT 1 FROM candidate_links WHERE url=?', (url,))):
         return None
     if similar_to_published(title): return None
-    same = find_tender(title) if tender else find_story(title)
+    same = find_tender(title) if tender else find_story(title, excerpt=excerpt)
     if same:  # la misma noticia desde otra fuente: se une a la que ya hay
         attach_link(same, title, url, excerpt, source_name, outlet, published_at)
         return None
@@ -938,7 +956,7 @@ def archive_off_topic():
         tender = bool(_TENDER.search(title))
         bad = (_OTHER_TOWNS.search(title) and not exact_locality(title) and not gibraltar_topic(title))
         if not r.get('local_scope'):
-            bad = bad or (not tender_ok(title, excerpt) if tender else not place_ok(title + ' ' + excerpt, r.get('source_name')))
+            bad = bad or (not tender_ok(title, excerpt) if tender else not place_ok(title + ' ' + excerpt))
         if bad:
             db.exec_("UPDATE candidates SET status='archived',reason='Fuera de La Línea' WHERE id=?", (r['id'],)); n += 1
     return n

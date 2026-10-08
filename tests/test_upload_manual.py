@@ -155,3 +155,21 @@ class PlacspTests(unittest.TestCase):
         self.assertNotEqual(again[0]['url'], items[0]['url'])
         with patch.object(sources.requests, 'get', return_value=R()):
             self.assertEqual(sources.read_source({'url': sources.PLACSP_FEED, 'kind': 'procurement'}), [])  # sin cambios
+
+
+class FilterTests(unittest.TestCase):
+    def test_bogota_from_gibraltar_query_is_rejected(self):
+        from app import sources
+        db.init_db()
+        meta = {'priority': 70, 'official': 0, 'local_scope': 0, 'kind': 'rss'}
+        cid = sources.add_candidate('Arrancan las obras en ALO Sur: transformará el acceso al centro de Bogotá',
+                                    'https://bogota.gov.co/x', 'Bogota.gov.co', 'Gibraltar · rellenos, obras, eventos y elecciones',
+                                    published_at='', source_meta=meta, outlet='Bogota.gov.co')
+        self.assertIsNone(cid)
+
+    def test_same_story_different_headlines(self):
+        from app import sources
+        self.assertTrue(sources.story_match(
+            'Detenido en La Línea un hombre por robar en tres comercios de la calle Real', '',
+            'La Policía Nacional detiene a un vecino de La Línea por robos en comercios de la calle Real', ''))
+        self.assertFalse(sources.story_match('Abre la piscina municipal de La Línea', '', 'Corte de agua en el centro de La Línea', ''))

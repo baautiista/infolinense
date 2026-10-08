@@ -7,6 +7,7 @@ import time
 import unicodedata
 import xml.etree.ElementTree as ET
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from functools import lru_cache
 from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 from urllib.parse import quote, urljoin, urlparse, urldefrag
@@ -547,7 +548,7 @@ _DATE_META = ('article:published_time', 'og:published_time', 'datePublished', 'p
 def page_date(url):
     """Fecha de publicación leída de la propia página (meta, <time> o JSON-LD)."""
     try:
-        r = fetch(url, timeout=12)
+        r = fetch(url, timeout=8)
         if not r.ok: return ''
         soup = BeautifulSoup(r.text[:400000], 'html.parser')
         for key in _DATE_META:
@@ -648,6 +649,7 @@ _SAME_ROOT = {'deten': 'deten', 'detie': 'deten', 'robar': 'rob', 'robos': 'rob'
               'comie': 'inici', 'empie': 'inici'}
 
 
+@lru_cache(maxsize=20000)
 def _story_tokens(title):
     t = re.sub(r'\s+[-–|]\s+[^-–|]{3,40}$', '', title or '')  # quita « - Europa Sur»
     t = unicodedata.normalize('NFD', t.lower())
@@ -658,7 +660,7 @@ def _story_tokens(title):
             if not re.fullmatch(r'20[12]\d', w): out.add(w)  # las cifras distinguen noticias; los años no
         elif len(w) >= 4 and w not in _STORY_STOP:
             out.add(_SAME_ROOT.get(w[:5], w[:6]))
-    return out
+    return frozenset(out)
 
 
 def same_story(a, b):
@@ -857,43 +859,68 @@ def probe_source(sid):
         source_health(sid, error=str(exc))
         return {'ok': False, 'items_seen': 0, 'error': str(exc)[:250]}
 
+_scan_state = {'busy': False, 'phase': '', 'added': 0, 'started': 0, 'finished': 0, 'errors': []}
+
+
+def is_priority(source):
+    """Lo primero en cada búsqueda: Ayuntamiento, edictos, licitaciones y boletines."""
+    url = (source.get('url') or '').lower()
+    return (source.get('kind') in ('edictos', 'procurement', 'bop') or 'lalinea.es' in url or 'licitaciones.io' in url
+            or 'contrataciondelestado' in url or 'gobierto' in url or 'boe.es/rss' in url)
+
+
+def _read_batch(sources, added, errors):
+    """Lee varias fuentes a la vez (red en paralelo) y guarda en este hilo."""
+    if not sources:
+        return
+    with ThreadPoolExecutor(max_workers=16) as pool:
+        jobs = {pool.submit(read_source, source): source for source in sources}
+        for job in as_completed(jobs):
+            source = jobs[job]
+            try:
+                items = job.result(); count = 0
+                items = [i for i in items if not db.row('SELECT 1 FROM candidates WHERE url=?', (i['url'],))
+                         and not db.row('SELECT 1 FROM candidate_links WHERE url=?', (i['url'],))]
+                # Solo noticias actuales: si la lista no trae fecha, se lee de la propia página.
+                undated = [i for i in items if not i.get('published_at') and source['kind'] not in ('procurement', 'edictos')][:20]
+                if undated:
+                    with ThreadPoolExecutor(max_workers=12) as dates:
+                        for item, date in zip(undated, dates.map(lambda i: page_date(i['url']), undated)):
+                            item['published_at'] = date
+                for item in items:
+                    if not publication_datetime(item.get('published_at')):
+                        continue  # sin fecha comprobable no entra: así nunca se muestra una fecha inventada
+                    if publication_datetime(item['published_at']) > datetime.now(timezone.utc) + timedelta(hours=6):
+                        continue  # fecha futura: dato erróneo de la fuente
+                    cid = add_candidate(item['title'], item['url'], item.get('excerpt', ''),
+                                        source['name'], source['id'], item.get('published_at', ''), source,
+                                        outlet=item.get('outlet', ''), image=item.get('image', ''))
+                    if cid: added.append(cid); count += 1; _scan_state['added'] += 1
+                source_health(source['id'], len(items), count)
+            except Exception as exc:
+                errors.append(f"{source['name']}: {str(exc)[:250]}")
+                source_health(source['id'], error=str(exc))
+
+
 def scan_all():
     if not _scan_lock.acquire(blocking=False):
         return {'added': [], 'errors': [], 'busy': True}
+    _scan_state.update(busy=True, phase='Ayuntamiento, edictos y licitaciones', added=0, started=time.time(), errors=[])
     try:
         added, errors = [], []
         _deep['n'] = 0
         active = db.rows('SELECT * FROM sources WHERE active=1 ORDER BY priority DESC')
-        # Fetch concurrently; commit all SQLite writes in this thread.
-        with ThreadPoolExecutor(max_workers=6) as pool:
-            jobs = {pool.submit(read_source, source): source for source in active}
-            for job in as_completed(jobs):
-                source = jobs[job]
-                try:
-                    items = job.result(); count = 0
-                    items = [i for i in items if not db.row('SELECT 1 FROM candidates WHERE url=?', (i['url'],))
-                             and not db.row('SELECT 1 FROM candidate_links WHERE url=?', (i['url'],))]
-                    # Solo noticias actuales: si la lista no trae fecha, se lee de la propia página.
-                    undated = [i for i in items if not i.get('published_at') and source['kind'] not in ('procurement', 'edictos')][:40]
-                    if undated:
-                        with ThreadPoolExecutor(max_workers=8) as dates:
-                            for item, date in zip(undated, dates.map(lambda i: page_date(i['url']), undated)):
-                                item['published_at'] = date
-                    for item in items:
-                        if not publication_datetime(item.get('published_at')):
-                            continue  # sin fecha comprobable no entra: así nunca se muestra una fecha inventada
-                        if publication_datetime(item['published_at']) > datetime.now(timezone.utc) + timedelta(hours=6):
-                            continue  # fecha futura: dato erróneo de la fuente
-                        cid = add_candidate(item['title'], item['url'], item.get('excerpt', ''),
-                                            source['name'], source['id'], item.get('published_at', ''), source,
-                                            outlet=item.get('outlet', ''), image=item.get('image', ''))
-                        if cid: added.append(cid); count += 1
-                    source_health(source['id'], len(items), count)
-                except Exception as exc:
-                    errors.append(f"{source['name']}: {str(exc)[:250]}")
-                    source_health(source['id'], error=str(exc))
+        first = [s_ for s_ in active if is_priority(s_)]
+        rest = [s_ for s_ in active if not is_priority(s_)]
+        # 1) Lo del Ayuntamiento primero: sale en pantalla en segundos
+        _read_batch(first, added, errors)
+        auto_ayto(added)
+        # 2) Prensa, Gibraltar, redes…
+        _scan_state['phase'] = 'Prensa y demás fuentes'
+        _read_batch(rest, added, errors)
         from . import ai
         if any(ai.web_enabled(p) for p in ai.provider_chain()):
+            _scan_state['phase'] = 'Búsqueda web con IA'
             try:
                 for item in ai.discover_candidates():
                     meta = {'priority': 85 if item.get('official') else 65,
@@ -906,7 +933,7 @@ def scan_all():
                                         None, date, meta, item.get('local_angle', ''),
                                         outlet=item.get('source_name', ''))
                     if cid:
-                        added.append(cid)
+                        added.append(cid); _scan_state['added'] += 1
                         scope = str(item.get('scope') or '').lower()
                         db.exec_('UPDATE candidates SET scope=? WHERE id=?', (scope[:20], cid))
             except Exception as exc: errors.append('Descubrimiento web IA: ' + str(exc)[:250])
@@ -916,8 +943,10 @@ def scan_all():
         added = [a for a in added if (db.row('SELECT status FROM candidates WHERE id=?', (a,)) or {}).get('status') != 'merged']
         archived = archive_stale()
         db.log('scan', f'Escaneo: {len(added)} nuevas; {merged} unidas por repetidas; {archived} antiguas retiradas; {len(errors)} errores')
+        _scan_state.update(added=len(added), errors=errors[:20])
         return {'added': added, 'errors': errors, 'sources_checked': len(active), 'busy': False}
     finally:
+        _scan_state.update(busy=False, phase='', finished=time.time())
         _scan_lock.release()
 
 def auto_ayto(ids):

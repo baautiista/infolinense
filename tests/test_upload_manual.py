@@ -173,3 +173,19 @@ class FilterTests(unittest.TestCase):
             'Detenido en La Línea un hombre por robar en tres comercios de la calle Real', '',
             'La Policía Nacional detiene a un vecino de La Línea por robos en comercios de la calle Real', ''))
         self.assertFalse(sources.story_match('Abre la piscina municipal de La Línea', '', 'Corte de agua en el centro de La Línea', ''))
+
+
+class ScanOrderTests(unittest.TestCase):
+    def test_ayuntamiento_edictos_licitaciones_first(self):
+        from app import sources
+        db.init_db()
+        order = []
+        def fake(src):
+            order.append(src['name']); return []
+        with patch.object(sources, 'read_source', side_effect=fake), patch('app.ai.provider_chain', return_value=[]):
+            sources.scan_all()
+        first = [n for n in order[:6]]
+        prio = [s['name'] for s in db.rows('SELECT * FROM sources WHERE active=1') if sources.is_priority(s)]
+        self.assertTrue(prio)
+        self.assertEqual(set(order[:len(prio)]), set(prio))
+        self.assertFalse(sources._scan_state['busy'])

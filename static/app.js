@@ -115,12 +115,22 @@ async function render() {
 function nextPhase(label, target, note = '') { return `<div class="next"><p>${note}</p><button class="btn primary" onclick="go('${target}')">${label}</button></div>` }
 
 /* ---------- Fase 1: Ordenar ---------- */
+// Buscar: la búsqueda va en segundo plano y las tarjetas aparecen según llegan (primero Ayuntamiento, edictos y licitaciones)
 $('#scanBtn').onclick = async () => {
   const b = $('#scanBtn'); b.disabled = true; b.textContent = 'Buscando…';
   try {
-    const [r, sr] = await Promise.all([api('/api/scan', { method: 'POST' }), api('/api/social/scan', { method: 'POST' }).catch(() => ({ added: [] }))]);
-    toast(r.busy ? 'Ya hay una búsqueda en marcha' : `${r.added.length + sr.added.length} nuevas`); render(); counts();
-  } catch (e) { toast(e.message) } finally { b.disabled = false; b.textContent = 'Buscar' }
+    const r = await api('/api/scan', { method: 'POST' });
+    if (!r.started) toast('Ya hay una búsqueda en marcha: van llegando');
+    let shown = 0;
+    const tick = async () => {
+      let st; try { st = await api('/api/scan/status') } catch (e) { st = { busy: false } }
+      if (st.busy) b.textContent = 'Buscando: ' + (st.phase || '…');
+      if ((st.added || 0) > shown || !st.busy) { shown = st.added || 0; if (view === 'sort' && !document.querySelector('.sheet') && Date.now() - lastAct > 6000) render(); counts() }
+      if (st.busy) setTimeout(tick, 3000);
+      else { b.disabled = false; b.textContent = 'Buscar'; toast(`Búsqueda terminada: ${st.added || 0} nuevas`) }
+    };
+    setTimeout(tick, 1500);
+  } catch (e) { toast(e.message); b.disabled = false; b.textContent = 'Buscar' }
 };
 let queue = [], groups = BLOCKS;
 // Cofrade y Carnaval se ordenan por sus fuentes (cada hermandad, cada web…), no por los bloques de InfoLinense.
@@ -208,7 +218,9 @@ document.addEventListener('keydown', e => {
   if (e.key === 'ArrowLeft') swipeNo(n); else if (e.key === 'ArrowRight') swipeYes(n);
 });
 const PRIO_SAY = { urgent: 'Urgente', today: 'Hoy', tomorrow: 'Mañana', this_week: 'Esta semana', future: 'Más adelante' };
+let lastAct = 0;
 window.decide = async (id, p) => {
+  lastAct = Date.now();
   try {
     await api(`/api/candidates/${id}/triage`, { method: 'POST', body: JSON.stringify({ priority: p }) });
     queue = queue.filter(x => x.id !== id);

@@ -210,8 +210,41 @@ def _graph(method, path, base=None, **kw):
         raise SocialError('Meta no responde: %s' % str(exc)[:150])
     if not r.ok or (isinstance(data, dict) and data.get('error')):
         err = (data or {}).get('error') or {}
-        raise SocialError('Meta: %s' % (err.get('error_user_msg') or err.get('message') or 'HTTP %s' % r.status_code)[:300])
+        exc = SocialError('Meta: %s' % (err.get('error_user_msg') or err.get('message') or 'HTTP %s' % r.status_code)[:300])
+        exc.code, exc.subcode = err.get('code'), err.get('error_subcode')
+        raise exc
     return data
+
+
+def facebook_check():
+    """Qué permisos tiene de verdad el token de la página conectada (para explicar un «Permissions error»)."""
+    page = _meta()
+    if not page.get('access_token'):
+        return {'ok': False, 'message': 'Facebook no está conectado para este medio.'}
+    out = {'page': page.get('name') or page.get('id'), 'scopes': [], 'missing': []}
+    try:
+        info = _graph('GET', '/debug_token', params={'input_token': page['access_token'],
+                                                     'access_token': '%s|%s' % (META_APP_ID, META_APP_SECRET)}).get('data') or {}
+        out['scopes'] = sorted(info.get('scopes') or [])
+        out['type'] = info.get('type')
+        out['valid'] = info.get('is_valid')
+    except SocialError as e:
+        out['debug_error'] = str(e)
+    need = ['pages_manage_posts', 'pages_read_engagement', 'pages_show_list']
+    out['missing'] = [n for n in need if out['scopes'] and n not in out['scopes']]
+    if out.get('valid') is False:
+        out['message'] = 'El token de la página ha caducado o se anuló. Vuelve a conectar Facebook.'
+    elif out['missing']:
+        out['message'] = ('A la conexión le falta el permiso %s, así que Meta no deja publicar. Arreglo: en developers.facebook.com → tu app → '
+                          'Casos de uso → «Gestionar todo en tu página» → Personalizar → añade %s; luego genera un token nuevo '
+                          'marcando esos permisos y la página, y pégalo aquí.' % (', '.join(out['missing']), ', '.join(out['missing'])))
+    elif out['scopes']:
+        out['message'] = ('La conexión tiene los permisos. Si sigue fallando, tu usuario no tiene permiso para publicar en la página: en Facebook, '
+                          'Página → Configuración → Acceso a la página, comprueba que tienes «acceso total» (o «crear contenido»).')
+    else:
+        out['message'] = 'No se pudieron leer los permisos: ' + out.get('debug_error', '')
+    out['ok'] = not out['missing'] and out.get('valid') is not False
+    return out
 
 
 def meta_complete(code, state):
@@ -476,6 +509,16 @@ def _facebook(article, urls):
         raise SocialError('Facebook no está conectado')
     token, pid = page['access_token'], page['id']
     message = caption(article, 60000)
+    try:
+        return _facebook_post(pid, token, message, urls)
+    except SocialError as exc:
+        if getattr(exc, 'code', None) in (10, 200, 190) or 'ermission' in str(exc):
+            chk = facebook_check()
+            raise SocialError('Facebook no deja publicar en «%s»: %s' % (chk.get('page') or 'la página', chk.get('message') or str(exc)))
+        raise
+
+
+def _facebook_post(pid, token, message, urls):
     if len(urls) == 1:
         d = _graph('POST', '/%s/photos' % pid, data={'url': urls[0], 'message': message, 'published': 'true',
                                                      'access_token': token})

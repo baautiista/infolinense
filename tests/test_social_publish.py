@@ -147,6 +147,17 @@ class SocialPublishTests(unittest.TestCase):
         self.assertTrue(r['ok'], r)
         self.assertTrue(all(h.startswith('https://graph.instagram.com/') for h in hosts))
 
+    def test_permission_error_explains_missing_scope(self):
+        sp.META_APP_ID, sp.META_APP_SECRET = '1', 's'
+        def fake(method, url, **kw):
+            if url.endswith('/debug_token'):
+                return Resp({'data': {'is_valid': True, 'type': 'PAGE', 'scopes': ['pages_show_list', 'pages_read_engagement']}})
+            return Resp({'error': {'message': '(#200) Permissions error', 'code': 200}}, 403)
+        with patch.object(sp.requests, 'request', side_effect=fake):
+            r = sp.publish('facebook', dict(self.article, id=90))
+        self.assertFalse(r['ok'])
+        self.assertIn('pages_manage_posts', r['message'])
+
     def test_status_never_exposes_tokens(self):
         self.assertNotIn('TOK', str(sp.status()))
 

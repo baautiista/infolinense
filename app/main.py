@@ -13,7 +13,7 @@ from . import db, sources, pipeline, publishers, photos, canva, ai, planner, lay
 from .auth import login, require_auth
 from .config import BASE_DIR, RENDER_DIR, UPLOAD_DIR, SCAN_INTERVAL_MINUTES, AUTO_PIPELINE, OPENAI_API_KEY, ADMIN_PASSWORD, JWT_SECRET, PUBLISH_MODE, CORS_ORIGINS, PUBLIC_BASE_URL, AUTO_PUBLISH
 
-VERSION='6.4.6'
+VERSION='6.4.7'
 app=FastAPI(title='InfoLinense Desk',version=VERSION)
 app.add_middleware(CORSMiddleware,allow_origins=CORS_ORIGINS,allow_credentials=False,allow_methods=['*'],allow_headers=['Authorization','Content-Type'])
 db.init_db()
@@ -997,6 +997,11 @@ def share_kit(aid:int):
     except social_publish.SocialError as e: raise HTTPException(400,str(e))
     with social_publish.use_brand(a.get('brand') or brands.DEFAULT): text=social_publish.caption(a,5000)
     return {'text':text,'images':urls,'link':a.get('publish_url') or ''}
+
+@app.get('/api/networks/facebook/check',dependencies=[Depends(require_auth)])
+def facebook_check(brand:str='infolinense'):
+    with social_publish.use_brand(brand):
+        return social_publish.facebook_check()
 
 @app.post('/api/networks/meta/token',dependencies=[Depends(require_auth)])
 def meta_token(t:TokenIn,brand:str='infolinense'):

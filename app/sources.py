@@ -940,7 +940,7 @@ def _resurface_archived_official(item, source):
     relevance = 'high' if score >= 70 else ('medium' if score >= 50 else 'low')
     db.exec_('''UPDATE candidates SET source_id=?,source_name=?,title=?,published_at=?,excerpt=?,
                 status='new',editorial_priority=CASE WHEN editorial_priority='no_interest' THEN 'undecided' ELSE editorial_priority END,
-                reason=NULL,score=MAX(score,?),relevance=?,updated_at=CURRENT_TIMESTAMP
+                reason=NULL,score=MAX(score,?),relevance=?
                 WHERE id=?''',
              (source.get('id'), source.get('name') or '', title, published, excerpt,
               score, relevance, candidate['id']))

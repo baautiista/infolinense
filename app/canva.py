@@ -177,6 +177,12 @@ def permission_status():
 
 def _content_hash(article):
     fields = [article.get(k) or '' for k in ('headline', 'subtitle', 'section', 'image_url')]
+    headline_size = article.get('headline_size') or 'auto'
+    photo_zoom = float(article.get('photo_zoom') or 1)
+    photo_x = float(article.get('photo_x') if article.get('photo_x') is not None else 50)
+    photo_y = float(article.get('photo_y') if article.get('photo_y') is not None else 50)
+    if headline_size != 'auto' or abs(photo_zoom - 1) > 0.001 or abs(photo_x - 50) > 0.001 or abs(photo_y - 50) > 0.001:
+        fields += [headline_size, photo_zoom, photo_x, photo_y]
     if article.get('section_label') or article.get('brand') not in (None, '', 'infolinense'):
         fields += [article.get('section_label') or '', article.get('brand') or '']
     return hashlib.sha256(json.dumps(fields, ensure_ascii=False).encode()).hexdigest()
@@ -262,6 +268,35 @@ def size_variants(schema, texts, headline_size='auto'):
     return out
 
 
+def _photo_for_canvas(photo, article):
+    """Recorta la foto al lienzo 4:5 usando el zoom y el encuadre elegidos en el editor."""
+    from io import BytesIO
+    from PIL import Image, ImageOps
+
+    with Image.open(photo) as source:
+        image = ImageOps.exif_transpose(source).convert('RGB')
+    width, height = image.size
+    target_ratio = 4 / 5
+    if width / height > target_ratio:
+        crop_w, crop_h = height * target_ratio, height
+    else:
+        crop_w, crop_h = width, width / target_ratio
+    try:
+        zoom = max(1.0, min(2.5, float(article.get('photo_zoom') or 1)))
+        x = max(0.0, min(100.0, float(article.get('photo_x') if article.get('photo_x') is not None else 50))) / 100
+        y = max(0.0, min(100.0, float(article.get('photo_y') if article.get('photo_y') is not None else 50))) / 100
+    except (TypeError, ValueError):
+        zoom, x, y = 1.0, 0.5, 0.5
+    crop_w, crop_h = crop_w / zoom, crop_h / zoom
+    left, top = (width - crop_w) * x, (height - crop_h) * y
+    cropped = image.crop((round(left), round(top), round(left + crop_w), round(top + crop_h)))
+    resampling = getattr(Image, 'Resampling', Image).LANCZOS
+    output = cropped.resize((1080, 1350), resampling)
+    buffer = BytesIO()
+    output.save(buffer, format='JPEG', quality=94, optimize=True)
+    return buffer.getvalue()
+
+
 def _export_png(article, design_id, output_suffix=None, mark_main=True, page=None):
     from io import BytesIO
     from PIL import Image
@@ -333,11 +368,11 @@ def create_design(article, store=True, title_suffix='', output_suffix=None, stri
     if missing:
         raise ValueError('A la plantilla de Canva de %s le faltan los campos de datos: %s. En Canva, en la plantilla, '
                          'pon esos nombres a los cuadros de texto y a la foto (Aplicaciones → Autocompletar).' % (brand['name'], ', '.join(missing)))
-    data = photo.read_bytes()
+    data = _photo_for_canvas(photo, article)
     if len(data) > 20_000_000:
         raise ValueError('La fotografía supera 20 MB')
     suffix = ''.join(ch for ch in str(output_suffix or '') if ch.isalnum() or ch in '_-')
-    filename = re.sub(r'\W+', '', brand['name']) + '-' + str(article['id']) + (('-' + suffix) if suffix else '') + photo.suffix
+    filename = re.sub(r'\W+', '', brand['name']) + '-' + str(article['id']) + (('-' + suffix) if suffix else '') + '.jpg'
     metadata = json.dumps({'name_base64': base64.b64encode(filename.encode()).decode()})
     upload = _api('POST', '/asset-uploads', data=data,
                   headers={'Content-Type': 'application/octet-stream', 'Asset-Upload-Metadata': metadata})

@@ -582,16 +582,21 @@ async function editor(v) {
   cache.article = a; cache.kit = kit;
   const options = jparse(a.headline_options_json, []), missing = jparse(a.missing_data_json, []), srcs = jparse(a.sources_json, []);
   const published = a.status === 'published';
+  const previewMarkup = kit.photo_download_url
+    ? `<img id="preview" alt="Foto de la noticia"><div class="preview-shade"></div><span class="preview-section" id="previewSection">${esc(a.section_label || a.section || '')}</span><div class="preview-copy"><h2 id="previewHeadline">${esc(a.headline || '')}</h2><p id="previewSubtitle">${esc(a.subtitle || '')}</p></div>`
+    : kit.image_url ? `<img id="preview" alt="Imagen final de Canva">` : `<p class="empty">Sin foto todavía</p>`;
   v.innerHTML = `<div class="editor">
     <section class="visual">
-      <div class="frame" id="frame">${kit.image_url || kit.photo_download_url ? '<img id="preview" alt="Imagen de la noticia">' : '<p class="empty">Sin foto todavía</p>'}</div>
+      <div class="frame ${kit.photo_download_url ? 'photo-editor' : ''}" id="frame">${previewMarkup}</div>
+      ${kit.photo_download_url ? `<section class="image-tools"><label>Zoom de foto <span class="tool-value" id="zoomValue"></span><input id="f-photo_zoom" type="range" min="1" max="2.5" step="0.05" value="${Number(a.photo_zoom || 1)}"></label><div class="crop-axes"><label>Encuadre horizontal <input id="f-photo_x" type="range" min="0" max="100" step="1" value="${Number(a.photo_x ?? 50)}"></label><label>Encuadre vertical <input id="f-photo_y" type="range" min="0" max="100" step="1" value="${Number(a.photo_y ?? 50)}"></label></div><div class="row wrap"><button class="btn small" type="button" id="resetCrop">Centrar y ajustar</button><span class="muted small">Arrastra la foto para cambiar el encuadre.</span></div></section>` : ''}
+      ${kit.photo_download_url ? '<p class="muted small">Vista previa orientativa · arrastra la foto para encuadrarla. El diseño final conserva la plantilla de Canva.</p>' : kit.image_url ? '<p class="muted small">Imagen final de Canva.</p>' : ''}
       <div class="row wrap">
         <button class="btn small" onclick="photoPanel()">Cambiar foto</button>
         <button class="btn small" onclick="autoPhoto()">Foto automática</button>
         <button class="btn small" id="canvaBtn" onclick="makeCanva()">${kit.canva_exported ? 'Rehacer imagen en Canva' : 'Crear imagen en Canva'}</button>
+        ${kit.canva_url ? `<a class="btn small" href="${safeUrl(kit.canva_url)}" target="_blank" rel="noopener">Editar en Canva</a><button class="btn small" type="button" id="syncCanvaBtn" onclick="syncCanva()">Actualizar desde Canva</button>` : ''}
         ${kit.image_url ? `<button class="btn small" onclick="download('/media/render/${a.id}.png','infolinense-${a.id}.png')">Descargar imagen</button>` : kit.photo_download_url ? `<button class="btn small" onclick="download('${kit.photo_download_url}','infolinense-${a.id}.jpg')">Descargar foto</button>` : ''}
       </div>
-      <p class="muted small">${kit.image_url ? 'Imagen final con la plantilla de Canva.' : kit.photo_download_url ? 'Foto elegida' + (kit.image_credit ? ': ' + esc(kit.image_credit) : '') + '. Crea la imagen en Canva cuando el texto esté listo.' : ''}</p>
       <div id="photos"></div>
     </section>
     <section class="fields">
@@ -631,6 +636,8 @@ async function editor(v) {
     const selected = ['small', 'auto', 'large'].includes(size) ? size : 'auto';
     sizeInput.value = selected;
     f('headline').style.fontSize = { small: '16px', auto: '18px', large: '20px' }[selected];
+    const previewHeadline = $('#previewHeadline');
+    if (previewHeadline) previewHeadline.style.fontSize = { small: 'clamp(18px,4.7vw,24px)', auto: 'clamp(20px,5.5vw,30px)', large: 'clamp(22px,6.3vw,34px)' }[selected];
     sizeTools.querySelectorAll('[data-head-size]').forEach(b => {
       const active = b.dataset.headSize === selected;
       b.classList.toggle('on', active); b.setAttribute('aria-pressed', String(active));
@@ -651,13 +658,42 @@ async function editor(v) {
     $('#fit').className = n <= 3 ? 'muted' : n === 4 ? 'muted' : 'error' };
   const sub = () => { const n = f('subtitle').value.trim().length; $('#sub').textContent = n <= 165 ? `${n} / 165` : `${n} / 165: no cabe en la imagen, acórtala`; $('#sub').className = n <= 165 ? 'muted' : 'error' };
   const count = () => $('#count').textContent = `${f('body').value.length} / 2.200`;
-  f('section').onchange = () => { const fs = freeSection(f('brand') ? f('brand').value : a.brand); $('#labelBox').hidden = !(fs && f('section').value === fs) };
+  const photoZoom = f('photo_zoom'), photoX = f('photo_x'), photoY = f('photo_y'), previewImg = $('#preview'), previewFrame = $('#frame');
+  const previewHeading = $('#previewHeadline'), previewDeck = $('#previewSubtitle'), previewSection = $('#previewSection'), zoomValue = $('#zoomValue');
+  const updateCopyPreview = () => {
+    if (previewHeading) previewHeading.textContent = f('headline').value;
+    if (previewDeck) previewDeck.textContent = f('subtitle').value;
+    if (previewSection) { const free = freeSection(f('brand') ? f('brand').value : a.brand); previewSection.textContent = free && f('section').value === free ? (f('section_label').value.trim() || f('section').value) : f('section').value }
+  };
+  const updatePhotoPreview = () => {
+    if (!previewImg || !previewFrame || !previewImg.naturalWidth || !photoZoom) return;
+    const box = previewFrame.getBoundingClientRect(), zoom = Number(photoZoom.value || 1), x = Number(photoX.value || 50), y = Number(photoY.value || 50);
+    const cover = Math.max(box.width / previewImg.naturalWidth, box.height / previewImg.naturalHeight);
+    const width = previewImg.naturalWidth * cover * zoom, height = previewImg.naturalHeight * cover * zoom;
+    previewImg.style.position = 'absolute'; previewImg.style.maxWidth = 'none'; previewImg.style.width = width + 'px'; previewImg.style.height = height + 'px';
+    previewImg.style.left = -Math.max(0, width - box.width) * x / 100 + 'px'; previewImg.style.top = -Math.max(0, height - box.height) * y / 100 + 'px';
+    if (zoomValue) zoomValue.textContent = zoom.toFixed(2) + '×';
+  };
+  const saveCrop = () => saveArticle().catch(e => toast(e.message));
+  if (photoZoom) {
+    [photoZoom, photoX, photoY].forEach(input => { input.oninput = updatePhotoPreview; input.onchange = saveCrop });
+    $('#resetCrop').onclick = () => { photoZoom.value = '1'; photoX.value = '50'; photoY.value = '50'; updatePhotoPreview(); saveCrop() };
+    previewFrame.onpointerdown = e => { if (e.target.closest('button,input,a')) return; previewFrame.setPointerCapture(e.pointerId); previewFrame.dataset.dragX = e.clientX; previewFrame.dataset.dragY = e.clientY; previewFrame.dataset.startX = photoX.value; previewFrame.dataset.startY = photoY.value; previewFrame.classList.add('dragging') };
+    previewFrame.onpointermove = e => { if (!previewFrame.hasPointerCapture(e.pointerId)) return; const width = Math.max(1, Number.parseFloat(previewImg.style.width) - previewFrame.clientWidth), height = Math.max(1, Number.parseFloat(previewImg.style.height) - previewFrame.clientHeight); photoX.value = String(Math.max(0, Math.min(100, Number(previewFrame.dataset.startX) - (e.clientX - Number(previewFrame.dataset.dragX)) * 100 / width))); photoY.value = String(Math.max(0, Math.min(100, Number(previewFrame.dataset.startY) - (e.clientY - Number(previewFrame.dataset.dragY)) * 100 / height))); updatePhotoPreview() };
+    previewFrame.onpointerup = e => { if (previewFrame.hasPointerCapture(e.pointerId)) previewFrame.releasePointerCapture(e.pointerId); previewFrame.classList.remove('dragging'); saveCrop() };
+    previewFrame.onpointercancel = () => { previewFrame.classList.remove('dragging'); saveCrop() };
+    if (window.photoPreviewObserver) window.photoPreviewObserver.disconnect();
+    window.photoPreviewObserver = new ResizeObserver(updatePhotoPreview); window.photoPreviewObserver.observe(previewFrame);
+    previewImg.onload = updatePhotoPreview;
+  }
+  f('section').onchange = () => { const fs = freeSection(f('brand') ? f('brand').value : a.brand); $('#labelBox').hidden = !(fs && f('section').value === fs); updateCopyPreview() };
+  if (f('section_label')) f('section_label').oninput = updateCopyPreview;
   if (f('brand')) f('brand').onchange = async e => { const b = e.target.value; f('section').innerHTML = sectionOptions(b, ''); try { await saveArticle(); toast('Ahora es de ' + brandOf(b).name + ': crea la imagen con su plantilla'); render() } catch (er) { toast(er.message) } };
-  f('headline').oninput = fit; f('subtitle').oninput = sub; f('body').oninput = count; fit(); sub(); count();
-  v.querySelectorAll('.alt').forEach(b => b.onclick = () => { f('headline').value = options[b.dataset.i]; fit(); toast('Titular cambiado') });
+  f('headline').oninput = () => { fit(); updateCopyPreview() }; f('subtitle').oninput = () => { sub(); updateCopyPreview() }; f('body').oninput = count; fit(); sub(); count(); updateCopyPreview();
+  v.querySelectorAll('.alt').forEach(b => b.onclick = () => { f('headline').value = options[b.dataset.i]; fit(); updateCopyPreview(); toast('Titular cambiado') });
   $('#moreHeads').onclick = async e => { e.target.textContent = 'Pensando…'; try { await saveArticle(); await api(`/api/articles/${a.id}/headlines`, { method: 'POST' }); render() } catch (er) { toast(er.message); e.target.textContent = 'Reintentar' } };
   const img = $('#preview');
-  if (img) img.src = await blobUrl(kit.image_url || kit.photo_download_url);
+  if (img) img.src = await blobUrl(kit.photo_download_url || kit.image_url);
   else autoPhoto();
 }
 function sectionOptions(brand, current) {
@@ -666,7 +702,7 @@ function sectionOptions(brand, current) {
   return all.map(s => `<option ${s === current ? 'selected' : ''}>${esc(s)}</option>`).join('');
 }
 function freeSection(brand) { return brand && brand !== 'infolinense' ? brandOf(brand).free_title_section || '' : '' }
-function values() { const o = {}; ['section', 'headline', 'headline_size', 'subtitle', 'body', 'brand', 'section_label'].forEach(k => { const el = $(`#f-${k}`); if (el) o[k] = el.value }); return o }
+function values() { const o = {}; ['section', 'headline', 'headline_size', 'photo_zoom', 'photo_x', 'photo_y', 'subtitle', 'body', 'brand', 'section_label'].forEach(k => { const el = $(`#f-${k}`); if (el) o[k] = el.value }); return o }
 async function saveArticle(say) { await api(`/api/articles/${editorId}`, { method: 'PUT', body: JSON.stringify(values()) }); if (say) toast('Guardado') }
 window.save = s => saveArticle(s).catch(e => toast(e.message));
 window.shortenHead = async () => { try { await saveArticle(); const r = await api(`/api/articles/${editorId}/shorten`, { method: 'POST' }); $('#f-headline').value = r.headline; $('#f-headline').dispatchEvent(new Event('input')); toast('Titular acortado') } catch (e) { toast(e.message) } };
@@ -675,6 +711,16 @@ window.makeCanva = async () => {
   const b = $('#canvaBtn'); b.disabled = true; b.textContent = 'Creando en Canva…';
   try { await saveArticle(); const r = await api(`/api/articles/${editorId}/canva`, { method: 'POST' }); toast(r.exported ? 'Imagen creada' : (r.export_error || 'Diseño creado; falta exportar')); render() }
   catch (e) { toast(e.message); b.disabled = false; b.textContent = 'Crear imagen en Canva' }
+};
+window.syncCanva = async () => {
+  const b = $('#syncCanvaBtn'); if (!b) return;
+  const current = cache.article || {}, valuesNow = values();
+  const changed = ['headline','headline_size','subtitle','section','brand','section_label'].some(k => valuesNow[k] != null && String(valuesNow[k]) !== String(current[k] ?? ''))
+    || ['photo_zoom','photo_x','photo_y'].some(k => valuesNow[k] != null && Math.abs(Number(valuesNow[k]) - Number(current[k] ?? 0)) > 0.001);
+  if (changed) { toast('Guarda los cambios y vuelve a crear el diseño antes de actualizarlo'); return }
+  b.disabled = true; b.textContent = 'Actualizando…';
+  try { await api(`/api/articles/${editorId}/canva/export`, { method: 'POST' }); toast('Imagen actualizada desde Canva'); render() }
+  catch (e) { toast(e.message); b.disabled = false; b.textContent = 'Actualizar desde Canva' }
 };
 window.reviewed = async () => {
   try {

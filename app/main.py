@@ -13,7 +13,7 @@ from . import db, sources, pipeline, publishers, photos, canva, ai, planner, lay
 from .auth import login, require_auth
 from .config import BASE_DIR, RENDER_DIR, UPLOAD_DIR, SCAN_INTERVAL_MINUTES, AUTO_PIPELINE, OPENAI_API_KEY, ADMIN_PASSWORD, JWT_SECRET, PUBLISH_MODE, CORS_ORIGINS, PUBLIC_BASE_URL, AUTO_PUBLISH
 
-VERSION='6.6.0'
+VERSION='6.7.0'
 app=FastAPI(title='InfoLinense Desk',version=VERSION)
 app.add_middleware(CORSMiddleware,allow_origins=CORS_ORIGINS,allow_credentials=False,allow_methods=['*'],allow_headers=['Authorization','Content-Type'])
 db.init_db()
@@ -35,7 +35,7 @@ class SourceIn(BaseModel):
     local_scope:bool=False
     brand:str='infolinense'
 class EditArticle(BaseModel):
-    section:str|None=None; headline:str|None=None; headline_size:str|None=None; subtitle:str|None=None; body:str|None=None; graphic_summary:str|None=None; image_headline:str|None=None; brand:str|None=None; section_label:str|None=None
+    section:str|None=None; headline:str|None=None; headline_size:str|None=None; photo_zoom:float|None=None; photo_x:float|None=None; photo_y:float|None=None; subtitle:str|None=None; body:str|None=None; graphic_summary:str|None=None; image_headline:str|None=None; brand:str|None=None; section_label:str|None=None
 class PhotoChoice(BaseModel): url:str; source:str=''; license:str=''; author:str=''; confirm_permission:bool=False
 class TriageIn(BaseModel): priority:str; planned_at:str|None=None
 class NewsSearchIn(BaseModel): query:str
@@ -635,6 +635,7 @@ def kit(aid:int):
             'image_source':a.get('image_source'),'image_license':a.get('image_license'),'image_author':a.get('image_author') or '',
             'image_kind':a.get('image_kind') or '','image_credit':photo_credit(a),
             'photo_query':a.get('photo_query') or photos.photo_query_for(a.get('headline') or '',a.get('section') or ''),
+            'photo_zoom':a.get('photo_zoom') or 1,'photo_x':a.get('photo_x',50),'photo_y':a.get('photo_y',50),
             'photo_download_url':f'/api/articles/{aid}/photo/file' if photo_ok else None,
             'ai_image_suggestion':a.get('ai_image_suggestion') or '','canva_url':design.get('url'),'canva_exported':exported,
             'carousel_slides':[f'/api/articles/{aid}/carousel/slide/{r["slide_index"]}' for r in carousel if r.get('exported')],
@@ -668,6 +669,8 @@ def edit_article(aid:int,body:EditArticle):
             if v not in brands.BRANDS: continue
         if k=='headline_size' and v not in ('auto','small','large'):
             raise HTTPException(400,'Tamaño de titular no válido')
+        if k=='photo_zoom': v=max(1.0,min(2.5,float(v)))
+        if k in ('photo_x','photo_y'): v=max(0.0,min(100.0,float(v)))
         if k=='section':
             v=norm_section(v)
         if k=='section_label':
@@ -680,7 +683,9 @@ def edit_article(aid:int,body:EditArticle):
         # La imagen de Canva solo se invalida si cambia algo que aparece en ella (titular, entradilla, sección).
         changes=body.model_dump(exclude_none=True)
         if 'section' in changes: changes['section']=norm_section(changes['section'])
-        image_changed=any(k in changes and (changes[k] or '')!=(original.get(k) or '') for k in ('headline','headline_size','subtitle','section','brand','section_label'))
+        image_changed=any(k in changes and (changes[k] or '')!=(original.get(k) or '') for k in ('headline','headline_size','subtitle','section','brand','section_label')) or any(
+            k in changes and abs(float(changes[k])-float(original.get(k) if original.get(k) is not None else default))>0.001
+            for k,default in (('photo_zoom',1),('photo_x',50),('photo_y',50)))
         db.exec_(f"UPDATE articles SET {','.join(fields)}{',render_path=NULL' if image_changed else ''},updated_at=CURRENT_TIMESTAMP WHERE id=?",tuple(vals+[aid]))
         if image_changed: db.exec_('UPDATE canva_designs SET exported=0 WHERE article_id=?',(aid,))
         if 'brand' in changes and changes['brand']!=original.get('brand'):
@@ -726,7 +731,7 @@ def choose_photo(aid:int,p:PhotoChoice):
     try: local=photos.download_image(url,min_width=700,min_height=500)
     except ValueError as e: raise HTTPException(400,'Esa foto es pequeña para la imagen (1080x1350). Elige otra más grande. '+str(e)[:120])
     except Exception as e: raise HTTPException(400,'No se pudo descargar la foto: '+str(e)[:200])
-    db.exec_("UPDATE articles SET image_url=?,image_source=?,image_license=?,image_author=?,image_kind=?,image_local=?,image_candidates_json=?,render_path=NULL,ai_image_suggestion='',status=CASE WHEN status='approved' THEN 'review_ready' ELSE status END,updated_at=CURRENT_TIMESTAMP WHERE id=?",
+    db.exec_("UPDATE articles SET image_url=?,image_source=?,image_license=?,image_author=?,image_kind=?,image_local=?,image_candidates_json=?,photo_zoom=1,photo_x=50,photo_y=50,render_path=NULL,ai_image_suggestion='',status=CASE WHEN status='approved' THEN 'review_ready' ELSE status END,updated_at=CURRENT_TIMESTAMP WHERE id=?",
              (url,item.get('source') or p.source,item.get('license') or p.license,item.get('author') or p.author,item.get('kind') or '',local,json.dumps(allowed,ensure_ascii=False),aid))
     db.exec_('UPDATE canva_designs SET exported=0 WHERE article_id=?',(aid,))
     return {'ok':True}
@@ -751,7 +756,7 @@ def auto_photo(aid:int):
     chosen,local=photos.first_usable(imgs)
     db.exec_('UPDATE articles SET image_candidates_json=? WHERE id=?',(json.dumps(imgs,ensure_ascii=False),aid))
     if not chosen: raise HTTPException(404,'No se encontró ninguna foto en internet. Prueba con otra búsqueda o sube una.')
-    db.exec_("UPDATE articles SET image_url=?,image_source=?,image_license='',image_author=?,image_kind=?,image_local=?,render_path=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=?",
+    db.exec_("UPDATE articles SET image_url=?,image_source=?,image_license='',image_author=?,image_kind=?,image_local=?,photo_zoom=1,photo_x=50,photo_y=50,render_path=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=?",
              (chosen['url'],chosen.get('source') or '',chosen.get('author') or '',chosen.get('kind') or '',local,aid))
     db.exec_('UPDATE canva_designs SET exported=0 WHERE article_id=?',(aid,))
     return {'ok':True,'photo':chosen,'found':len(imgs)}
@@ -780,7 +785,7 @@ async def upload_article_photo(aid:int,file:UploadFile=File(...),license:str=For
               'author':author.strip()[:120],'kind':'user_upload','publish_safe':True}
     try: previous=json.loads((db.row('SELECT image_candidates_json FROM articles WHERE id=?',(aid,)) or {}).get('image_candidates_json') or '[]')
     except Exception: previous=[]
-    db.exec_("UPDATE articles SET image_url=?,image_source=?,image_license=?,image_author=?,image_kind='user_upload',image_local=?,image_candidates_json=?,render_path=NULL,status=CASE WHEN status='approved' THEN 'review_ready' ELSE status END,updated_at=CURRENT_TIMESTAMP WHERE id=?",
+    db.exec_("UPDATE articles SET image_url=?,image_source=?,image_license=?,image_author=?,image_kind='user_upload',image_local=?,image_candidates_json=?,photo_zoom=1,photo_x=50,photo_y=50,render_path=NULL,status=CASE WHEN status='approved' THEN 'review_ready' ELSE status END,updated_at=CURRENT_TIMESTAMP WHERE id=?",
              (selected['url'],selected['source'],selected['license'],selected['author'],str(dest),json.dumps(previous+[selected],ensure_ascii=False),aid))
     db.exec_('UPDATE canva_designs SET exported=0 WHERE article_id=?',(aid,))
     return {'ok':True,'photo':selected}

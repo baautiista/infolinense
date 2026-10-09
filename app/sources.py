@@ -896,8 +896,7 @@ def _archived_official_candidate(item, source):
                             AND (c.url=? OR EXISTS (SELECT 1 FROM candidate_links l WHERE l.candidate_id=c.id AND l.url=?)
                                  OR (?='edictos' AND c.source_id=? AND c.title=?
                                      AND substr(c.published_at,1,10)=substr(?,1,10)))
-                            AND COALESCE(c.editorial_priority,'undecided')!='no_interest'
-                            AND NOT EXISTS (SELECT 1 FROM articles a WHERE a.candidate_id=c.id)""",
+                            AND COALESCE(c.editorial_priority,'undecided')!='no_interest'""",
                     (url, url, kind, source.get('id'), title, published))
     return candidate
 

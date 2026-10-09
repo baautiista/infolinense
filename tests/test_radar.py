@@ -77,6 +77,8 @@ class RadarChecks(unittest.TestCase):
         db.exec_("UPDATE candidates SET status='archived',editorial_priority='this_week' WHERE id=?", (cid,))
         self.assertIsNotNone(sources._archived_official_candidate(item, source))
         self.assertEqual(db.row('SELECT status FROM candidates WHERE id=?', (cid,))['status'], 'archived')
+        db.exec_("INSERT INTO articles(candidate_id,headline,status) VALUES(?,?,?)",
+                 (cid, 'Borrador anterior del edicto', 'rejected'))
         self.assertEqual(sources._resurface_archived_official(item, source), cid)
         self.assertEqual(db.row('SELECT status FROM candidates WHERE id=?', (cid,))['status'], 'new')
         self.assertEqual(db.row('SELECT editorial_priority FROM candidates WHERE id=?', (cid,))['editorial_priority'], 'this_week')

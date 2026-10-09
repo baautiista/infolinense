@@ -451,13 +451,26 @@ def parse_edictos(source):
     for row in soup.select('tr'):
         cells = row.find_all('td')
         if len(cells) < 3: continue
-        link = row.find('a', href=re.compile(r'codigo=|edicto', re.I))
-        if not link: continue
+        # La sede ha cambiado varias veces cómo abre cada edicto: a veces el
+        # enlace no contiene "codigo=" ni "edicto", o la fila solo ofrece un
+        # botón. No descartamos por eso una publicación oficial con fecha y título.
+        link = row.find('a', href=re.compile(r'codigo=|edicto|\.pdf(?:$|[?#])', re.I))
+        if link is None:
+            link = next((a for a in row.find_all('a', href=True)
+                         if a.get('href', '').strip() and not a.get('href', '').strip().lower().startswith(('javascript:', '#', 'mailto:'))), None)
         title = ''
         for c in cells:
             text = clean(c.get_text(' ', strip=True))
             if len(text) > len(title) and not re.fullmatch(r'[\d/ :.-]+', text): title = text
-        add(title, link['href'], _dmy(row.get_text(' ', strip=True)))  # la primera fecha de la fila es la de publicación
+        published = _dmy(row.get_text(' ', strip=True))  # la primera fecha de la fila es la de publicación
+        href = link.get('href', '') if link else ''
+        if not href:
+            # El listado público sigue permitiendo localizar el anuncio cuando
+            # la sede oculta su enlace de detalle tras JavaScript.
+            listing = urlparse(source['url'])
+            public_page = f'{listing.scheme}://{listing.netloc}/edictos/publico?idOrgan=23'
+            href = public_page + '#' + quote((published[:10] + '-' + title[:100]), safe='')
+        add(title, href, published)
     if not out:  # formato sin tabla: bloques con enlace y fecha
         for link in soup.find_all('a', href=re.compile(r'codigo=|ver-?edicto|detalle', re.I)):
             block = link

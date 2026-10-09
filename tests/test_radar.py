@@ -144,6 +144,23 @@ class RadarChecks(unittest.TestCase):
             result = sources.parse_edictos({'url': 'https://www.sedeelectronica.lalinea.es/edictos/edicto/buscar-edictos-filtro-pub?primeraBusqueda=true'})
         self.assertEqual(result, found)
 
+    def test_edictos_keep_recent_table_rows_without_matching_detail_links(self):
+        today = datetime.now(timezone.utc).strftime('%d/%m/%Y')
+        old = (datetime.now(timezone.utc) - timedelta(days=30)).strftime('%d/%m/%Y')
+        page = f'''<table>
+          <tr><td>{today}</td><td>31/01/2027</td><td>BASES PUEBLO NAVIDEÑO NAVIDAD Y REYES 2026/27</td></tr>
+          <tr><td>{today}</td><td>31/10/2026</td><td><a href="/anuncio/28006">Consulta pública sobre una ordenanza</a></td></tr>
+          <tr><td>{old}</td><td>31/12/2026</td><td>Una publicación antigua</td></tr>
+        </table>'''
+        source = {'url': 'https://www.sedeelectronica.lalinea.es/edictos/edicto/buscar-edictos-filtro-pub?primeraBusqueda=true'}
+        with patch.object(sources, 'fetch_edictos_html', return_value=page), \
+             patch.object(sources, 'edictos_from_search', return_value=[]):
+            result = sources.parse_edictos(source)
+        self.assertEqual(len(result), 2)
+        self.assertIn('BASES PUEBLO NAVIDEÑO', result[0]['title'])
+        self.assertIn('/edictos/publico?idOrgan=23#', result[0]['url'])
+        self.assertTrue(result[1]['url'].endswith('/anuncio/28006'))
+
     def test_social_source_uses_indexed_rss_instead_of_direct_scraping(self):
         xml = '''<rss><channel><item><title>Acto cultural en La Línea de la Concepción</title>
                  <link>https://news.google.com/example</link><pubDate>Fri, 25 Sep 2026 12:00:00 GMT</pubDate>

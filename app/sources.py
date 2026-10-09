@@ -867,8 +867,8 @@ def add_candidate(title, url, excerpt, source_name, source_id=None, published_at
                     (source_id, source_name, title, url, published_at, excerpt, score, relevance, 'new', local_angle, clean(outlet)[:120], image or '', brand))
 
 
-def _archived_official_candidate(item, source):
-    """Find an eligible archived record without changing it."""
+def _archive_recovery_status(item, source):
+    """Explain whether a current municipal record can re-enter the radar."""
     kind = (source.get('kind') or '').lower()
     source_url = (source.get('url') or '').lower()
     municipal_source = (
@@ -879,26 +879,33 @@ def _archived_official_candidate(item, source):
             or 'contratos.gobierto.es/adjudicadores/alcaldia-del-ayuntamiento-de-la-linea-de-la-concepcion' in source_url
         )
     )
-    if not municipal_source:
-        return None
-
     title = clean(item.get('title') or '')[:260]
     url = item.get('url') or ''
     published = item.get('published_at') or ''
-    excerpt = clean(item.get('excerpt') or '')[:4000]
-    if not title or not url or not recent_enough(published, WINDOW_DAYS['Licitaciones y edictos']):
-        return None
-    if _OTHER_TOWNS.search(title) and not exact_locality(title) and not gibraltar_topic(title):
-        return None
-
+    if not title or not url:
+        return None, 'registro_incompleto'
     candidate = db.row("""SELECT c.id,c.editorial_priority FROM candidates c
                           WHERE c.status='archived'
                             AND (c.url=? OR EXISTS (SELECT 1 FROM candidate_links l WHERE l.candidate_id=c.id AND l.url=?)
                                  OR (?='edictos' AND c.source_id=? AND c.title=?
-                                     AND substr(c.published_at,1,10)=substr(?,1,10)))
-                            AND COALESCE(c.editorial_priority,'undecided')!='no_interest'""",
+                                     AND substr(c.published_at,1,10)=substr(?,1,10)))""",
                     (url, url, kind, source.get('id'), title, published))
-    return candidate
+    if not candidate:
+        return None, 'sin_archivo_coincidente'
+    if not municipal_source:
+        return candidate, 'fuente_no_municipal'
+    if not recent_enough(published, WINDOW_DAYS['Licitaciones y edictos']):
+        return candidate, 'fuera_de_ventana'
+    if _OTHER_TOWNS.search(title) and not exact_locality(title) and not gibraltar_topic(title):
+        return candidate, 'otro_municipio'
+    if candidate.get('editorial_priority') == 'no_interest':
+        return candidate, 'descartado_explicito'
+    return candidate, 'recuperable'
+
+
+def _archived_official_candidate(item, source):
+    candidate, reason = _archive_recovery_status(item, source)
+    return candidate if reason == 'recuperable' else None
 
 
 def _resurface_archived_official(item, source):
@@ -1009,8 +1016,11 @@ def probe_source(sid):
         items = read_source(source, remember_state=False)
         statuses = {}
         recoverable = 0
+        recovery_reasons = {}
         for item in items:
-            archived = _archived_official_candidate(item, source)
+            archived, reason = _archive_recovery_status(item, source)
+            if archived:
+                recovery_reasons[reason] = recovery_reasons.get(reason, 0) + 1
             match = db.row('SELECT id,status,editorial_priority FROM candidates WHERE url=?', (item.get('url') or '',))
             if not match:
                 match = db.row('''SELECT c.id,c.status,c.editorial_priority FROM candidate_links l
@@ -1023,11 +1033,11 @@ def probe_source(sid):
                 continue
             status = match.get('status') or 'unknown'
             statuses[status] = statuses.get(status, 0) + 1
-            if status == 'archived' and archived:
+            if status == 'archived' and archived and reason == 'recuperable':
                 recoverable += 1
         source_health(sid, len(items))
         return {'ok': True, 'items_seen': len(items), 'existing_statuses': statuses,
-                'recoverable_archived': recoverable}
+                'recoverable_archived': recoverable, 'recovery_reasons': recovery_reasons}
     except Exception as exc:
         source_health(sid, error=str(exc))
         return {'ok': False, 'items_seen': 0, 'error': str(exc)[:250]}

@@ -74,11 +74,12 @@ class RadarChecks(unittest.TestCase):
         cid = sources.add_candidate(item['title'], item['url'], item['excerpt'], source['name'],
                                     source_id, published,
                                     {'kind': 'edictos', 'priority': 99, 'official': 1, 'local_scope': 1})
-        db.exec_("UPDATE candidates SET status='archived' WHERE id=?", (cid,))
+        db.exec_("UPDATE candidates SET status='archived',editorial_priority='this_week' WHERE id=?", (cid,))
         self.assertIsNotNone(sources._archived_official_candidate(item, source))
         self.assertEqual(db.row('SELECT status FROM candidates WHERE id=?', (cid,))['status'], 'archived')
         self.assertEqual(sources._resurface_archived_official(item, source), cid)
         self.assertEqual(db.row('SELECT status FROM candidates WHERE id=?', (cid,))['status'], 'new')
+        self.assertEqual(db.row('SELECT editorial_priority FROM candidates WHERE id=?', (cid,))['editorial_priority'], 'this_week')
 
         rejected = dict(item, url=item['url'] + '-rejected')
         rejected_id = sources.add_candidate(rejected['title'], rejected['url'], rejected['excerpt'], source['name'],

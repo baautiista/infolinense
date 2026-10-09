@@ -235,6 +235,12 @@ def init_db():
     ]
     for n,u,k,p,o,scope in more:
         c.execute('INSERT OR IGNORE INTO sources(name,url,kind,priority,official,local_scope) VALUES(?,?,?,?,?,?)',(n,u,k,p,o,scope))
+    # Fuentes oficiales prioritarias del Ayuntamiento: feeds de licitaciones y
+    # contratos menores de PLACSP, además del tablón electrónico municipal.
+    c.execute("UPDATE sources SET name='Licitaciones del Ayuntamiento · PLACSP',official=1,local_scope=1,priority=100 WHERE url=?",
+              ('https://contrataciondelestado.es/sindicacion/sindicacion_643/licitacionesPerfilesContratanteCompleto3.atom',))
+    c.execute("UPDATE sources SET name='Contratos menores · PLACSP',official=1,local_scope=1,priority=98 WHERE url=?",
+              ('https://contrataciondelestado.es/sindicacion/sindicacion_1143/contratosMenoresPerfilesContratantes.atom',))
     # El tablón de edictos es fuente prioritaria: se reactiva una vez (5.6)
     # Solo La Línea (5.7): «Campo de Gibraltar» trae otros municipios; Gibraltar pasa por el filtro de temas
     if not c.execute("SELECT 1 FROM settings WHERE key='solo_linea_57'").fetchone():

@@ -101,6 +101,49 @@ class RadarChecks(unittest.TestCase):
         self.assertIn('305221', results[0]['url'])
         self.assertIn('#page=6&anuncio=', results[0]['url'])
 
+    def test_placsp_keeps_a_tender_open_when_its_feed_update_is_old(self):
+        now = datetime.now(timezone.utc)
+        updated = (now - timedelta(days=31)).isoformat()
+        deadline = (now + timedelta(days=2)).isoformat(timespec='seconds')
+        xml = f'''<feed><entry><title>Mejora de instalaciones en La Línea</title>
+          <id>urn:test:open-tender-retention</id><link rel="alternate" href="https://contrataciondelestado.es/detalle/open-test" />
+          <updated>{updated}</updated><summary>Órgano de Contratación: Alcaldía del Ayuntamiento de la Línea de la Concepción; Estado: PUB</summary>
+          <cac:TenderSubmissionDeadlinePeriod><cbc:EndDate>{deadline}</cbc:EndDate></cac:TenderSubmissionDeadlinePeriod>
+          </entry></feed>'''
+        with patch.object(sources.requests, 'get', return_value=Response(xml)), \
+             patch.object(sources, 'similar_to_published', return_value=False), \
+             patch.object(sources, 'find_tender', return_value=None):
+            results = sources.parse_placsp({'url': sources.PLACSP_FEED})
+            self.assertEqual(len(results), 1)
+            self.assertIn('Plazo hasta ' + deadline, results[0]['excerpt'])
+            cid = sources.add_candidate(results[0]['title'], results[0]['url'], results[0]['excerpt'],
+                                        'PLACSP', published_at=results[0]['published_at'],
+                                        source_meta={'kind': 'procurement', 'priority': 100, 'official': 1, 'local_scope': 1})
+        self.assertIsNotNone(cid)
+        sources.archive_stale()
+        self.assertEqual(db.row('SELECT status FROM candidates WHERE id=?', (cid,))['status'], 'new')
+
+    def test_placsp_reports_a_changed_minor_contract(self):
+        now = datetime.now(timezone.utc).replace(microsecond=0)
+        def feed(updated):
+            return f'''<feed><entry><title>Servicio municipal de apoyo en La Línea</title>
+              <id>urn:test:minor-contract-change</id><link rel="alternate" href="https://contrataciondelestado.es/detalle/minor-test" />
+              <updated>{updated.isoformat()}</updated><summary>Órgano de Contratación: Ayuntamiento de La Línea de la Concepción</summary>
+              </entry></feed>'''
+        with patch.object(sources.requests, 'get', side_effect=[Response(feed(now)), Response(feed(now + timedelta(minutes=1))) ]):
+            first = sources.parse_placsp({'url': sources.PLACSP_MENORES})
+            second = sources.parse_placsp({'url': sources.PLACSP_MENORES})
+        self.assertEqual(first[0]['title'], 'Contrato menor: Servicio municipal de apoyo en La Línea')
+        self.assertTrue(second[0]['title'].startswith('Actualización de contrato menor:'))
+
+    def test_edictos_fall_back_to_search_if_the_board_markup_changes(self):
+        found = [{'title': 'Edicto: plazo de exposición pública', 'url': 'https://www.sedeelectronica.lalinea.es/edictos/edicto?codigo=abc',
+                  'excerpt': 'Publicación oficial', 'published_at': datetime.now(timezone.utc).isoformat()}]
+        with patch.object(sources, 'fetch_edictos_html', return_value='<html><body>formato actualizado</body></html>'), \
+             patch.object(sources, 'edictos_from_search', return_value=found):
+            result = sources.parse_edictos({'url': 'https://www.sedeelectronica.lalinea.es/edictos/edicto/buscar-edictos-filtro-pub?primeraBusqueda=true'})
+        self.assertEqual(result, found)
+
     def test_social_source_uses_indexed_rss_instead_of_direct_scraping(self):
         xml = '''<rss><channel><item><title>Acto cultural en La Línea de la Concepción</title>
                  <link>https://news.google.com/example</link><pubDate>Fri, 25 Sep 2026 12:00:00 GMT</pubDate>

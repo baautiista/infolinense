@@ -171,14 +171,14 @@ def parse_html(source):
     return items
 
 def parse_bop(source):
-    """Read individual announcements from the latest two provincial bulletins."""
+    """Read local notices from the latest provincial bulletins (usually two to three weeks)."""
     r = fetch(source['url']); r.raise_for_status()
     soup = BeautifulSoup(r.text, 'html.parser')
     bulletins = []
     for a in soup.select('a[href]'):
         link = urljoin(source['url'], a.get('href', ''))
         if '/boletin/Boletin-numero-' in link and link not in bulletins: bulletins.append(link)
-        if len(bulletins) == 2: break
+        if len(bulletins) == 5: break
     if not bulletins: raise ValueError('No se encontraron boletines recientes')
     results = []
     for link in bulletins:
@@ -293,6 +293,7 @@ def parse_placsp(source):
         raise ValueError('La Plataforma de Contratación no devolvió licitaciones')
     db.exec_('CREATE TABLE IF NOT EXISTS placsp_state(id TEXT PRIMARY KEY, estado TEXT, updated TEXT)')
     out = []
+    now = datetime.now(timezone.utc)
     for raw in re.findall(r'<entry\b.*?</entry>', text, re.S):
         plain = clean(re.sub(r'<[^>]+>', ' ', raw))
         if not _LINEA.search(plain):
@@ -302,13 +303,19 @@ def parse_placsp(source):
         uid = _tag(raw, r'<id>(.*?)</id>') or link
         updated = _tag(raw, r'<updated>(.*?)</updated>')
         summary = _tag(raw, r'<summary[^>]*>(.*?)</summary>')
-        if not title or not link or not recent_enough(updated, 10):
+        if not title or not link:
             continue
         estado = (re.search(r'Estado:\s*([A-Z]+)', summary) or re.search(r'ContractFolderStatusCode[^>]*>\s*([A-Z]+)\s*<', raw) or [None, ''])[1]
         winner = _tag(raw, r'<cac:WinningParty>.*?<cbc:Name>(.*?)</cbc:Name>')
         awarded = _tag(raw, r'<cac:AwardedTenderedProject>.*?<cbc:PayableAmount[^>]*>(.*?)</cbc:PayableAmount>')
         budget = _tag(raw, r'<cbc:TaxExclusiveAmount[^>]*>(.*?)</cbc:TaxExclusiveAmount>') or _tag(raw, r'<cbc:TotalAmount[^>]*>(.*?)</cbc:TotalAmount>')
         deadline = _tag(raw, r'<cac:TenderSubmissionDeadlinePeriod>.*?<cbc:EndDate>(.*?)</cbc:EndDate>')
+        # El feed estatal no siempre vuelve a publicar una licitación que sigue abierta.
+        # Conservamos los expedientes con plazo vigente aunque su última actualización
+        # tenga más de 20 días; los cerrados y contratos menores sí pasan por la ventana.
+        open_tender = estado in ('PUB', 'PRE') and _deadline_open(deadline, now)
+        if not open_tender and not recent_enough(updated, WINDOW_DAYS['Licitaciones y edictos']):
+            continue
         facts = [PLACSP_STATES.get(estado, estado)] if estado else []
         if budget: facts.append(f'Presupuesto: {budget} € sin IVA')
         if deadline and estado in ('PUB', 'PRE'): facts.append(f'Plazo hasta {deadline}')
@@ -319,8 +326,12 @@ def parse_placsp(source):
         prev = db.row('SELECT estado,updated FROM placsp_state WHERE id=?', (uid,))
         db.exec_('INSERT OR REPLACE INTO placsp_state(id,estado,updated) VALUES(?,?,?)', (uid, estado, updated))
         if menores:
-            if prev: continue
-            head, key = 'Contrato menor: ', 'menor'
+            if prev and prev['updated'] == updated:
+                continue
+            if prev:
+                head, key = 'Actualización de contrato menor: ', 'menor-' + updated[:16]
+            else:
+                head, key = 'Contrato menor: ', 'menor'
         elif prev and prev['estado'] == estado:
             if prev['updated'] == updated:
                 continue  # sin cambios
@@ -407,7 +418,11 @@ def edictos_from_search():
             if 'sedeelectronica.lalinea.es' not in url or url in seen: continue
             seen.add(url)
             title = clean(re.sub(r'\s*[-|·]\s*Sede electr[oó]nica.*$', '', it.get('title') or '', flags=re.I))
-            date = parse_es_date(it.get('snippet') or '') or datetime.now(timezone.utc).replace(hour=9, minute=0, second=0, microsecond=0).isoformat()
+            # Si el buscador no trae fecha, no inventamos que el edicto sea de hoy.
+            indexed_date = it.get('published_at') or ''
+            date = indexed_date if publication_datetime(indexed_date) else parse_es_date(it.get('snippet') or '')
+            if not date:
+                continue
             if title and recent_enough(date, WINDOW_DAYS['Licitaciones y edictos']):
                 out.append({'title': 'Edicto: ' + title[:240], 'url': url, 'excerpt': clean(it.get('snippet') or title), 'published_at': date})
     return out
@@ -453,6 +468,10 @@ def parse_edictos(source):
             if len(title) < 15:
                 title = clean(re.sub(r'\d{1,2}/\d{1,2}/\d{4}(\s+\d{1,2}:\d{2}(:\d{2})?)?', ' ', block.get_text(' ', strip=True)))
             add(title, link['href'], _dmy(block.get_text(' ', strip=True)))
+    if not out:
+        # El tablón puede cambiar el HTML o paginar por JavaScript. El buscador
+        # actúa como respaldo, limitado a enlaces del dominio oficial y con fecha.
+        return edictos_from_search()
     return out
 
 
@@ -508,6 +527,26 @@ def publication_datetime(value):
         except ValueError: return None
     if not date.tzinfo: date = date.replace(tzinfo=timezone.utc)
     return date.astimezone(timezone.utc)
+
+
+def _deadline_open(value, now=None):
+    """True when a tender deadline (ISO or Spanish date) has not passed."""
+    raw = clean(value or '')
+    now = now or datetime.now(timezone.utc)
+    date = publication_datetime(raw) or publication_datetime(parse_es_date(raw))
+    if date is None:
+        return False
+    if re.fullmatch(r'\d{4}-\d{2}-\d{2}|\d{1,2}[/.-]\d{1,2}[/.-]\d{4}', raw):
+        return date + timedelta(days=1) > now  # una fecha sin hora incluye el día entero
+    return date >= now
+
+
+def _open_tender_deadline(title, excerpt, now=None):
+    """Keep open tenders visible beyond the normal freshness window."""
+    if not re.search(r'\blicitaci[oó]n\b', title or '', re.I):
+        return False
+    date = re.search(r'plazo\s+hasta\s*:?\s*(\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}(?::\d{2})?(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?)?|\d{1,2}[/.-]\d{1,2}[/.-]\d{4})', excerpt or '', re.I)
+    return bool(date and _deadline_open(date.group(1), now))
 
 # Días que una pieza sigue siendo actual según su bloque
 WINDOW_DAYS = {'Licitaciones y edictos': 20, 'Ayuntamiento': 3}
@@ -780,7 +819,7 @@ def add_candidate(title, url, excerpt, source_name, source_id=None, published_at
     local_angle = clean(local_angle)[:800]
     tender = source_meta.get('kind') in ('procurement', 'bop', 'edictos') or bool(re.search(r'licitaci|adjudica|edicto|contrataci', title, re.I))
     window = WINDOW_DAYS['Licitaciones y edictos'] if tender else None
-    if not title or not url or not recent_enough(published_at, window): return None
+    if not title or not url or (not (tender and _open_tender_deadline(title, excerpt)) and not recent_enough(published_at, window)): return None
     if not source_meta.get('local_scope'):
         if tender:
             if not tender_ok(title, excerpt): return None  # edictos y licitaciones de otros ayuntamientos, fuera
@@ -1042,12 +1081,12 @@ def archive_stale():
     """Retira del radar lo que ya no es actual y nadie ha marcado como útil."""
     now = datetime.now(timezone.utc)
     n = 0
-    for row in db.rows("""SELECT c.id,c.published_at,c.created_at,c.source_name,c.outlet,c.url,c.title,c.scope,c.social_type,s.kind
+    for row in db.rows("""SELECT c.id,c.published_at,c.created_at,c.source_name,c.outlet,c.url,c.title,c.excerpt,c.scope,c.social_type,s.kind
                           FROM candidates c LEFT JOIN sources s ON s.id=c.source_id
                           WHERE c.status IN ('new','researched','needs_config') AND c.editorial_priority IN ('undecided','')"""):
         limit = now - timedelta(days=WINDOW_DAYS.get(source_group(row), MAX_CANDIDATE_AGE_DAYS))
         date = publication_datetime(row.get('published_at')) or publication_datetime((row.get('created_at') or '').replace(' ', 'T') + '+00:00')
-        if date and date < limit:
+        if date and date < limit and not _open_tender_deadline(row.get('title'), row.get('excerpt'), now):
             db.exec_("UPDATE candidates SET status='archived' WHERE id=?", (row['id'],)); n += 1
     return n
 

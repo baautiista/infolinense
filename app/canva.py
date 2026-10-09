@@ -269,31 +269,18 @@ def size_variants(schema, texts, headline_size='auto'):
 
 
 def _photo_for_canvas(photo, article):
-    """Recorta la foto al lienzo 4:5 usando el zoom y el encuadre elegidos en el editor."""
+    """Prepara la foto completa para que el encuadre se pueda ajustar dentro de Canva."""
     from io import BytesIO
     from PIL import Image, ImageOps
 
     with Image.open(photo) as source:
         image = ImageOps.exif_transpose(source).convert('RGB')
-    width, height = image.size
-    target_ratio = 4 / 5
-    if width / height > target_ratio:
-        crop_w, crop_h = height * target_ratio, height
-    else:
-        crop_w, crop_h = width, width / target_ratio
-    try:
-        zoom = max(1.0, min(2.5, float(article.get('photo_zoom') or 1)))
-        x = max(0.0, min(100.0, float(article.get('photo_x') if article.get('photo_x') is not None else 50))) / 100
-        y = max(0.0, min(100.0, float(article.get('photo_y') if article.get('photo_y') is not None else 50))) / 100
-    except (TypeError, ValueError):
-        zoom, x, y = 1.0, 0.5, 0.5
-    crop_w, crop_h = crop_w / zoom, crop_h / zoom
-    left, top = (width - crop_w) * x, (height - crop_h) * y
-    cropped = image.crop((round(left), round(top), round(left + crop_w), round(top + crop_h)))
+    # Limita la resolución sin recortar la foto; Canva recibe toda la imagen y
+    # permite moverla/ajustar su tamaño en el marco de la plantilla original.
     resampling = getattr(Image, 'Resampling', Image).LANCZOS
-    output = cropped.resize((1080, 1350), resampling)
+    image.thumbnail((3000, 3000), resampling)
     buffer = BytesIO()
-    output.save(buffer, format='JPEG', quality=94, optimize=True)
+    image.save(buffer, format='JPEG', quality=90, optimize=True)
     return buffer.getvalue()
 
 
@@ -389,7 +376,7 @@ def create_design(article, store=True, title_suffix='', output_suffix=None, stri
     for opt in ('SECTION', 'SUMMARY'):  # plantillas sin sección o sin entradilla
         if schema.get(opt, {}).get('type') != 'text' or not texts[opt]:
             fields.pop(opt)
-    fields.update(size_variants(schema, texts, article.get('headline_size') or 'auto'))
+    fields.update(size_variants(schema, texts, 'auto'))
     name = brand['name'] + ' · ' + (article.get('headline') or '')[:100]
     if title_suffix:
         name += ' · ' + str(title_suffix)[:40]

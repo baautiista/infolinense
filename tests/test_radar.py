@@ -61,7 +61,7 @@ class RadarChecks(unittest.TestCase):
         self.assertEqual(small['HEADLINE_S']['text'], texts['HEADLINE'])
         self.assertEqual(small['HEADLINE_L']['text'], canva.BLANK)
 
-    def test_photo_crop_uses_saved_zoom_and_position(self):
+    def test_photo_sent_to_canva_keeps_full_frame_for_editing(self):
         from PIL import ImageDraw
         path = Path(_temp.name) / 'crop-source.jpg'
         image = Image.new('RGB', (1600, 1000), 'black')
@@ -69,12 +69,10 @@ class RadarChecks(unittest.TestCase):
         draw.rectangle((0, 0, 799, 999), fill='red')
         draw.rectangle((800, 0, 1599, 999), fill='blue')
         image.save(path)
-        left = canva._photo_for_canvas(path, {'photo_zoom': 1, 'photo_x': 0, 'photo_y': 50})
-        right = canva._photo_for_canvas(path, {'photo_zoom': 1, 'photo_x': 100, 'photo_y': 50})
-        left_image = Image.open(io.BytesIO(left)).convert('RGB')
-        right_image = Image.open(io.BytesIO(right)).convert('RGB')
-        self.assertEqual(left_image.size, (1080, 1350))
-        left_pixel, right_pixel = left_image.getpixel((540, 675)), right_image.getpixel((540, 675))
+        output = canva._photo_for_canvas(path, {})
+        prepared = Image.open(io.BytesIO(output)).convert('RGB')
+        self.assertEqual(prepared.size, (1600, 1000))
+        left_pixel, right_pixel = prepared.getpixel((400, 500)), prepared.getpixel((1200, 500))
         self.assertGreater(left_pixel[0], 240)
         self.assertGreater(right_pixel[2], 240)
 

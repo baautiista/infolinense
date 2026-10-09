@@ -241,6 +241,9 @@ def init_db():
               ('https://contrataciondelestado.es/sindicacion/sindicacion_643/licitacionesPerfilesContratanteCompleto3.atom',))
     c.execute("UPDATE sources SET name='Contratos menores · PLACSP',official=1,local_scope=1,priority=98 WHERE url=?",
               ('https://contrataciondelestado.es/sindicacion/sindicacion_1143/contratosMenoresPerfilesContratantes.atom',))
+    # La consulta indexada está limitada a la sede municipal y puede recoger
+    # edictos cuyo título no repite el nombre de la ciudad.
+    c.execute("UPDATE sources SET local_scope=1 WHERE name='Edictos · sede municipal indexada'")
     # El tablón de edictos es fuente prioritaria: se reactiva una vez (5.6)
     # Solo La Línea (5.7): «Campo de Gibraltar» trae otros municipios; Gibraltar pasa por el filtro de temas
     if not c.execute("SELECT 1 FROM settings WHERE key='solo_linea_57'").fetchone():

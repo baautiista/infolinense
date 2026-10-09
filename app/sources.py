@@ -278,7 +278,7 @@ def _tag(raw, pattern):
     return clean(re.sub(r'<[^>]+>', ' ', m.group(1))) if m else ''
 
 
-def parse_placsp(source):
+def parse_placsp(source, remember_state=True):
     """Plataforma de Contratación del Sector Público (fuente abierta oficial, Atom). Se queda con lo de La Línea y avisa de:
     licitaciones nuevas, cada cambio de estado (cerrada, adjudicada, formalizada, anulada), rectificaciones o documentos
     nuevos, y contratos menores."""
@@ -324,7 +324,8 @@ def parse_placsp(source):
         organ = (re.search(r'[ÓO]rgano de Contrataci[oó]n:\s*([^;]+)', summary) or [None, ''])[1].strip()
         excerpt = ((organ + '. ' if organ else '') + '. '.join(facts) + '. ' + summary)[:700]
         prev = db.row('SELECT estado,updated FROM placsp_state WHERE id=?', (uid,))
-        db.exec_('INSERT OR REPLACE INTO placsp_state(id,estado,updated) VALUES(?,?,?)', (uid, estado, updated))
+        if remember_state:
+            db.exec_('INSERT OR REPLACE INTO placsp_state(id,estado,updated) VALUES(?,?,?)', (uid, estado, updated))
         if menores:
             if prev and prev['updated'] == updated:
                 continue
@@ -865,13 +866,71 @@ def add_candidate(title, url, excerpt, source_name, source_id=None, published_at
                        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)''',
                     (source_id, source_name, title, url, published_at, excerpt, score, relevance, 'new', local_angle, clean(outlet)[:120], image or '', brand))
 
-def read_source(source):
+
+def _archived_official_candidate(item, source):
+    """Find an eligible archived record without changing it."""
+    kind = (source.get('kind') or '').lower()
+    source_url = (source.get('url') or '').lower()
+    municipal_source = (
+        kind == 'edictos' and 'sedeelectronica.lalinea.es/edictos/' in source_url
+    ) or (
+        kind == 'procurement' and source.get('local_scope') and (
+            'contrataciondelestado.es/sindicacion/' in source_url
+            or 'contratos.gobierto.es/adjudicadores/alcaldia-del-ayuntamiento-de-la-linea-de-la-concepcion' in source_url
+        )
+    )
+    if not municipal_source:
+        return None
+
+    title = clean(item.get('title') or '')[:260]
+    url = item.get('url') or ''
+    published = item.get('published_at') or ''
+    excerpt = clean(item.get('excerpt') or '')[:4000]
+    if not title or not url or not recent_enough(published, WINDOW_DAYS['Licitaciones y edictos']):
+        return None
+    if _OTHER_TOWNS.search(title) and not exact_locality(title) and not gibraltar_topic(title):
+        return None
+
+    candidate = db.row("""SELECT c.id,c.editorial_priority FROM candidates c
+                          WHERE c.status='archived'
+                            AND (c.url=? OR EXISTS (SELECT 1 FROM candidate_links l WHERE l.candidate_id=c.id AND l.url=?)
+                                 OR (?='edictos' AND c.source_id=? AND c.title=?
+                                     AND substr(c.published_at,1,10)=substr(?,1,10)))
+                            AND COALESCE(c.editorial_priority,'undecided') NOT IN ('no_interest','urgent','today','this_week','future')
+                            AND NOT EXISTS (SELECT 1 FROM articles a WHERE a.candidate_id=c.id)""",
+                    (url, url, kind, source.get('id'), title, published))
+    return candidate
+
+
+def _resurface_archived_official(item, source):
+    """Restore a current municipal tender/edict archived by an older source filter.
+
+    Editors' explicit rejections and records with an article are left alone. Only
+    records from the municipality's own procurement and edict sources qualify.
+    """
+    candidate = _archived_official_candidate(item, source)
+    if not candidate:
+        return None
+
+    title = clean(item.get('title') or '')[:260]
+    published = item.get('published_at') or ''
+    excerpt = clean(item.get('excerpt') or '')[:4000]
+    score = min(100, heuristic_score(title, excerpt, source) + 30)
+    relevance = 'high' if score >= 70 else ('medium' if score >= 50 else 'low')
+    db.exec_('''UPDATE candidates SET source_id=?,source_name=?,title=?,published_at=?,excerpt=?,
+                status='new',reason=NULL,score=MAX(score,?),relevance=?,updated_at=CURRENT_TIMESTAMP
+                WHERE id=?''',
+             (source.get('id'), source.get('name') or '', title, published, excerpt,
+              score, relevance, candidate['id']))
+    return candidate['id']
+
+def read_source(source, remember_state=True):
     if 'sedeelectronica.lalinea.es/edictos' in (source.get('url') or ''):
         return parse_edictos(source)  # el tablón siempre con su lector (sesión + plan B), se haya añadido como se haya añadido
     if 'licitaciones.io/' in (source.get('url') or ''):
         return parse_licitacionesio(source)
     if 'contrataciondelestado.es' in (source.get('url') or '') and 'news.google' not in (source.get('url') or ''):
-        return parse_placsp(source)
+        return parse_placsp(source, remember_state=remember_state)
     if source['kind'] == 'rss':
         try:
             items = parse_rss(source)
@@ -947,8 +1006,29 @@ def probe_source(sid):
     source = db.row('SELECT * FROM sources WHERE id=?', (sid,))
     if not source: raise ValueError('Fuente no encontrada')
     try:
-        items = read_source(source); source_health(sid, len(items))
-        return {'ok': True, 'items_seen': len(items)}
+        # Una comprobación de Ajustes no debe consumir cambios de estado de PLACSP.
+        items = read_source(source, remember_state=False)
+        statuses = {}
+        recoverable = 0
+        for item in items:
+            archived = _archived_official_candidate(item, source)
+            match = db.row('SELECT id,status,editorial_priority FROM candidates WHERE url=?', (item.get('url') or '',))
+            if not match:
+                match = db.row('''SELECT c.id,c.status,c.editorial_priority FROM candidate_links l
+                                   JOIN candidates c ON c.id=l.candidate_id WHERE l.url=?''', (item.get('url') or '',))
+            if not match:
+                if archived:
+                    match = {'id': archived['id'], 'status': 'archived',
+                             'editorial_priority': archived.get('editorial_priority')}
+            if not match:
+                continue
+            status = match.get('status') or 'unknown'
+            statuses[status] = statuses.get(status, 0) + 1
+            if status == 'archived' and archived:
+                recoverable += 1
+        source_health(sid, len(items))
+        return {'ok': True, 'items_seen': len(items), 'existing_statuses': statuses,
+                'recoverable_archived': recoverable}
     except Exception as exc:
         source_health(sid, error=str(exc))
         return {'ok': False, 'items_seen': 0, 'error': str(exc)[:250]}
@@ -973,8 +1053,15 @@ def _read_batch(sources, added, errors):
         for job in as_completed(jobs):
             source = jobs[job]
             try:
-                items = job.result(); count = 0
-                items = [i for i in items if not db.row('SELECT 1 FROM candidates WHERE url=?', (i['url'],))
+                items = job.result(); raw_count = len(items); count = 0
+                resurfaced = set()
+                for item in items:
+                    cid = _resurface_archived_official(item, source)
+                    if cid:
+                        added.append(cid); resurfaced.add(item.get('url') or '')
+                        count += 1; _scan_state['added'] += 1
+                items = [i for i in items if (i.get('url') or '') not in resurfaced
+                         and not db.row('SELECT 1 FROM candidates WHERE url=?', (i['url'],))
                          and not db.row('SELECT 1 FROM candidate_links WHERE url=?', (i['url'],))]
                 # Solo noticias actuales: si la lista no trae fecha, se lee de la propia página.
                 undated = [i for i in items if not i.get('published_at') and source['kind'] not in ('procurement', 'edictos')][:20]
@@ -991,7 +1078,7 @@ def _read_batch(sources, added, errors):
                                         source['name'], source['id'], item.get('published_at', ''), source,
                                         outlet=item.get('outlet', ''), image=item.get('image', ''))
                     if cid: added.append(cid); count += 1; _scan_state['added'] += 1
-                source_health(source['id'], len(items), count)
+                source_health(source['id'], raw_count, count)
             except Exception as exc:
                 errors.append(f"{source['name']}: {str(exc)[:250]}")
                 source_health(source['id'], error=str(exc))

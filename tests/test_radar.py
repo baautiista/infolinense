@@ -61,6 +61,45 @@ class RadarChecks(unittest.TestCase):
         self.assertEqual(small['HEADLINE_S']['text'], texts['HEADLINE'])
         self.assertEqual(small['HEADLINE_L']['text'], canva.BLANK)
 
+    def test_recent_archived_official_edict_is_restored_but_editor_rejection_is_kept(self):
+        source_id = db.exec_("""INSERT INTO sources(name,url,kind,priority,official,local_scope)
+                               VALUES(?,?,?,?,?,?)""",
+                            ('Prueba tablón oficial', 'https://www.sedeelectronica.lalinea.es/edictos/',
+                             'edictos', 99, 1, 1))
+        source = db.row('SELECT * FROM sources WHERE id=?', (source_id,))
+        published = datetime.now(timezone.utc).isoformat()
+        item = {'title': 'Edicto: Bases de una convocatoria municipal',
+                'url': 'https://www.sedeelectronica.lalinea.es/edictos/?codigo=restore-test',
+                'excerpt': 'Bases de una convocatoria municipal', 'published_at': published}
+        cid = sources.add_candidate(item['title'], item['url'], item['excerpt'], source['name'],
+                                    source_id, published,
+                                    {'kind': 'edictos', 'priority': 99, 'official': 1, 'local_scope': 1})
+        db.exec_("UPDATE candidates SET status='archived' WHERE id=?", (cid,))
+        self.assertIsNotNone(sources._archived_official_candidate(item, source))
+        self.assertEqual(db.row('SELECT status FROM candidates WHERE id=?', (cid,))['status'], 'archived')
+        self.assertEqual(sources._resurface_archived_official(item, source), cid)
+        self.assertEqual(db.row('SELECT status FROM candidates WHERE id=?', (cid,))['status'], 'new')
+
+        rejected = dict(item, url=item['url'] + '-rejected')
+        rejected_id = sources.add_candidate(rejected['title'], rejected['url'], rejected['excerpt'], source['name'],
+                                            source_id, published,
+                                            {'kind': 'edictos', 'priority': 99, 'official': 1, 'local_scope': 1})
+        db.exec_("UPDATE candidates SET status='archived',editorial_priority='no_interest' WHERE id=?", (rejected_id,))
+        self.assertIsNone(sources._resurface_archived_official(rejected, source))
+        self.assertEqual(db.row('SELECT status FROM candidates WHERE id=?', (rejected_id,))['status'], 'archived')
+
+    def test_placsp_probe_does_not_consume_contract_changes(self):
+        updated = datetime.now(timezone.utc).isoformat()
+        uid = 'probe-state-must-remain-' + str(int(datetime.now(timezone.utc).timestamp()))
+        feed = f'''<feed><entry><id>{uid}</id><title>Servicio municipal de prueba</title>
+          <link href="https://contrataciondelestado.es/anuncio/{uid}" />
+          <updated>{updated}</updated><summary>Órgano de Contratación: Ayuntamiento de La Línea de la Concepción; Estado: PUB</summary>
+        </entry></feed>'''
+        with patch('app.sources.requests.get', return_value=Response(feed)):
+            items = sources.parse_placsp({'url': sources.PLACSP_FEED}, remember_state=False)
+        self.assertEqual(len(items), 1)
+        self.assertIsNone(db.row('SELECT id FROM placsp_state WHERE id=?', (uid,)))
+
     def test_photo_sent_to_canva_keeps_full_frame_for_editing(self):
         from PIL import ImageDraw
         path = Path(_temp.name) / 'crop-source.jpg'

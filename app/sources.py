@@ -571,6 +571,19 @@ def recent_enough(value, days=None):
     if date is None: return True  # HTML listings often omit dates; URL dedup handles repeats.
     return date >= datetime.now(timezone.utc) - timedelta(days=days or MAX_CANDIDATE_AGE_DAYS)
 
+
+def published_this_week(value):
+    """Whether a dated item was published in the current Monday-to-Sunday week in Spain."""
+    date = publication_datetime(value)
+    if date is None:
+        return False
+    from zoneinfo import ZoneInfo
+    madrid = ZoneInfo('Europe/Madrid')
+    today = datetime.now(madrid).date()
+    local_date = date.astimezone(madrid).date()
+    week_start = today - timedelta(days=today.weekday())
+    return week_start <= local_date < week_start + timedelta(days=7)
+
 def heuristic_score(title, excerpt, source):
     text = (title + ' ' + (excerpt or '')).lower()
     score = 28 if exact_locality(text) or source.get('local_scope') else 0
@@ -898,7 +911,9 @@ def _archive_recovery_status(item, source):
         return candidate, 'fuera_de_ventana'
     if _OTHER_TOWNS.search(title) and not exact_locality(title) and not gibraltar_topic(title):
         return candidate, 'otro_municipio'
-    if candidate.get('editorial_priority') == 'no_interest':
+    # La petición actual es volver a mostrar las publicaciones oficiales de esta
+    # semana. Se reabren una vez; al recuperarlas se limpia el descarte anterior.
+    if candidate.get('editorial_priority') == 'no_interest' and not published_this_week(published):
         return candidate, 'descartado_explicito'
     return candidate, 'recuperable'
 
@@ -909,10 +924,10 @@ def _archived_official_candidate(item, source):
 
 
 def _resurface_archived_official(item, source):
-    """Restore a current municipal tender/edict archived by an older source filter.
+    """Restore matching current records from the municipality's official sources.
 
-    Editors' explicit rejections and records with an article are left alone. Only
-    records from the municipality's own procurement and edict sources qualify.
+    A no-interest mark is cleared only for current-week official notices requested
+    again, so the item re-enters once and can be dismissed normally afterward.
     """
     candidate = _archived_official_candidate(item, source)
     if not candidate:
@@ -924,7 +939,8 @@ def _resurface_archived_official(item, source):
     score = min(100, heuristic_score(title, excerpt, source) + 30)
     relevance = 'high' if score >= 70 else ('medium' if score >= 50 else 'low')
     db.exec_('''UPDATE candidates SET source_id=?,source_name=?,title=?,published_at=?,excerpt=?,
-                status='new',reason=NULL,score=MAX(score,?),relevance=?,updated_at=CURRENT_TIMESTAMP
+                status='new',editorial_priority=CASE WHEN editorial_priority='no_interest' THEN 'undecided' ELSE editorial_priority END,
+                reason=NULL,score=MAX(score,?),relevance=?,updated_at=CURRENT_TIMESTAMP
                 WHERE id=?''',
              (source.get('id'), source.get('name') or '', title, published, excerpt,
               score, relevance, candidate['id']))

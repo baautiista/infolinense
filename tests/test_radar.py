@@ -61,7 +61,7 @@ class RadarChecks(unittest.TestCase):
         self.assertEqual(small['HEADLINE_S']['text'], texts['HEADLINE'])
         self.assertEqual(small['HEADLINE_L']['text'], canva.BLANK)
 
-    def test_recent_archived_official_edict_is_restored_but_editor_rejection_is_kept(self):
+    def test_current_week_official_edict_is_restored_once_but_older_rejection_is_kept(self):
         source_id = db.exec_("""INSERT INTO sources(name,url,kind,priority,official,local_scope)
                                VALUES(?,?,?,?,?,?)""",
                             ('Prueba tablón oficial', 'https://www.sedeelectronica.lalinea.es/edictos/',
@@ -83,13 +83,25 @@ class RadarChecks(unittest.TestCase):
         self.assertEqual(db.row('SELECT status FROM candidates WHERE id=?', (cid,))['status'], 'new')
         self.assertEqual(db.row('SELECT editorial_priority FROM candidates WHERE id=?', (cid,))['editorial_priority'], 'this_week')
 
-        rejected = dict(item, url=item['url'] + '-rejected')
-        rejected_id = sources.add_candidate(rejected['title'], rejected['url'], rejected['excerpt'], source['name'],
-                                            source_id, published,
-                                            {'kind': 'edictos', 'priority': 99, 'official': 1, 'local_scope': 1})
-        db.exec_("UPDATE candidates SET status='archived',editorial_priority='no_interest' WHERE id=?", (rejected_id,))
-        self.assertIsNone(sources._resurface_archived_official(rejected, source))
-        self.assertEqual(db.row('SELECT status FROM candidates WHERE id=?', (rejected_id,))['status'], 'archived')
+        requested_again = dict(item, url=item['url'] + '-requested-again')
+        requested_id = sources.add_candidate(requested_again['title'], requested_again['url'], requested_again['excerpt'], source['name'],
+                                             source_id, published,
+                                             {'kind': 'edictos', 'priority': 99, 'official': 1, 'local_scope': 1})
+        db.exec_("UPDATE candidates SET status='archived',editorial_priority='no_interest' WHERE id=?", (requested_id,))
+        self.assertEqual(sources._archive_recovery_status(requested_again, source)[1], 'recuperable')
+        self.assertEqual(sources._resurface_archived_official(requested_again, source), requested_id)
+        self.assertEqual(db.row('SELECT status,editorial_priority FROM candidates WHERE id=?', (requested_id,)),
+                         {'status': 'new', 'editorial_priority': 'undecided'})
+
+        older_date = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
+        older = dict(item, url=item['url'] + '-older', published_at=older_date)
+        older_id = sources.add_candidate(older['title'], older['url'], older['excerpt'], source['name'],
+                                          source_id, older_date,
+                                          {'kind': 'edictos', 'priority': 99, 'official': 1, 'local_scope': 1})
+        db.exec_("UPDATE candidates SET status='archived',editorial_priority='no_interest' WHERE id=?", (older_id,))
+        self.assertEqual(sources._archive_recovery_status(older, source)[1], 'descartado_explicito')
+        self.assertIsNone(sources._resurface_archived_official(older, source))
+        self.assertEqual(db.row('SELECT status FROM candidates WHERE id=?', (older_id,))['status'], 'archived')
 
     def test_placsp_probe_does_not_consume_contract_changes(self):
         updated = datetime.now(timezone.utc).isoformat()

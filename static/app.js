@@ -582,14 +582,15 @@ async function editor(v) {
   cache.article = a; cache.kit = kit;
   const options = jparse(a.headline_options_json, []), missing = jparse(a.missing_data_json, []), srcs = jparse(a.sources_json, []);
   const published = a.status === 'published';
+  const isInfoLinense = (a.brand || 'infolinense') === 'infolinense';
   const previewMarkup = kit.photo_download_url
-    ? `<img id="preview" alt="Foto de la noticia"><div class="preview-shade"></div><span class="preview-section" id="previewSection">${esc(a.section_label || a.section || '')}</span><div class="preview-copy"><h2 id="previewHeadline">${esc(a.headline || '')}</h2><p id="previewSubtitle">${esc(a.subtitle || '')}</p></div>`
+    ? `<img id="preview" alt="Foto de la noticia">${isInfoLinense ? `<div class="preview-shade"></div><div class="preview-logo" aria-label="InfoLinense"><svg viewBox="0 0 100 100" aria-hidden="true"><path d="M43 9C24 11 10 27 10 46M49 24C37 26 29 36 29 48"/><circle cx="55" cy="39" r="10"/><path d="M49 53v26c0 7 4 11 11 11h12"/></svg></div><div class="preview-site">INFOLINENSE.COM</div><span class="preview-section" id="previewSection">${esc(a.section_label || a.section || '')}</span><div class="preview-headline-card"><h2 id="previewHeadline">${esc(a.headline || '')}</h2></div><p class="preview-subtitle" id="previewSubtitle">${esc(a.subtitle || '')}</p><div class="preview-footer"><span class="preview-social"><i>♪</i><i>𝕏</i><i>◎</i><i class="preview-f">f</i></span><b>@INFOLINENSE</b></div>` : ''}`
     : kit.image_url ? `<img id="preview" alt="Imagen final de Canva">` : `<p class="empty">Sin foto todavía</p>`;
   v.innerHTML = `<div class="editor">
     <section class="visual">
       <div class="frame ${kit.photo_download_url ? 'photo-editor' : ''}" id="frame">${previewMarkup}</div>
       ${kit.photo_download_url ? `<section class="image-tools"><label>Zoom de foto <span class="tool-value" id="zoomValue"></span><input id="f-photo_zoom" type="range" min="1" max="2.5" step="0.05" value="${Number(a.photo_zoom || 1)}"></label><div class="crop-axes"><label>Encuadre horizontal <input id="f-photo_x" type="range" min="0" max="100" step="1" value="${Number(a.photo_x ?? 50)}"></label><label>Encuadre vertical <input id="f-photo_y" type="range" min="0" max="100" step="1" value="${Number(a.photo_y ?? 50)}"></label></div><div class="row wrap"><button class="btn small" type="button" id="resetCrop">Centrar y ajustar</button><span class="muted small">Arrastra la foto para cambiar el encuadre.</span></div></section>` : ''}
-      ${kit.photo_download_url ? '<p class="muted small">Vista previa orientativa · arrastra la foto para encuadrarla. El diseño final conserva la plantilla de Canva.</p>' : kit.image_url ? '<p class="muted small">Imagen final de Canva.</p>' : ''}
+      ${kit.photo_download_url ? `<p class="muted small">${isInfoLinense ? 'Vista previa basada en la plantilla de InfoLinense' : 'Vista previa de la foto; el diseño final usa la plantilla de ' + esc(brandOf(a.brand).name)} · arrastra la foto para encuadrarla.</p>` : kit.image_url ? '<p class="muted small">Imagen final de Canva.</p>' : ''}
       <div class="row wrap">
         <button class="btn small" onclick="photoPanel()">Cambiar foto</button>
         <button class="btn small" onclick="autoPhoto()">Foto automática</button>
@@ -637,7 +638,7 @@ async function editor(v) {
     sizeInput.value = selected;
     f('headline').style.fontSize = { small: '16px', auto: '18px', large: '20px' }[selected];
     const previewHeadline = $('#previewHeadline');
-    if (previewHeadline) previewHeadline.style.fontSize = { small: 'clamp(18px,4.7vw,24px)', auto: 'clamp(20px,5.5vw,30px)', large: 'clamp(22px,6.3vw,34px)' }[selected];
+    if (previewHeadline) previewHeadline.style.fontSize = { small: '6.2cqw', auto: '7.2cqw', large: '8.2cqw' }[selected];
     sizeTools.querySelectorAll('[data-head-size]').forEach(b => {
       const active = b.dataset.headSize === selected;
       b.classList.toggle('on', active); b.setAttribute('aria-pressed', String(active));

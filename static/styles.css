@@ -264,4 +264,21 @@ body.editing .actions{bottom:0}
 .seg input:checked+span{background:var(--navy);border-color:var(--navy);color:#fff}
 .seg input:focus-visible+span{outline:3px solid var(--lime)}
 .rv-card.done{opacity:.72;border-left-color:#1E9E5A}
+
+/* ---------- búsqueda y tamaño del titular ---------- */
+.sort-search{background:#fff;border-radius:var(--r-md);padding:12px 14px;margin:0 0 10px;box-shadow:var(--lift)}
+.sort-search label{display:block;font-weight:700;color:var(--navy);margin-bottom:7px}
+.sort-search .row{display:flex;gap:8px;align-items:center}
+.sort-search .row input{min-width:0;flex:1}
+.sort-search .row button{flex:0 0 auto;white-space:nowrap}
+.sort-search p{margin:7px 0 0}
+.sort-count{margin:0 2px 8px}
+.headline-size-tools{display:flex;align-items:center;justify-content:space-between;gap:10px;margin:-8px 0 -2px}
+.headline-size-tools>span{color:var(--muted)}
+.headline-size-tools .size-group{display:flex;gap:5px}
+.headline-size-tools button{min-width:42px;border:1.5px solid var(--line);border-radius:9px;padding:6px 10px;background:#fff;font-weight:800;cursor:pointer}
+.headline-size-tools button:hover{border-color:var(--blue)}
+.headline-size-tools button.on{background:var(--blue);border-color:var(--blue);color:#fff}
+.headline-size-tools button:focus-visible{outline:3px solid var(--lime)}
+@media(max-width:480px){.sort-search .row{align-items:stretch}.sort-search .row button{padding-inline:9px;font-size:13px}}
 .rv-card .sched{font-size:13px;margin:6px 0}

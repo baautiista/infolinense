@@ -240,7 +240,7 @@ SIZE_RULES = {'HEADLINE': (40, 80), 'SECTION': (12, 18)}   # hasta N1 caracteres
 BLANK = ' '
 
 
-def size_variants(schema, texts):
+def size_variants(schema, texts, headline_size='auto'):
     out = {}
     for key, (big, small) in SIZE_RULES.items():
         text = texts.get(key) or ''
@@ -249,7 +249,13 @@ def size_variants(schema, texts):
         if not (has_l or has_s) or not text:
             continue
         has_n = schema.get(key, {}).get('type') == 'text'
-        pick = key + '_L' if has_l and len(text) <= big else key + '_S' if has_s and len(text) > small else key if has_n else key + ('_S' if has_s else '_L')
+        mode = str(headline_size or 'auto').lower() if key == 'HEADLINE' else 'auto'
+        if mode == 'large' and has_l:
+            pick = key + '_L'
+        elif mode == 'small' and has_s:
+            pick = key + '_S'
+        else:
+            pick = key + '_L' if has_l and len(text) <= big else key + '_S' if has_s and len(text) > small else key if has_n else key + ('_S' if has_s else '_L')
         for k in (key, key + '_L', key + '_S'):
             if schema.get(k, {}).get('type') == 'text':
                 out[k] = {'type': 'text', 'text': text if k == pick else BLANK}
@@ -348,7 +354,7 @@ def create_design(article, store=True, title_suffix='', output_suffix=None, stri
     for opt in ('SECTION', 'SUMMARY'):  # plantillas sin sección o sin entradilla
         if schema.get(opt, {}).get('type') != 'text' or not texts[opt]:
             fields.pop(opt)
-    fields.update(size_variants(schema, texts))
+    fields.update(size_variants(schema, texts, article.get('headline_size') or 'auto'))
     name = brand['name'] + ' · ' + (article.get('headline') or '')[:100]
     if title_suffix:
         name += ' · ' + str(title_suffix)[:40]

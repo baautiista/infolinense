@@ -1,3 +1,6 @@
+Warning: truncated output (original token count: 18965)
+Total output lines: 1180
+
 import os, json, re, threading, time, ipaddress, zipfile
 from datetime import datetime, timezone, timedelta
 from urllib.parse import urlparse
@@ -13,7 +16,7 @@ from . import db, sources, pipeline, publishers, photos, canva, ai, planner, lay
 from .auth import login, require_auth
 from .config import BASE_DIR, RENDER_DIR, UPLOAD_DIR, SCAN_INTERVAL_MINUTES, AUTO_PIPELINE, OPENAI_API_KEY, ADMIN_PASSWORD, JWT_SECRET, PUBLISH_MODE, CORS_ORIGINS, PUBLIC_BASE_URL, AUTO_PUBLISH
 
-VERSION='6.5.1'
+VERSION='6.6.0'
 app=FastAPI(title='InfoLinense Desk',version=VERSION)
 app.add_middleware(CORSMiddleware,allow_origins=CORS_ORIGINS,allow_credentials=False,allow_methods=['*'],allow_headers=['Authorization','Content-Type'])
 db.init_db()
@@ -35,9 +38,10 @@ class SourceIn(BaseModel):
     local_scope:bool=False
     brand:str='infolinense'
 class EditArticle(BaseModel):
-    section:str|None=None; headline:str|None=None; subtitle:str|None=None; body:str|None=None; graphic_summary:str|None=None; image_headline:str|None=None; brand:str|None=None; section_label:str|None=None
+    section:str|None=None; headline:str|None=None; headline_size:str|None=None; subtitle:str|None=None; body:str|None=None; graphic_summary:str|None=None; image_headline:str|None=None; brand:str|None=None; section_label:str|None=None
 class PhotoChoice(BaseModel): url:str; source:str=''; license:str=''; author:str=''; confirm_permission:bool=False
 class TriageIn(BaseModel): priority:str; planned_at:str|None=None
+class NewsSearchIn(BaseModel): query:str
 class CarouselPhoto(BaseModel): url:str; source:str=''; license:str=''; author:str=''; publish_safe:bool=False
 class CarouselDesignIn(BaseModel): photo_urls:list[str]
 
@@ -157,9 +161,19 @@ def scan(wait:int=0):
     if wait: return _scan_and_plan()
     if sources._scan_state['busy'] or sources._scan_lock.locked():
         return {**sources._scan_state,'started':False,'busy':True}
-    sources._scan_state.update(busy=True,phase='Empezando',added=0,started_at=time.time())  # ya «buscando» desde este momento
+    sources._scan_state.update(busy=True,phase='Empezando',added=0,checked=0,total=0,started_at=time.time())  # ya «buscando» desde este momento
     threading.Thread(target=_scan_and_plan,daemon=True).start()
     return {**sources._scan_state,'started':True,'busy':True}
+
+@app.post('/api/news/search',dependencies=[Depends(require_auth)])
+def news_search(body:NewsSearchIn):
+    """Busca por tema en noticias recientes y añade al radar solo resultados locales nuevos."""
+    try:
+        return sources.search_news(body.query)
+    except ValueError as e:
+        raise HTTPException(400,str(e))
+    except Exception as e:
+        raise HTTPException(502,'No se pudo buscar en noticias: '+str(e)[:180])
 
 @app.get('/api/scan/status',dependencies=[Depends(require_auth)])
 def scan_status():
@@ -566,62 +580,7 @@ def design_carousel(aid:int,body:CarouselDesignIn):
     except Exception: data={}
     slides=data.get('slides') or []
     if not data.get('suitable') or not slides: raise HTTPException(400,'Primero analiza y crea el texto del carrusel')
-    try: candidates=json.loads(a.get('image_candidates_json') or '[]')
-    except Exception: candidates=[]
-    by_url={item.get('url'):item for item in candidates if isinstance(item,dict)}
-    if not 1<=len(body.photo_urls)<=6: raise HTTPException(400,'Selecciona entre una y seis fotos')
-    selected=[]
-    for url in body.photo_urls:
-        photo=by_url.get(url) or {'url':url,'source':'','kind':'web','publish_safe':True}
-        if str(url).startswith('upload:'):
-            raise HTTPException(400,'Para el carrusel elige fotos de la búsqueda')
-        selected.append(photo)
-    try: return canva.create_carousel_designs(a,slides,selected)
-    except ValueError as e: raise HTTPException(400,str(e))
-    except Exception as e: raise HTTPException(502,'Canva no pudo terminar el carrusel: '+str(e)[:180]) from e
-
-@app.get('/api/articles/{aid}/carousel/slide/{slide_index}',dependencies=[Depends(require_auth)])
-def carousel_slide(aid:int,slide_index:int):
-    if not db.row('SELECT article_id FROM carousel_designs WHERE article_id=? AND slide_index=? AND exported=1',(aid,slide_index)):
-        raise HTTPException(404,'Diapositiva no disponible')
-    path=RENDER_DIR/('article_%s_carousel_%s.png' % (aid,slide_index))
-    if not path.is_file(): raise HTTPException(404,'Diapositiva no disponible')
-    return FileResponse(path,media_type='image/png',filename='infolinense-%s-carrusel-%s.png' % (aid,slide_index))
-
-@app.get('/api/articles/{aid}/carousel/download',dependencies=[Depends(require_auth)])
-def download_carousel(aid:int):
-    a=db.row('SELECT carousel_json FROM articles WHERE id=?',(aid,))
-    if not a: raise HTTPException(404,'Noticia no encontrada')
-    designs=db.rows('SELECT slide_index,exported FROM carousel_designs WHERE article_id=? ORDER BY slide_index',(aid,))
-    if len(designs)<3 or any(not row.get('exported') for row in designs):
-        raise HTTPException(400,'Primero exporta todas las diapositivas en Canva')
-    archive=RENDER_DIR/('infolinense-carrusel-%s.zip' % aid)
-    with zipfile.ZipFile(archive,'w',compression=zipfile.ZIP_DEFLATED) as zf:
-        for row in designs:
-            path=RENDER_DIR/('article_%s_carousel_%s.png' % (aid,row['slide_index']))
-            if not path.is_file(): raise HTTPException(404,'Falta una diapositiva exportada')
-            zf.write(path,'infolinense-carrusel-%02d.png' % row['slide_index'])
-    return FileResponse(archive,media_type='application/zip',filename='infolinense-carrusel-%s.zip' % aid)
-
-@app.get('/api/articles/{aid}/kit',dependencies=[Depends(require_auth)])
-def kit(aid:int):
-    a=article(aid)
-    design=db.row('SELECT url,exported FROM canva_designs WHERE article_id=?',(aid,)) or {}
-    exported=bool(design.get('exported')) and (RENDER_DIR/f'article_{aid}.png').is_file()
-    body=(a.get('body') or '')[:2200]
-    copy_text='\n\n'.join(x for x in [a.get('headline') or '',a.get('subtitle') or '',body] if x.strip())
-    try: options=json.loads(a.get('headline_options_json') or '[]')
-    except Exception: options=[]
-    try: missing=json.loads(a.get('missing_data_json') or '[]')
-    except Exception: missing=[]
-    try: srcs=json.loads(a.get('sources_json') or '[]')
-    except Exception: srcs=[]
-    photo_ok=bool(a.get('image_local')) and Path(a['image_local']).is_file()
-    carousel=db.rows('SELECT slide_index,exported FROM carousel_designs WHERE article_id=? ORDER BY slide_index',(aid,))
-    return {'id':aid,'section':a.get('section'),'headline':a.get('headline'),'subtitle':a.get('subtitle'),'text':body,'chars':len(body),
-            'copy_text':copy_text,'headline_options':options,'missing_data':missing,'sources':srcs,
-            'image_url':f'/media/render/{aid}.png' if exported else None,'status':a.get('status'),'source_url':a.get('source_url'),
-            'image_source':a.get('image_source'),'image_license':a.get('image_license'),'image_author':a.get('image_author') or '',
+    try: candidates=json.loads(a.ge…965 tokens truncated…uthor') or '',
             'image_kind':a.get('image_kind') or '','image_credit':photo_credit(a),
             'photo_query':a.get('photo_query') or photos.photo_query_for(a.get('headline') or '',a.get('section') or ''),
             'photo_download_url':f'/api/articles/{aid}/photo/file' if photo_ok else None,
@@ -655,6 +614,8 @@ def edit_article(aid:int,body:EditArticle):
     for k,v in body.model_dump(exclude_none=True).items():
         if k=='brand':
             if v not in brands.BRANDS: continue
+        if k=='headline_size' and v not in ('auto','small','large'):
+            raise HTTPException(400,'Tamaño de titular no válido')
         if k=='section':
             v=norm_section(v)
         if k=='section_label':
@@ -667,7 +628,7 @@ def edit_article(aid:int,body:EditArticle):
         # La imagen de Canva solo se invalida si cambia algo que aparece en ella (titular, entradilla, sección).
         changes=body.model_dump(exclude_none=True)
         if 'section' in changes: changes['section']=norm_section(changes['section'])
-        image_changed=any(k in changes and (changes[k] or '')!=(original.get(k) or '') for k in ('headline','subtitle','section','brand','section_label'))
+        image_changed=any(k in changes and (changes[k] or '')!=(original.get(k) or '') for k in ('headline','headline_size','subtitle','section','brand','section_label'))
         db.exec_(f"UPDATE articles SET {','.join(fields)}{',render_path=NULL' if image_changed else ''},updated_at=CURRENT_TIMESTAMP WHERE id=?",tuple(vals+[aid]))
         if image_changed: db.exec_('UPDATE canva_designs SET exported=0 WHERE article_id=?',(aid,))
         if 'brand' in changes and changes['brand']!=original.get('brand'):

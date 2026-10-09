@@ -51,6 +51,28 @@ class RadarChecks(unittest.TestCase):
         self.assertIsNotNone(sources.add_candidate('Obras en La Línea de la Concepción', 'https://example.org/new',
                                                      '', 'Boletín', published_at=today, source_meta=meta))
 
+    def test_headline_size_variants_follow_editor_choice(self):
+        schema = {'HEADLINE_L': {'type': 'text'}, 'HEADLINE_S': {'type': 'text'}}
+        texts = {'HEADLINE': 'El puerto abre una nueva conexión'}
+        large = canva.size_variants(schema, texts, 'large')
+        small = canva.size_variants(schema, texts, 'small')
+        self.assertEqual(large['HEADLINE_L']['text'], texts['HEADLINE'])
+        self.assertEqual(large['HEADLINE_S']['text'], canva.BLANK)
+        self.assertEqual(small['HEADLINE_S']['text'], texts['HEADLINE'])
+        self.assertEqual(small['HEADLINE_L']['text'], canva.BLANK)
+
+    def test_search_news_queries_google_news_and_adds_recent_results(self):
+        today = format_datetime(datetime.now(timezone.utc))
+        item = {'title': 'La Línea amplía los horarios del puerto', 'url': 'https://example.org/puerto',
+                'excerpt': 'Nuevos horarios en el puerto', 'published_at': today, 'outlet': 'Diario local'}
+        with patch.object(sources, 'parse_rss', return_value=[item]) as rss, \
+             patch.object(sources, 'add_candidate', return_value=41) as add:
+            result = sources.search_news('horarios puerto')
+        self.assertEqual(result['candidate_ids'], [41])
+        self.assertEqual(result['added'], 1)
+        self.assertIn('horarios%20puerto', rss.call_args.args[0]['url'])
+        self.assertEqual(add.call_args.args[3], 'Búsqueda por tema')
+
     def test_bop_reads_an_individual_notice_and_preserves_pdf_page(self):
         index = '<a href="/boletin/Boletin-numero-186-del-ano-2026">Boletín 186</a>'
         bulletin = '''<p><a href="/export/BOP186.pdf#page=5">304.477.- Ayuntamiento de Cádiz. Subasta local.</a></p>

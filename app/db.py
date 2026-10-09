@@ -30,7 +30,7 @@ def init_db():
     );
     CREATE TABLE IF NOT EXISTS articles(
       id INTEGER PRIMARY KEY AUTOINCREMENT,
-      candidate_id INTEGER UNIQUE, section TEXT, headline TEXT, subtitle TEXT, body TEXT,
+      candidate_id INTEGER UNIQUE, section TEXT, headline TEXT, headline_size TEXT NOT NULL DEFAULT 'auto', subtitle TEXT, body TEXT,
       social_text TEXT, graphic_summary TEXT, research_notes TEXT, sources_json TEXT,
       image_url TEXT, image_source TEXT, image_license TEXT, image_local TEXT, image_candidates_json TEXT,
       ai_image_suggestion TEXT, carousel_suitable INTEGER NOT NULL DEFAULT 0, carousel_reason TEXT,
@@ -120,7 +120,8 @@ def init_db():
         'image_author':'TEXT',
         'image_headline':'TEXT',
         'focus':'TEXT',
-        'photo_query':'TEXT'
+        'photo_query':'TEXT',
+        'headline_size':"TEXT NOT NULL DEFAULT 'auto'"
     }.items():
         if name not in existing_articles: c.execute(f'ALTER TABLE articles ADD COLUMN {name} {ddl}')
     if 'content_hash' not in {r[1] for r in c.execute('PRAGMA table_info(canva_designs)')}:

@@ -1,3 +1,6 @@
+Warning: truncated output (original token count: 21148)
+Total output lines: 852
+
 /* InfoLinense Desk 4 — trabajo por fases: 1 Ordenar · 2 Redacción · 3 Revisar · 4 Publicar. */
 const $ = s => document.querySelector(s);
 let token = localStorage.getItem('infolinense_token') || '';
@@ -124,15 +127,23 @@ $('#scanBtn').onclick = async () => {
     let shown = 0;
     const tick = async () => {
       let st; try { st = await api('/api/scan/status') } catch (e) { st = { busy: false } }
-      if (st.busy) b.textContent = 'Buscando: ' + (st.phase || '…');
+      if (st.busy) {
+        const progress = st.total ? ' · ' + (st.checked || 0) + '/' + st.total + ' fuentes · ' + (st.added || 0) + ' nuevas' : '';
+        b.textContent = 'Buscando: ' + (st.phase || '…') + progress;
+      }
       if ((st.added || 0) > shown || !st.busy) { shown = st.added || 0; if (view === 'sort' && !document.querySelector('.sheet') && Date.now() - lastAct > 6000) render(); counts() }
       if (st.busy) setTimeout(tick, 3000);
-      else { b.disabled = false; b.textContent = 'Buscar'; toast(`Búsqueda terminada: ${st.added || 0} nuevas`) }
+      else {
+        b.disabled = false; b.textContent = 'Buscar';
+        const failures = st.errors?.length ? ' · ' + st.errors.length + ' fuentes con error' : '';
+        toast('Búsqueda terminada: ' + (st.added || 0) + ' nuevas' + failures);
+      }
     };
     setTimeout(tick, 1500);
   } catch (e) { toast(e.message); b.disabled = false; b.textContent = 'Buscar' }
 };
 let queue = [], groups = BLOCKS;
+let queueSearch = '', newsSearchBusy = false, newsSearchNote = '', newsSearchError = false;
 // Cofrade y Carnaval se ordenan por sus fuentes (cada hermandad, cada web…), no por los bloques de InfoLinense.
 const ownBrand = () => BRAND !== 'all' && BRAND !== 'infolinense';
 async function sortView(v) {
@@ -145,10 +156,34 @@ async function sortView(v) {
   } else groups = BLOCKS;
   drawSort(v);
 }
+function searchFold(value) { return String(value || '').toLocaleLowerCase('es').normalize('NFD').replace(/[\u0300-\u036f]/g, '') }
+function searchWidget() {
+  return '<section class="sort-search"><form id="newsSearchForm" role="search">'
+    + '<label for="newsQuery">Buscar noticias</label>'
+    + '<div class="row"><input id="newsQuery" type="search" value="' + esc(queueSearch) + '" placeholder="Tema, titular o medio" autocomplete="off" ' + (newsSearchBusy ? 'disabled' : '') + '>'
+    + '<button class="btn small primary" type="submit" ' + (newsSearchBusy || queueSearch.trim().length < 3 ? 'disabled' : '') + '>'
+    + (newsSearchBusy ? '<span class="spin"></span> Buscando…' : 'Buscar en la web') + '</button></div>'
+    + '<p class="muted small">Al escribir filtras el radar. «Buscar en la web» consulta noticias recientes y añade al radar las que afectan a La Línea.</p>'
+    + (newsSearchNote ? '<p class="small ' + (newsSearchError ? 'error' : 'muted') + '">' + esc(newsSearchNote) + '</p>' : '')
+    + '</form></section>'
+    + (queueSearch.trim() ? '<p class="sort-count muted small">' + filteredQueueCount() + ' noticias coinciden con la búsqueda</p>' : '');
+}
+function filteredQueueCount() {
+  const words = searchFold(queueSearch).trim().split(/\s+/).filter(Boolean);
+  return queue.filter(n => {
+    const text = searchFold([n.title, n.excerpt, n.source_name, n.outlet, n.local_angle].join(' '));
+    return words.every(word => text.includes(word));
+  }).length;
+}
 function drawSort(v = $('#view')) {
-  const count = g => queue.filter(n => n.group === g).length;
+  const words = searchFold(queueSearch).trim().split(/\s+/).filter(Boolean);
+  const filtered = queue.filter(n => {
+    const text = searchFold([n.title, n.excerpt, n.source_name, n.outlet, n.local_angle].join(' '));
+    return words.every(word => text.includes(word));
+  });
+  const count = g => filtered.filter(n => n.group === g).length;
   if (!block || !groups.includes(block) || !count(block)) block = groups.find(count) || groups[0];
-  const items = queue.filter(n => n.group === block);
+  const items = filtered.filter(n => n.group === block);
   const n = items[0];
   const shown = ownBrand() ? [...groups.filter(count), ...groups.filter(g => !count(g))] : groups;  // primero las que tienen noticias
   v.innerHTML = `<div class="chips scroll blocks">${shown.map(g => `<button class="chip ${g === block ? 'on' : ''}" data-g="${esc(g)}" ${count(g) ? '' : 'disabled'}>${esc(g)} <b>${count(g)}</b></button>`).join('')}</div>
@@ -158,7 +193,40 @@ function drawSort(v = $('#view')) {
         <button class="round yes" id="yesBtn" aria-label="Sirve" title="Sirve (→)">✓</button></div>
       <p class="deck-hint">Desliza a la derecha si sirve y a la izquierda si no.</p>`
     : queue.length ? '' : `<p class="empty">Todo ordenado. Pulsa «Buscar» para traer noticias nuevas.</p>${nextPhase('Ir a Redacción', 'writing', 'Las noticias marcadas se están redactando solas.')}`}`;
-  v.querySelectorAll('[data-g]').forEach(b => b.onclick = () => { block = b.dataset.g; drawSort() });
+  v.insertAdjacentHTML('afterbegin', searchWidget());
+  const input = v.querySelector('#newsQuery');
+  input.oninput = e => {
+    const position = e.target.selectionStart;
+    queueSearch = e.target.value;
+    drawSort(v);
+    const next = v.querySelector('#newsQuery');
+    next.focus(); next.setSelectionRange(position, position);
+  };
+  v.querySelector('#newsSearchForm').onsubmit = async e => {
+    e.preventDefault();
+    const query = queueSearch.trim();
+    if (query.length < 3 || newsSearchBusy) return;
+    newsSearchBusy = true; newsSearchError = false; newsSearchNote = 'Buscando «' + query + '» en noticias recientes…'; drawSort(v);
+    try {
+      const result = await api('/api/news/search', { method: 'POST', body: JSON.stringify({ query }) });
+      newsSearchNote = result.added
+        ? 'Se añadieron ' + result.added + ' noticias nuevas; ' + result.seen + ' resultados consultados.'
+        : 'Se consultaron ' + result.seen + ' resultados; no hay noticias locales nuevas para este tema.';
+      await sortView(v);
+      if (result.added) toast('Añadidas ' + result.added + ' noticias al radar');
+    } catch (e) {
+      newsSearchError = true; newsSearchNote = e.message;
+    } finally {
+      newsSearchBusy = false; drawSort(v);
+    }
+  };
+  v.querySelectorAll('[data-g]').forEach(b => b.onclick = () => { block = b.dataset.g; drawSort(v) });
+  if (!n && queueSearch.trim()) {
+    v.querySelectorAll('.empty,.next').forEach(el => el.remove());
+    const empty = document.createElement('p'); empty.className = 'empty';
+    empty.textContent = 'No hay noticias del radar que coincidan. Cambia las palabras o busca el tema en la web.';
+    v.appendChild(empty);
+  }
   if (n) armDeck(n);
 }
 function special(n) { const t = `${n.title} ${n.excerpt || ''} ${n.source_name || ''}`.toLowerCase(); if (n.source_kind === 'procurement' || /licitaci|contrataci|adjudicaci/.test(t)) return 'Licitación'; if (n.source_kind === 'edictos' || n.source_kind === 'bop' || /edicto/.test(t)) return 'Edicto'; if (/exclusiv/.test(t)) return 'Exclusiva'; return '' }
@@ -371,122 +439,7 @@ window.moveSheet = aid => {
   };
 };
 // Eliminar al momento, sin preguntar: la tarjeta desaparece y la noticia no vuelve a salir
-function dropCard(sel) { document.querySelectorAll(sel).forEach(c => { c.style.transition = 'opacity .2s'; c.style.opacity = '0'; setTimeout(() => c.remove(), 200) }) }
-window.removeArticle = async aid => {
-  dropCard(`[data-aid="${aid}"]`);
-  try { const r = await api(`/api/articles/${aid}`, { method: 'DELETE' }); toast(r.hidden ? 'Quitada del panel (sigue publicada en la web y las redes)' : 'Eliminada'); counts(); if (view === 'editor') go('review') } catch (e) { toast(e.message); render() }
-};
-window.discardCandidate = async (cid, aid) => {
-  if (aid) return removeArticle(aid);
-  dropCard(`[data-cid="${cid}"]`);
-  try { await api(`/api/candidates/${cid}/triage`, { method: 'POST', body: JSON.stringify({ priority: 'no_interest' }) }); toast('Eliminada'); counts() } catch (e) { toast(e.message); render() }
-};
-
-/* ---------- Fase 4: Publicar ---------- */
-const NET_NAMES = { web: 'Web', instagram: 'Instagram', facebook: 'Facebook', tiktok: 'TikTok' };
-function netPrefs(available) { return available }  // todas las redes conectadas, siempre
-function saveNetPrefs() { try { localStorage.setItem('nets', JSON.stringify([...document.querySelectorAll('.netpick input:checked')].map(i => i.value))) } catch (e) { } }
-function netStatus(r) { const n = r.networks || {}; return Object.keys(n).map(k => n[k].status === 'published' ? (n[k].url ? `<a class="net ok" href="${safeUrl(n[k].url)}" target="_blank" rel="noopener">${NET_NAMES[k]} ✓</a>` : `<span class="net ok">${NET_NAMES[k]} ✓</span>`) : `<span><button class="net bad" title="${esc(n[k].message)}" onclick="retryNet(${r.id},'${k}',this)">${NET_NAMES[k]}: reintentar</button><small class="neterr">${esc(String(n[k].message || '').slice(0, 160))}</small></span>`).join('') }
-async function publishView(v) {
-  const rows = await api('/api/to-publish');
-  // Cada medio publica en SUS cuentas: se mira lo conectado de cada uno
-  const slugs = BRAND === 'all' ? [...new Set([netBrand(), ...rows.map(r => r.brand || 'infolinense')])] : [BRAND];
-  const byBrand = {};
-  await Promise.all(slugs.map(async b => { byBrand[b] = await api('/api/networks?brand=' + b).catch(() => ({})) }));
-  const NETS = ['instagram', 'facebook', 'tiktok'];
-  const available = NETS.filter(n => slugs.some(b => (byBrand[b][n] || {}).connected));
-  const bname = b => (BRANDS.find(x => x.slug === b) || {}).short || b;
-  const offline = slugs.flatMap(b => NETS.filter(n => !(byBrand[b][n] || {}).connected).map(n => (slugs.length > 1 ? bname(b) + ' · ' : '') + NET_NAMES[n]));
-  const noNets = b => !NETS.some(n => (byBrand[b] && byBrand[b][n] || {}).connected);
-  const pending = rows.filter(r => !['published', 'draft'].includes(r.status) && !r.scheduled_at);
-  const picker = `<div class="netpick row wrap"><span class="muted small">${slugs.length > 1 ? 'Se publica a la vez en (cada noticia en las cuentas de su medio):' : 'Se publica a la vez en:'}</span>${available.map(n => `<label class="switch"><input type="checkbox" value="${n}" checked> ${NET_NAMES[n]}</label>`).join('')}
-    ${offline.map(t => `<a class="switch off" href="#settings" title="Sin conectar">${esc(t)}: sin conectar</a>`).join('')}</div>`;
-  rows.forEach(r => r._at = r.status === 'published' ? '' : (r.scheduled_at || r.planned_at || ''));
-  const place = r => {
-    const today = madridDate();
-    if (r.status === 'published') return [today, ''];
-    const at = r._at;
-    if (at) { const d = String(at).slice(0, 10); return [d < today ? today : d, slotOf(at)] }
-    return (r.editorial_priority === 'urgent' || r.editorial_priority === 'today') ? [today, ''] : ['later', ''];
-  };
-  const card = r => {
-    const done = r.status === 'published';
-    const del = `<button class="btn small danger icon" title="Eliminar" aria-label="Eliminar" onclick="removeArticle(${r.id})">🗑</button>`;
-    const actions = r.status === 'draft' ? `<div class="rv-actions"><button class="btn small primary" onclick="go('editor/${r.id}')">Revisar</button><button class="btn small" onclick="moveSheet(${r.id})">Mover</button><button class="btn small danger icon" title="Eliminar" aria-label="Eliminar" onclick="removeArticle(${r.id})">🗑</button></div>`
-      : done ? `<div class="row wrap">${r.publish_url ? `<a class="net ok" href="${safeUrl(r.publish_url)}" target="_blank" rel="noopener">Web ✓</a>` : ''}${netStatus(r)}${del}</div>`
-      : r.scheduled_at ? `<div class="sched"><b>⏰ Se publica sola ${esc(whenText(r.scheduled_at))}</b> · ${schedNets(r)}</div>
-         <div class="rv-actions"><button class="btn small" onclick="publishNow(${r.id},this)">Publicar ahora</button><button class="btn small" onclick="moveSheet(${r.id})">Mover</button><button class="link" onclick="unschedule(${r.id})">Cancelar</button><button class="btn small danger icon" title="Eliminar" aria-label="Eliminar" onclick="removeArticle(${r.id})">🗑</button></div>`
-      : `${r.schedule_error ? `<p class="error small">No se pudo publicar a su hora: ${esc(r.schedule_error)}</p>` : ''}
-         <div class="rv-actions"><button class="btn small primary" onclick="scheduleAt(${r.id},'${esc(r._at)}',this)">Programar${r._at ? ' ' + esc(String(r._at).slice(11, 16)) : ''}</button><button class="btn small" onclick="publishNow(${r.id},this)">Publicar ahora</button><button class="btn small" onclick="moveSheet(${r.id})">Mover</button><button class="btn small danger icon" title="Eliminar" aria-label="Eliminar" onclick="removeArticle(${r.id})">🗑</button></div>`;
-    return `<article class="rv-card ${done ? 'done' : ''}" ${done ? '' : 'draggable="true"'} data-aid="${r.id}" style="--bc:${brandOf(r.brand).color}">
-      <div class="meta">${brandBadge(r.brand)}${secBadge(r.section, r.brand)}${r._at ? `<span class="rv-time">${esc(String(r._at).slice(11, 16))}</span>` : ''}${done ? '<span class="st st-published">Publicada</span>' : r.status === 'draft' ? '<span class="flag">Sin revisar</span>' : ''}<span class="muted small">${r.canva_exported ? 'Imagen lista' : r.has_photo ? 'Sin imagen de Canva' : 'Sin foto'}</span></div>
-      <h3><a href="#editor/${r.id}">${esc(r.headline)}</a></h3>
-      ${!done && (r.brand || 'infolinense') !== 'infolinense' && noNets(r.brand) ? `<p class="error small">${esc(bname(r.brand))} no tiene redes conectadas. <a href="#settings">Conectar</a></p>` : ''}
-      ${actions}</article>`;
-  };
-  v.innerHTML = rows.length ? `${picker}
-    <div class="rv-intro"><p>Organiza el día: arrastra las tarjetas (o «Mover») a otro día o franja. Si cambias el día, «hoy», «mañana»… se ajustan solos en el texto.</p>
-      ${pending.length ? `<button class="btn primary" id="schedAll">Programar las ${pending.length} a su hora</button>` : ''}</div>
-    ${calendarHtml(rows, place, card)}`
-    : `<p class="empty">Aún no hay noticias para publicar.</p>${nextPhase('Ir a Revisar', 'review')}`;
-  armDrag(v);
-  if ($('#schedAll')) $('#schedAll').onclick = async e => {
-    const b = e.target; b.disabled = true; b.textContent = 'Programando…'; let ok = 0; const errs = [];
-    for (const r of pending) {
-      const at = r._at && String(r._at).slice(0, 16) > madridNow() ? String(r._at).slice(0, 16) : null;
-      if (!at) { errs.push('«' + r.headline.slice(0, 40) + '»: sin hora futura'); continue }
-      try { await api(`/api/articles/${r.id}/schedule`, { method: 'POST', body: JSON.stringify({ at, networks: pickedNets() }) }); ok++ } catch (er) { errs.push('«' + r.headline.slice(0, 40) + '»: ' + er.message) }
-    }
-    toast(`${ok} programadas` + (errs.length ? ' · ' + errs.slice(0, 2).join(' · ') : '')); render(); counts();
-  };
-}
-window.scheduleAt = async (id, at, b) => {
-  let when = String(at || '').slice(0, 16);
-  if (!when || when <= madridNow()) { when = prompt('¿A qué hora se publica? (AAAA-MM-DD HH:MM)', defaultWhen(at).replace('T', ' ')); if (!when) return; when = when.trim().replace(' ', 'T') }
-  b.disabled = true; b.textContent = 'Programando…';
-  try { const r = await api(`/api/articles/${id}/schedule`, { method: 'POST', body: JSON.stringify({ at: when, networks: pickedNets() }) }); toast('Programada: se publicará sola ' + whenText(r.scheduled_at)); render(); counts() }
-  catch (e) { toast(e.message); b.disabled = false; b.textContent = 'Programar' }
-};
-// Programar: la noticia se publica sola a esa hora (web + redes marcadas). Facebook personal se comparte a mano.
-function madridNow() { return new Date().toLocaleString('sv-SE', { timeZone: 'Europe/Madrid' }).replace(' ', 'T').slice(0, 16) }
-function defaultWhen(planned) { const p = String(planned || '').slice(0, 16); const now = madridNow(); return p && p > now ? p : now.slice(0, 11) + String(Math.min(23, +now.slice(11, 13) + 1)).padStart(2, '0') + ':00' }
-function whenText(iso) { const d = String(iso).slice(0, 10), t = String(iso).slice(11, 16); const today = madridNow().slice(0, 10); const tomorrow = new Date(Date.now() + 864e5).toLocaleDateString('sv-SE', { timeZone: 'Europe/Madrid' }); return (d === today ? 'hoy' : d === tomorrow ? 'mañana' : 'el ' + d.slice(8, 10) + '/' + d.slice(5, 7)) + ' a las ' + t }
-function schedNets(r) { let n = []; try { n = JSON.parse(r.scheduled_networks || '[]') } catch (e) { } return ['Web', ...n.map(x => NET_NAMES[x])].join(' + ') }
-window.scheduleNow = async (id, b) => {
-  const at = ($('#when-' + id) || {}).value; if (!at) return toast('Elige día y hora');
-  b.disabled = true; b.textContent = 'Programando…';
-  try { const r = await api(`/api/articles/${id}/schedule`, { method: 'POST', body: JSON.stringify({ at, networks: pickedNets() }) }); toast('Programada: se publicará sola ' + whenText(r.scheduled_at)); render(); counts() }
-  catch (e) { toast(e.message); b.disabled = false; b.textContent = 'Programar' }
-};
-window.unschedule = async id => { try { await api(`/api/articles/${id}/unschedule`, { method: 'POST' }); toast('Programación cancelada'); render() } catch (e) { toast(e.message) } };
-window.setTime = async (id, p, value) => { if (!value) return; try { await api(`/api/candidates/${id}/triage`, { method: 'POST', body: JSON.stringify({ priority: p, planned_at: value + ':00' }) }); toast('Hora fijada'); render() } catch (e) { toast(e.message) } };
-function pickedNets() { const boxes = [...document.querySelectorAll('.netpick input')]; if (!boxes.length || boxes.every(i => i.checked)) return null; return boxes.filter(i => i.checked).map(i => i.value) }
-function publishReport(r) { const lines = (r.results || []).filter(x => x.message).map(x => (x.ok ? '✓ ' : '✗ ') + x.message); toast(lines.join(' · ') || (r.published ? 'Publicada' : r.message || 'Aprobada')) }
-window.publishNow = async (id, b) => { b.disabled = true; b.textContent = 'Publicando…'; try { const r = await api(`/api/articles/${id}/publish`, { method: 'POST', body: JSON.stringify({ networks: pickedNets() }) }); publishReport(r); render(); counts() } catch (e) { toast(e.message); b.disabled = false; b.textContent = 'Publicar' } };
-// Facebook personal: Meta no deja publicar en perfiles por programa, así que se comparte a mano.
-// 1.ª pulsación: prepara imagen y texto. 2.ª: abre el menú «Compartir» del móvil (o descarga la imagen y abre Facebook).
-const shareKits = {};
-function prepareShare(id) {
-  if (!shareKits[id]) shareKits[id] = (async () => {
-    const k = await api(`/api/articles/${id}/share`);
-    const files = [];
-    for (const [i, u] of k.images.entries()) { const r = await fetch(u); if (r.ok) files.push(new File([await r.blob()], `infolinense-${id}-${i + 1}.jpg`, { type: 'image/jpeg' })) }
-    return { text: k.text + (k.link ? '\n\n' + k.link : ''), files };
-  })().catch(e => { delete shareKits[id]; throw e });
-  return shareKits[id];
-}
-async function doShare(kit) {
-  const copied = navigator.clipboard ? navigator.clipboard.writeText(kit.text).then(() => true, () => false) : Promise.resolve(false);
-  if (kit.files.length && navigator.canShare && navigator.canShare({ files: kit.files })) {
-    try { await navigator.share({ files: kit.files, text: kit.text }); toast((await copied) ? 'Elige Facebook. El texto va copiado: si no aparece, mantén pulsado y «Pegar»' : 'Compartido'); return true }
-    catch (e) { if (e.name === 'AbortError') return true; if (e.name === 'NotAllowedError') return false }
-  }
-  for (const f of kit.files) { const a = document.createElement('a'); a.href = URL.createObjectURL(f); a.download = f.name; document.body.appendChild(a); a.click(); a.remove() }
-  window.open('https://www.facebook.com/', '_blank', 'noopener');
-  toast((await copied) ? 'Imagen descargada y texto copiado. En Facebook: «¿Qué estás pensando?» → pega el texto y añade la foto' : 'Imagen descargada. Copia el texto con el botón «Copiar»');
-  return true;
-}
-// Un toque: si la imagen ya está preparada se abre «Compartir» al momento; si no, se prepara y se intenta en el mismo toque.
+function dropCard(sel) { document.querySelectorAll(sel).forEach(c => { c.style.transition = 'opacity .2s'; c.style.opacity = '0…3148 tokens truncated…magen ya está preparada se abre «Compartir» al momento; si no, se prepara y se intenta en el mismo toque.
 window.shareFb = async (id, b) => {
   const label = b ? b.textContent : '';
   if (b) { b.disabled = true; b.textContent = 'Preparando…' }
@@ -550,6 +503,29 @@ async function editor(v) {
     <button class="btn danger" onclick="removeArticle(${a.id})">🗑 ${published ? 'Quitar del panel' : 'Eliminar'}</button>
   </div>`;
   const f = id => $(`#f-${id}`);
+  const titleLabel = f('headline').closest('label');
+  const sizeInput = document.createElement('input');
+  sizeInput.type = 'hidden'; sizeInput.id = 'f-headline_size';
+  titleLabel.after(sizeInput);
+  const sizeTools = document.createElement('div');
+  sizeTools.className = 'headline-size-tools';
+  sizeTools.innerHTML = '<span class="small">Tamaño de letra en la imagen</span>'
+    + '<div class="size-group" role="group" aria-label="Tamaño de letra del titular">'
+    + '<button type="button" data-head-size="small" aria-label="Letra más pequeña" title="Letra más pequeña">A−</button>'
+    + '<button type="button" data-head-size="auto" aria-label="Tamaño automático" title="Tamaño automático">A</button>'
+    + '<button type="button" data-head-size="large" aria-label="Letra más grande" title="Letra más grande">A+</button></div>';
+  sizeInput.after(sizeTools);
+  const setHeadlineSize = size => {
+    const selected = ['small', 'auto', 'large'].includes(size) ? size : 'auto';
+    sizeInput.value = selected;
+    f('headline').style.fontSize = { small: '16px', auto: '18px', large: '20px' }[selected];
+    sizeTools.querySelectorAll('[data-head-size]').forEach(b => {
+      const active = b.dataset.headSize === selected;
+      b.classList.toggle('on', active); b.setAttribute('aria-pressed', String(active));
+    });
+  };
+  sizeTools.querySelectorAll('[data-head-size]').forEach(b => b.onclick = () => setHeadlineSize(b.dataset.headSize));
+  setHeadlineSize(a.headline_size || 'auto');
   const fit = () => {
     const B = brandOf(f('brand') ? f('brand').value : a.brand);
     if (B.slug !== 'infolinense' && B.headline_lines) {  // Cofrade/Carnaval: líneas de unos N caracteres
@@ -578,7 +554,7 @@ function sectionOptions(brand, current) {
   return all.map(s => `<option ${s === current ? 'selected' : ''}>${esc(s)}</option>`).join('');
 }
 function freeSection(brand) { return brand && brand !== 'infolinense' ? brandOf(brand).free_title_section || '' : '' }
-function values() { const o = {}; ['section', 'headline', 'subtitle', 'body', 'brand', 'section_label'].forEach(k => { const el = $(`#f-${k}`); if (el) o[k] = el.value }); return o }
+function values() { const o = {}; ['section', 'headline', 'headline_size', 'subtitle', 'body', 'brand', 'section_label'].forEach(k => { const el = $(`#f-${k}`); if (el) o[k] = el.value }); return o }
 async function saveArticle(say) { await api(`/api/articles/${editorId}`, { method: 'PUT', body: JSON.stringify(values()) }); if (say) toast('Guardado') }
 window.save = s => saveArticle(s).catch(e => toast(e.message));
 window.shortenHead = async () => { try { await saveArticle(); const r = await api(`/api/articles/${editorId}/shorten`, { method: 'POST' }); $('#f-headline').value = r.headline; $('#f-headline').dispatchEvent(new Event('input')); toast('Titular acortado') } catch (e) { toast(e.message) } };
@@ -607,18 +583,33 @@ window.autoPhoto = async () => {
   try { await api(`/api/articles/${editorId}/photo/auto`, { method: 'POST' }); render() }
   catch (e) { if (frame) frame.innerHTML = `<p class="empty">${esc(e.message)}</p>` }
 };
+function suggestedPhotoQuery() {
+  const article = cache.article || {};
+  const explicit = String(article.photo_query || (cache.kit || {}).photo_query || '').trim();
+  if (explicit) return explicit;
+  const stop = new Set(['para', 'como', 'sobre', 'desde', 'hasta', 'entre', 'tras', 'ante', 'linea', 'línea',
+    'concepcion', 'concepción', 'ayuntamiento', 'municipal', 'linense', 'linenses', 'según', 'segun',
+    'este', 'esta', 'estos', 'estas', 'tiene', 'será', 'sera', 'han', 'más', 'mas']);
+  const title = article.headline || article.source_title || '';
+  const words = (title.match(/[A-Za-zÁÉÍÓÚÑÜáéíóúñü0-9]{4,}/g) || [])
+    .filter(word => !stop.has(word.toLocaleLowerCase('es'))).slice(0, 6);
+  return (words.join(' ') || article.section || 'noticias') + ' La Línea';
+}
 window.photoPanel = async (q = '', refresh = false) => {
   const box = $('#photos'); box.innerHTML = '<p class="muted"><span class="spin"></span> Buscando fotos…</p>';
   try {
     const imgs = await api(`/api/articles/${editorId}/photos${q ? '?q=' + encodeURIComponent(q) : refresh ? '?refresh=true' : ''}`);
     cache.photos = imgs;
-    const query = q || cache.article.photo_query || (cache.kit || {}).photo_query || '';
+    const query = q || cache.article.photo_query || (cache.kit || {}).photo_query || suggestedPhotoQuery();
     const gUrl = 'https://www.google.com/search?tbm=isch&hl=es&q=' + encodeURIComponent(query);
     box.innerHTML = `<form class="row" id="pq"><input name="q" placeholder="Escribe como en Google Imágenes" value="${esc(query)}"><button class="btn small">Buscar</button></form>
       <p class="muted small">¿No te gusta ninguna? <a href="${gUrl}" target="_blank" rel="noopener" id="gLink">Abrir en Google Imágenes</a>, pulsa la foto, «Copiar dirección de la imagen» y pégala aquí:</p>
       <form class="row" id="pu"><input name="u" type="url" placeholder="Pega aquí el enlace de la foto" inputmode="url"><button class="btn small">Usar</button></form>
       <div class="gallery">${imgs.map((im, i) => `<button class="pic" data-i="${i}"><img src="${safeUrl(im.url)}" loading="lazy" referrerpolicy="no-referrer" alt="" onerror="this.parentElement.remove()"><span>${esc(im.source_name || host(im.source))}</span></button>`).join('') || '<p class="muted">Ningún buscador devolvió fotos. Prueba con otras palabras o usa «Abrir en Google Imágenes».</p>'}</div>
       <div class="row wrap"><button class="link" type="button" id="again">Buscar de nuevo en la noticia</button><label class="link upload">Subir foto<input type="file" accept="image/jpeg,image/png,image/webp" hidden id="up"></label></div>`;
+    const resultCount = document.createElement('p');
+    resultCount.className = 'muted small'; resultCount.textContent = imgs.length + (imgs.length === 1 ? ' resultado de imagen' : ' resultados de imagen');
+    $('#pq').after(resultCount);
     $('#pq').onsubmit = e => { e.preventDefault(); photoPanel(e.target.q.value) };
     $('#pq').q.oninput = e => { $('#gLink').href = 'https://www.google.com/search?tbm=isch&hl=es&q=' + encodeURIComponent(e.target.value) };
     $('#pu').onsubmit = async e => { e.preventDefault(); const u = e.target.u.value.trim(); if (!u) return; try { await saveArticle(); await api(`/api/articles/${editorId}/photo`, { method: 'POST', body: JSON.stringify({ url: u, source: u }) }); toast('Foto cambiada'); render() } catch (er) { toast(er.message) } };

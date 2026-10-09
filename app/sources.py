@@ -843,6 +843,48 @@ def read_source(source):
         return parse_rss({'url': feed})  # Coverage depends on public search indexing.
     raise ValueError('Tipo de fuente no soportado')
 
+
+def search_news(query):
+    """Busca noticias recientes por tema en Google News y añade solo las que pasan el filtro local."""
+    query = re.sub(r'\s+', ' ', clean(query or '')).strip()[:120]
+    if len(query) < 3:
+        raise ValueError('Escribe al menos tres caracteres para buscar.')
+
+    # Primero se busca con el municipio explícito. Si no llega ninguna noticia
+    # nueva, se amplía la consulta y add_candidate aplica el filtro de localidad.
+    variants = [f'{query} "La Línea" when:30d', f'{query} when:30d']
+    seen = 0
+    errors = []
+    for index, term in enumerate(variants):
+        feed = 'https://news.google.com/rss/search?q=' + quote(term) + '&hl=es&gl=ES&ceid=ES:es'
+        try:
+            items = parse_rss({'url': feed})
+            seen = max(seen, len(items))
+        except Exception as exc:
+            errors.append(str(exc))
+            continue
+
+        added = []
+        for item in items[:60]:
+            published_at = item.get('published_at') or ''
+            published = publication_datetime(published_at)
+            if not published or published > datetime.now(timezone.utc) + timedelta(hours=6):
+                continue
+            candidate_id = add_candidate(
+                item.get('title', ''), item.get('url', ''), item.get('excerpt', ''),
+                'Búsqueda por tema', None, published_at,
+                {'priority': 75, 'official': False, 'local_scope': False, 'kind': 'rss'},
+                outlet=item.get('outlet', ''), image=item.get('image', ''))
+            if candidate_id:
+                added.append(candidate_id)
+        if added:
+            return {'query': query, 'seen': seen, 'added': len(added),
+                    'candidate_ids': added, 'fallback': bool(index)}
+
+    if errors and not seen:
+        raise RuntimeError('Google News no respondió: ' + errors[-1][:160])
+    return {'query': query, 'seen': seen, 'added': 0, 'candidate_ids': [], 'fallback': True}
+
 def source_health(sid, seen=0, added=0, error=''):
     db.exec_('''UPDATE sources SET last_checked_at=CURRENT_TIMESTAMP,
                last_success_at=CASE WHEN ?='' THEN CURRENT_TIMESTAMP ELSE last_success_at END,
@@ -859,7 +901,8 @@ def probe_source(sid):
         source_health(sid, error=str(exc))
         return {'ok': False, 'items_seen': 0, 'error': str(exc)[:250]}
 
-_scan_state = {'busy': False, 'phase': '', 'added': 0, 'started_at': 0, 'finished_at': 0, 'errors': []}
+_scan_state = {'busy': False, 'phase': '', 'added': 0, 'checked': 0, 'total': 0,
+               'started_at': 0, 'finished_at': 0, 'errors': []}
 
 
 def is_priority(source):
@@ -900,16 +943,20 @@ def _read_batch(sources, added, errors):
             except Exception as exc:
                 errors.append(f"{source['name']}: {str(exc)[:250]}")
                 source_health(source['id'], error=str(exc))
+            finally:
+                _scan_state['checked'] = _scan_state.get('checked', 0) + 1
 
 
 def scan_all():
     if not _scan_lock.acquire(blocking=False):
         return {'added': [], 'errors': [], 'busy': True}
-    _scan_state.update(busy=True, phase='Ayuntamiento, edictos y licitaciones', added=0, started_at=time.time(), errors=[])
+    _scan_state.update(busy=True, phase='Ayuntamiento, edictos y licitaciones', added=0,
+                       checked=0, total=0, started_at=time.time(), errors=[])
     try:
         added, errors = [], []
         _deep['n'] = 0
         active = db.rows('SELECT * FROM sources WHERE active=1 ORDER BY priority DESC')
+        _scan_state['total'] = len(active)
         first = [s_ for s_ in active if is_priority(s_)]
         rest = [s_ for s_ in active if not is_priority(s_)]
         # 1) Lo del Ayuntamiento primero: sale en pantalla en segundos

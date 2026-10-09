@@ -1,6 +1,3 @@
-Warning: truncated output (original token count: 21148)
-Total output lines: 852
-
 /* InfoLinense Desk 4 — trabajo por fases: 1 Ordenar · 2 Redacción · 3 Revisar · 4 Publicar. */
 const $ = s => document.querySelector(s);
 let token = localStorage.getItem('infolinense_token') || '';
@@ -439,7 +436,122 @@ window.moveSheet = aid => {
   };
 };
 // Eliminar al momento, sin preguntar: la tarjeta desaparece y la noticia no vuelve a salir
-function dropCard(sel) { document.querySelectorAll(sel).forEach(c => { c.style.transition = 'opacity .2s'; c.style.opacity = '0…3148 tokens truncated…magen ya está preparada se abre «Compartir» al momento; si no, se prepara y se intenta en el mismo toque.
+function dropCard(sel) { document.querySelectorAll(sel).forEach(c => { c.style.transition = 'opacity .2s'; c.style.opacity = '0'; setTimeout(() => c.remove(), 200) }) }
+window.removeArticle = async aid => {
+  dropCard(`[data-aid="${aid}"]`);
+  try { const r = await api(`/api/articles/${aid}`, { method: 'DELETE' }); toast(r.hidden ? 'Quitada del panel (sigue publicada en la web y las redes)' : 'Eliminada'); counts(); if (view === 'editor') go('review') } catch (e) { toast(e.message); render() }
+};
+window.discardCandidate = async (cid, aid) => {
+  if (aid) return removeArticle(aid);
+  dropCard(`[data-cid="${cid}"]`);
+  try { await api(`/api/candidates/${cid}/triage`, { method: 'POST', body: JSON.stringify({ priority: 'no_interest' }) }); toast('Eliminada'); counts() } catch (e) { toast(e.message); render() }
+};
+
+/* ---------- Fase 4: Publicar ---------- */
+const NET_NAMES = { web: 'Web', instagram: 'Instagram', facebook: 'Facebook', tiktok: 'TikTok' };
+function netPrefs(available) { return available }  // todas las redes conectadas, siempre
+function saveNetPrefs() { try { localStorage.setItem('nets', JSON.stringify([...document.querySelectorAll('.netpick input:checked')].map(i => i.value))) } catch (e) { } }
+function netStatus(r) { const n = r.networks || {}; return Object.keys(n).map(k => n[k].status === 'published' ? (n[k].url ? `<a class="net ok" href="${safeUrl(n[k].url)}" target="_blank" rel="noopener">${NET_NAMES[k]} ✓</a>` : `<span class="net ok">${NET_NAMES[k]} ✓</span>`) : `<span><button class="net bad" title="${esc(n[k].message)}" onclick="retryNet(${r.id},'${k}',this)">${NET_NAMES[k]}: reintentar</button><small class="neterr">${esc(String(n[k].message || '').slice(0, 160))}</small></span>`).join('') }
+async function publishView(v) {
+  const rows = await api('/api/to-publish');
+  // Cada medio publica en SUS cuentas: se mira lo conectado de cada uno
+  const slugs = BRAND === 'all' ? [...new Set([netBrand(), ...rows.map(r => r.brand || 'infolinense')])] : [BRAND];
+  const byBrand = {};
+  await Promise.all(slugs.map(async b => { byBrand[b] = await api('/api/networks?brand=' + b).catch(() => ({})) }));
+  const NETS = ['instagram', 'facebook', 'tiktok'];
+  const available = NETS.filter(n => slugs.some(b => (byBrand[b][n] || {}).connected));
+  const bname = b => (BRANDS.find(x => x.slug === b) || {}).short || b;
+  const offline = slugs.flatMap(b => NETS.filter(n => !(byBrand[b][n] || {}).connected).map(n => (slugs.length > 1 ? bname(b) + ' · ' : '') + NET_NAMES[n]));
+  const noNets = b => !NETS.some(n => (byBrand[b] && byBrand[b][n] || {}).connected);
+  const pending = rows.filter(r => !['published', 'draft'].includes(r.status) && !r.scheduled_at);
+  const picker = `<div class="netpick row wrap"><span class="muted small">${slugs.length > 1 ? 'Se publica a la vez en (cada noticia en las cuentas de su medio):' : 'Se publica a la vez en:'}</span>${available.map(n => `<label class="switch"><input type="checkbox" value="${n}" checked> ${NET_NAMES[n]}</label>`).join('')}
+    ${offline.map(t => `<a class="switch off" href="#settings" title="Sin conectar">${esc(t)}: sin conectar</a>`).join('')}</div>`;
+  rows.forEach(r => r._at = r.status === 'published' ? '' : (r.scheduled_at || r.planned_at || ''));
+  const place = r => {
+    const today = madridDate();
+    if (r.status === 'published') return [today, ''];
+    const at = r._at;
+    if (at) { const d = String(at).slice(0, 10); return [d < today ? today : d, slotOf(at)] }
+    return (r.editorial_priority === 'urgent' || r.editorial_priority === 'today') ? [today, ''] : ['later', ''];
+  };
+  const card = r => {
+    const done = r.status === 'published';
+    const del = `<button class="btn small danger icon" title="Eliminar" aria-label="Eliminar" onclick="removeArticle(${r.id})">🗑</button>`;
+    const actions = r.status === 'draft' ? `<div class="rv-actions"><button class="btn small primary" onclick="go('editor/${r.id}')">Revisar</button><button class="btn small" onclick="moveSheet(${r.id})">Mover</button><button class="btn small danger icon" title="Eliminar" aria-label="Eliminar" onclick="removeArticle(${r.id})">🗑</button></div>`
+      : done ? `<div class="row wrap">${r.publish_url ? `<a class="net ok" href="${safeUrl(r.publish_url)}" target="_blank" rel="noopener">Web ✓</a>` : ''}${netStatus(r)}${del}</div>`
+      : r.scheduled_at ? `<div class="sched"><b>⏰ Se publica sola ${esc(whenText(r.scheduled_at))}</b> · ${schedNets(r)}</div>
+         <div class="rv-actions"><button class="btn small" onclick="publishNow(${r.id},this)">Publicar ahora</button><button class="btn small" onclick="moveSheet(${r.id})">Mover</button><button class="link" onclick="unschedule(${r.id})">Cancelar</button><button class="btn small danger icon" title="Eliminar" aria-label="Eliminar" onclick="removeArticle(${r.id})">🗑</button></div>`
+      : `${r.schedule_error ? `<p class="error small">No se pudo publicar a su hora: ${esc(r.schedule_error)}</p>` : ''}
+         <div class="rv-actions"><button class="btn small primary" onclick="scheduleAt(${r.id},'${esc(r._at)}',this)">Programar${r._at ? ' ' + esc(String(r._at).slice(11, 16)) : ''}</button><button class="btn small" onclick="publishNow(${r.id},this)">Publicar ahora</button><button class="btn small" onclick="moveSheet(${r.id})">Mover</button><button class="btn small danger icon" title="Eliminar" aria-label="Eliminar" onclick="removeArticle(${r.id})">🗑</button></div>`;
+    return `<article class="rv-card ${done ? 'done' : ''}" ${done ? '' : 'draggable="true"'} data-aid="${r.id}" style="--bc:${brandOf(r.brand).color}">
+      <div class="meta">${brandBadge(r.brand)}${secBadge(r.section, r.brand)}${r._at ? `<span class="rv-time">${esc(String(r._at).slice(11, 16))}</span>` : ''}${done ? '<span class="st st-published">Publicada</span>' : r.status === 'draft' ? '<span class="flag">Sin revisar</span>' : ''}<span class="muted small">${r.canva_exported ? 'Imagen lista' : r.has_photo ? 'Sin imagen de Canva' : 'Sin foto'}</span></div>
+      <h3><a href="#editor/${r.id}">${esc(r.headline)}</a></h3>
+      ${!done && (r.brand || 'infolinense') !== 'infolinense' && noNets(r.brand) ? `<p class="error small">${esc(bname(r.brand))} no tiene redes conectadas. <a href="#settings">Conectar</a></p>` : ''}
+      ${actions}</article>`;
+  };
+  v.innerHTML = rows.length ? `${picker}
+    <div class="rv-intro"><p>Organiza el día: arrastra las tarjetas (o «Mover») a otro día o franja. Si cambias el día, «hoy», «mañana»… se ajustan solos en el texto.</p>
+      ${pending.length ? `<button class="btn primary" id="schedAll">Programar las ${pending.length} a su hora</button>` : ''}</div>
+    ${calendarHtml(rows, place, card)}`
+    : `<p class="empty">Aún no hay noticias para publicar.</p>${nextPhase('Ir a Revisar', 'review')}`;
+  armDrag(v);
+  if ($('#schedAll')) $('#schedAll').onclick = async e => {
+    const b = e.target; b.disabled = true; b.textContent = 'Programando…'; let ok = 0; const errs = [];
+    for (const r of pending) {
+      const at = r._at && String(r._at).slice(0, 16) > madridNow() ? String(r._at).slice(0, 16) : null;
+      if (!at) { errs.push('«' + r.headline.slice(0, 40) + '»: sin hora futura'); continue }
+      try { await api(`/api/articles/${r.id}/schedule`, { method: 'POST', body: JSON.stringify({ at, networks: pickedNets() }) }); ok++ } catch (er) { errs.push('«' + r.headline.slice(0, 40) + '»: ' + er.message) }
+    }
+    toast(`${ok} programadas` + (errs.length ? ' · ' + errs.slice(0, 2).join(' · ') : '')); render(); counts();
+  };
+}
+window.scheduleAt = async (id, at, b) => {
+  let when = String(at || '').slice(0, 16);
+  if (!when || when <= madridNow()) { when = prompt('¿A qué hora se publica? (AAAA-MM-DD HH:MM)', defaultWhen(at).replace('T', ' ')); if (!when) return; when = when.trim().replace(' ', 'T') }
+  b.disabled = true; b.textContent = 'Programando…';
+  try { const r = await api(`/api/articles/${id}/schedule`, { method: 'POST', body: JSON.stringify({ at: when, networks: pickedNets() }) }); toast('Programada: se publicará sola ' + whenText(r.scheduled_at)); render(); counts() }
+  catch (e) { toast(e.message); b.disabled = false; b.textContent = 'Programar' }
+};
+// Programar: la noticia se publica sola a esa hora (web + redes marcadas). Facebook personal se comparte a mano.
+function madridNow() { return new Date().toLocaleString('sv-SE', { timeZone: 'Europe/Madrid' }).replace(' ', 'T').slice(0, 16) }
+function defaultWhen(planned) { const p = String(planned || '').slice(0, 16); const now = madridNow(); return p && p > now ? p : now.slice(0, 11) + String(Math.min(23, +now.slice(11, 13) + 1)).padStart(2, '0') + ':00' }
+function whenText(iso) { const d = String(iso).slice(0, 10), t = String(iso).slice(11, 16); const today = madridNow().slice(0, 10); const tomorrow = new Date(Date.now() + 864e5).toLocaleDateString('sv-SE', { timeZone: 'Europe/Madrid' }); return (d === today ? 'hoy' : d === tomorrow ? 'mañana' : 'el ' + d.slice(8, 10) + '/' + d.slice(5, 7)) + ' a las ' + t }
+function schedNets(r) { let n = []; try { n = JSON.parse(r.scheduled_networks || '[]') } catch (e) { } return ['Web', ...n.map(x => NET_NAMES[x])].join(' + ') }
+window.scheduleNow = async (id, b) => {
+  const at = ($('#when-' + id) || {}).value; if (!at) return toast('Elige día y hora');
+  b.disabled = true; b.textContent = 'Programando…';
+  try { const r = await api(`/api/articles/${id}/schedule`, { method: 'POST', body: JSON.stringify({ at, networks: pickedNets() }) }); toast('Programada: se publicará sola ' + whenText(r.scheduled_at)); render(); counts() }
+  catch (e) { toast(e.message); b.disabled = false; b.textContent = 'Programar' }
+};
+window.unschedule = async id => { try { await api(`/api/articles/${id}/unschedule`, { method: 'POST' }); toast('Programación cancelada'); render() } catch (e) { toast(e.message) } };
+window.setTime = async (id, p, value) => { if (!value) return; try { await api(`/api/candidates/${id}/triage`, { method: 'POST', body: JSON.stringify({ priority: p, planned_at: value + ':00' }) }); toast('Hora fijada'); render() } catch (e) { toast(e.message) } };
+function pickedNets() { const boxes = [...document.querySelectorAll('.netpick input')]; if (!boxes.length || boxes.every(i => i.checked)) return null; return boxes.filter(i => i.checked).map(i => i.value) }
+function publishReport(r) { const lines = (r.results || []).filter(x => x.message).map(x => (x.ok ? '✓ ' : '✗ ') + x.message); toast(lines.join(' · ') || (r.published ? 'Publicada' : r.message || 'Aprobada')) }
+window.publishNow = async (id, b) => { b.disabled = true; b.textContent = 'Publicando…'; try { const r = await api(`/api/articles/${id}/publish`, { method: 'POST', body: JSON.stringify({ networks: pickedNets() }) }); publishReport(r); render(); counts() } catch (e) { toast(e.message); b.disabled = false; b.textContent = 'Publicar' } };
+// Facebook personal: Meta no deja publicar en perfiles por programa, así que se comparte a mano.
+// 1.ª pulsación: prepara imagen y texto. 2.ª: abre el menú «Compartir» del móvil (o descarga la imagen y abre Facebook).
+const shareKits = {};
+function prepareShare(id) {
+  if (!shareKits[id]) shareKits[id] = (async () => {
+    const k = await api(`/api/articles/${id}/share`);
+    const files = [];
+    for (const [i, u] of k.images.entries()) { const r = await fetch(u); if (r.ok) files.push(new File([await r.blob()], `infolinense-${id}-${i + 1}.jpg`, { type: 'image/jpeg' })) }
+    return { text: k.text + (k.link ? '\n\n' + k.link : ''), files };
+  })().catch(e => { delete shareKits[id]; throw e });
+  return shareKits[id];
+}
+async function doShare(kit) {
+  const copied = navigator.clipboard ? navigator.clipboard.writeText(kit.text).then(() => true, () => false) : Promise.resolve(false);
+  if (kit.files.length && navigator.canShare && navigator.canShare({ files: kit.files })) {
+    try { await navigator.share({ files: kit.files, text: kit.text }); toast((await copied) ? 'Elige Facebook. El texto va copiado: si no aparece, mantén pulsado y «Pegar»' : 'Compartido'); return true }
+    catch (e) { if (e.name === 'AbortError') return true; if (e.name === 'NotAllowedError') return false }
+  }
+  for (const f of kit.files) { const a = document.createElement('a'); a.href = URL.createObjectURL(f); a.download = f.name; document.body.appendChild(a); a.click(); a.remove() }
+  window.open('https://www.facebook.com/', '_blank', 'noopener');
+  toast((await copied) ? 'Imagen descargada y texto copiado. En Facebook: «¿Qué estás pensando?» → pega el texto y añade la foto' : 'Imagen descargada. Copia el texto con el botón «Copiar»');
+  return true;
+}
+// Un toque: si la imagen ya está preparada se abre «Compartir» al momento; si no, se prepara y se intenta en el mismo toque.
 window.shareFb = async (id, b) => {
   const label = b ? b.textContent : '';
   if (b) { b.disabled = true; b.textContent = 'Preparando…' }

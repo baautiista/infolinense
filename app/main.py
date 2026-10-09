@@ -1,6 +1,3 @@
-Warning: truncated output (original token count: 18965)
-Total output lines: 1180
-
 import os, json, re, threading, time, ipaddress, zipfile
 from datetime import datetime, timezone, timedelta
 from urllib.parse import urlparse
@@ -580,7 +577,62 @@ def design_carousel(aid:int,body:CarouselDesignIn):
     except Exception: data={}
     slides=data.get('slides') or []
     if not data.get('suitable') or not slides: raise HTTPException(400,'Primero analiza y crea el texto del carrusel')
-    try: candidates=json.loads(a.ge…965 tokens truncated…uthor') or '',
+    try: candidates=json.loads(a.get('image_candidates_json') or '[]')
+    except Exception: candidates=[]
+    by_url={item.get('url'):item for item in candidates if isinstance(item,dict)}
+    if not 1<=len(body.photo_urls)<=6: raise HTTPException(400,'Selecciona entre una y seis fotos')
+    selected=[]
+    for url in body.photo_urls:
+        photo=by_url.get(url) or {'url':url,'source':'','kind':'web','publish_safe':True}
+        if str(url).startswith('upload:'):
+            raise HTTPException(400,'Para el carrusel elige fotos de la búsqueda')
+        selected.append(photo)
+    try: return canva.create_carousel_designs(a,slides,selected)
+    except ValueError as e: raise HTTPException(400,str(e))
+    except Exception as e: raise HTTPException(502,'Canva no pudo terminar el carrusel: '+str(e)[:180]) from e
+
+@app.get('/api/articles/{aid}/carousel/slide/{slide_index}',dependencies=[Depends(require_auth)])
+def carousel_slide(aid:int,slide_index:int):
+    if not db.row('SELECT article_id FROM carousel_designs WHERE article_id=? AND slide_index=? AND exported=1',(aid,slide_index)):
+        raise HTTPException(404,'Diapositiva no disponible')
+    path=RENDER_DIR/('article_%s_carousel_%s.png' % (aid,slide_index))
+    if not path.is_file(): raise HTTPException(404,'Diapositiva no disponible')
+    return FileResponse(path,media_type='image/png',filename='infolinense-%s-carrusel-%s.png' % (aid,slide_index))
+
+@app.get('/api/articles/{aid}/carousel/download',dependencies=[Depends(require_auth)])
+def download_carousel(aid:int):
+    a=db.row('SELECT carousel_json FROM articles WHERE id=?',(aid,))
+    if not a: raise HTTPException(404,'Noticia no encontrada')
+    designs=db.rows('SELECT slide_index,exported FROM carousel_designs WHERE article_id=? ORDER BY slide_index',(aid,))
+    if len(designs)<3 or any(not row.get('exported') for row in designs):
+        raise HTTPException(400,'Primero exporta todas las diapositivas en Canva')
+    archive=RENDER_DIR/('infolinense-carrusel-%s.zip' % aid)
+    with zipfile.ZipFile(archive,'w',compression=zipfile.ZIP_DEFLATED) as zf:
+        for row in designs:
+            path=RENDER_DIR/('article_%s_carousel_%s.png' % (aid,row['slide_index']))
+            if not path.is_file(): raise HTTPException(404,'Falta una diapositiva exportada')
+            zf.write(path,'infolinense-carrusel-%02d.png' % row['slide_index'])
+    return FileResponse(archive,media_type='application/zip',filename='infolinense-carrusel-%s.zip' % aid)
+
+@app.get('/api/articles/{aid}/kit',dependencies=[Depends(require_auth)])
+def kit(aid:int):
+    a=article(aid)
+    design=db.row('SELECT url,exported FROM canva_designs WHERE article_id=?',(aid,)) or {}
+    exported=bool(design.get('exported')) and (RENDER_DIR/f'article_{aid}.png').is_file()
+    body=(a.get('body') or '')[:2200]
+    copy_text='\n\n'.join(x for x in [a.get('headline') or '',a.get('subtitle') or '',body] if x.strip())
+    try: options=json.loads(a.get('headline_options_json') or '[]')
+    except Exception: options=[]
+    try: missing=json.loads(a.get('missing_data_json') or '[]')
+    except Exception: missing=[]
+    try: srcs=json.loads(a.get('sources_json') or '[]')
+    except Exception: srcs=[]
+    photo_ok=bool(a.get('image_local')) and Path(a['image_local']).is_file()
+    carousel=db.rows('SELECT slide_index,exported FROM carousel_designs WHERE article_id=? ORDER BY slide_index',(aid,))
+    return {'id':aid,'section':a.get('section'),'headline':a.get('headline'),'subtitle':a.get('subtitle'),'text':body,'chars':len(body),
+            'copy_text':copy_text,'headline_options':options,'missing_data':missing,'sources':srcs,
+            'image_url':f'/media/render/{aid}.png' if exported else None,'status':a.get('status'),'source_url':a.get('source_url'),
+            'image_source':a.get('image_source'),'image_license':a.get('image_license'),'image_author':a.get('image_author') or '',
             'image_kind':a.get('image_kind') or '','image_credit':photo_credit(a),
             'photo_query':a.get('photo_query') or photos.photo_query_for(a.get('headline') or '',a.get('section') or ''),
             'photo_download_url':f'/api/articles/{aid}/photo/file' if photo_ok else None,

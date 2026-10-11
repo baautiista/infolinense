@@ -277,3 +277,6 @@ body.editing .actions{bottom:0}
 .sort-count{margin:0 2px 8px}
 @media(max-width:480px){.sort-search .row{align-items:stretch}.sort-search .row button{padding-inline:9px;font-size:13px}}
 .rv-card .sched{font-size:13px;margin:6px 0}
+
+.upmode{margin-bottom:12px}
+.upmode span{font-size:15px}

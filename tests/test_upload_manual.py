@@ -209,3 +209,24 @@ class ScanEndpointTests(unittest.TestCase):
             self.assertFalse(main.scan()['started'])  # no arranca otra a la vez
             gate.set(); tm.sleep(0.3)
             self.assertFalse(main.scan_status()['busy'])
+
+
+class QuickPublishTests(unittest.TestCase):
+    def test_launcher_publishes_text_as_is(self):
+        db.init_db()
+        buf = BytesIO(); Image.new('RGB', (1200, 1500), 'blue').save(buf, 'JPEG')
+        calls = {}
+        def fake_canva(a):
+            calls['canva'] = a['headline']; return {'exported': True}
+        def fake_publish(aid, body):
+            calls['pub'] = aid; return {'ok': True, 'published': True, 'results': [{'network': 'web', 'ok': True, 'message': 'Publicada en la web'}]}
+        with patch.object(main.canva, 'ready', return_value=True), patch.object(main.canva, 'connected', return_value=True), \
+                patch.object(main.canva, 'create_design', side_effect=fake_canva), patch.object(main, 'publish', side_effect=fake_publish):
+            r = asyncio.run(main.quick_publish(headline='Mi titular exacto de la redacción', subtitle='Entradilla', body='Texto completo.',
+                                               section='CIUDAD', brand='infolinense', link='', at='', networks='',
+                                               photo=FakeUpload('foto.jpg', buf.getvalue())))
+        self.assertTrue(r['published'])
+        a = db.row('SELECT * FROM articles WHERE id=?', (r['id'],))
+        self.assertEqual(a['headline'], 'Mi titular exacto de la redacción')
+        self.assertEqual(calls['canva'], 'Mi titular exacto de la redacción')
+        self.assertTrue(Path(a['image_local']).exists())

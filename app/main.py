@@ -13,7 +13,7 @@ from . import db, sources, pipeline, publishers, photos, canva, ai, planner, lay
 from .auth import login, require_auth
 from .config import BASE_DIR, RENDER_DIR, UPLOAD_DIR, SCAN_INTERVAL_MINUTES, AUTO_PIPELINE, OPENAI_API_KEY, ADMIN_PASSWORD, JWT_SECRET, PUBLISH_MODE, CORS_ORIGINS, PUBLIC_BASE_URL, AUTO_PUBLISH
 
-VERSION='6.8.5'
+VERSION='6.9.0'
 app=FastAPI(title='InfoLinense Desk',version=VERSION)
 app.add_middleware(CORSMiddleware,allow_origins=CORS_ORIGINS,allow_credentials=False,allow_methods=['*'],allow_headers=['Authorization','Content-Type'])
 db.init_db()
@@ -374,6 +374,48 @@ async def manual_news(text:str=Form(''),title:str=Form(''),link:str=Form(''),bra
     pipeline.queue_auto_write(cid,pr)
     db.log('manual',f'Noticia subida por la redacción: {first[:80]}')
     return {'ok':True,'id':cid,'title':first,'chars':len(body),'photo':bool(photo)}
+
+@app.post('/api/quick',dependencies=[Depends(require_auth)])
+async def quick_publish(headline:str=Form(...),subtitle:str=Form(''),body:str=Form(''),section:str=Form(''),brand:str=Form('infolinense'),
+                        link:str=Form(''),at:str=Form(''),networks:str=Form(''),photo:UploadFile=File(...)):
+    """Lanzadera: la redacción trae su noticia ya escrita (titular, entradilla, texto y foto). No se reescribe nada:
+    se hace la imagen de Canva y se publica al momento (o a la hora indicada) en la web y en las redes del medio."""
+    from uuid import uuid4
+    headline=re.sub(r'\s+',' ',headline).strip(); subtitle=re.sub(r'\s+',' ',subtitle).strip(); body=(body or '').strip()
+    if len(headline)<8: raise HTTPException(400,'Escribe el titular')
+    data=await photo.read(25_000_001)
+    if len(data)>25_000_000: raise HTTPException(400,'La foto pesa más de 25 MB')
+    try:
+        from PIL import Image
+        im=Image.open(BytesIO(data)); im.load()
+        if im.format not in ('JPEG','PNG','WEBP','MPO'): raise ValueError('formato no permitido')
+        dest=UPLOAD_DIR/(uuid4().hex+'.jpg'); im.convert('RGB').save(dest,'JPEG',quality=93)
+    except Exception as e: raise HTTPException(400,f'La foto no es válida ({str(e)[:80]})')
+    brand=brand if brand in brands.BRANDS else brands.DEFAULT
+    sec=(section or '').strip() or (layout.normalize_section('',headline+' '+subtitle) if brand==brands.DEFAULT else '')
+    url=('manual:'+uuid4().hex)+('#'+link.strip()[:300] if link.strip().startswith('http') else '')
+    now=datetime.now(timezone.utc).isoformat()
+    cid=db.exec_('''INSERT INTO candidates(source_name,outlet,title,url,published_at,excerpt,raw_text,score,relevance,status,editorial_priority,brand,section)
+                    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)''',('Redacción','Redacción',headline,url,now,subtitle,body,90,'high','review_ready','today',brand,sec))
+    aid=db.exec_('''INSERT INTO articles(candidate_id,section,headline,subtitle,body,social_text,image_local,image_kind,image_source,status,brand,workflow)
+                    VALUES(?,?,?,?,?,?,?,?,?,?,?,?)''',(cid,sec,headline,subtitle,body or subtitle,body or subtitle,str(dest),'user_upload','Redacción','approved',brand,'lanzadera'))
+    db.log('quick',f'Lanzadera: {headline[:80]}')
+    a=db.row('SELECT * FROM articles WHERE id=?',(aid,))
+    canva_msg=''
+    if canva.ready() and canva.connected():
+        try:
+            r=canva.create_design(a)
+            if not r.get('exported'): canva_msg=r.get('export_error') or 'Canva no exportó la imagen'
+        except ValueError as e: canva_msg=str(e)
+    else: canva_msg='Canva no está conectado'
+    nets=[n for n in (networks.split(',') if networks else []) if n] or None
+    if at.strip():
+        try: res=schedule_article(aid,ScheduleIn(at=at.strip(),networks=nets))
+        except HTTPException as e: return {'ok':False,'id':aid,'message':str(e.detail),'canva':canva_msg}
+        return {'ok':True,'id':aid,'scheduled_at':res['scheduled_at'],'canva':canva_msg,'message':'Programada'}
+    try: res=publish(aid,PublishIn(networks=nets))
+    except HTTPException as e: return {'ok':False,'id':aid,'message':str(e.detail),'canva':canva_msg}
+    return {**res,'id':aid,'canva':canva_msg}
 
 @app.post('/api/articles/{aid}/shorten',dependencies=[Depends(require_auth)])
 def shorten(aid:int):

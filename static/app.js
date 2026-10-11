@@ -296,12 +296,14 @@ window.decide = async (id, p) => {
 
 /* ---------- Subir: noticias propias (texto, PDF, foto) ---------- */
 let upFiles = [];
+let upMode = 'ai';
 function uploadView(v) {
+  if (upMode === 'quick') return quickView(v);
   upFiles = [];
   const brandOpts = BRANDS.map(b => `<label><input type="radio" name="brand" value="${b.slug}" ${b.slug === netBrand() ? 'checked' : ''}><span>${esc(b.name)}</span></label>`).join('');
   const when = [['urgent', 'Urgente'], ['today', 'Hoy'], ['tomorrow', 'Mañana'], ['this_week', 'Esta semana'], ['future', 'Más adelante']]
     .map(([k, t]) => `<label><input type="radio" name="priority" value="${k}" ${k === 'today' ? 'checked' : ''}><span>${t}</span></label>`).join('');
-  v.innerHTML = `<form class="up" id="upForm">
+  v.innerHTML = `${modeSwitch()}<form class="up" id="upForm">
     <div><h2>Sube tu noticia</h2><p class="muted small">Pega la información o sube un PDF (nota de prensa, bando, cartel…). Se redacta, se le busca foto y se hace la imagen de Canva igual que las demás.</p></div>
     ${BRANDS.length > 1 ? `<div><p class="small" style="font-weight:700;margin:0 0 6px">Medio</p><div class="seg">${brandOpts}</div></div>` : ''}
     <label>Información de la noticia<textarea name="text" rows="9" placeholder="Pega aquí el texto, los datos o lo que te han contado…"></textarea></label>
@@ -327,6 +329,55 @@ function uploadView(v) {
     const b = $('#upBtn'); b.disabled = true; b.textContent = 'Enviando…';
     try { const r = await api('/api/manual', { method: 'POST', body: fd }); toast(`Recibida: «${r.title.slice(0, 60)}». Se está redactando`); counts(); go('writing') }
     catch (er) { toast(er.message); b.disabled = false; b.textContent = 'Redactar noticia' }
+  };
+}
+
+function modeSwitch() {
+  return `<div class="seg upmode" role="tablist"><label><input type="radio" name="upmode" value="ai" ${upMode === 'ai' ? 'checked' : ''}><span>✍️ Redactar con IA</span></label><label><input type="radio" name="upmode" value="quick" ${upMode === 'quick' ? 'checked' : ''}><span>🚀 Lanzadera (ya está escrita)</span></label></div>`;
+}
+document.addEventListener('change', e => { if (e.target.name === 'upmode') { upMode = e.target.value; render() } });
+// Lanzadera: la noticia ya escrita (titular, entradilla, texto y foto) se publica tal cual con la imagen de Canva
+function quickView(v) {
+  const b0 = netBrand();
+  const brandOpts = BRANDS.map(b => `<label><input type="radio" name="brand" value="${b.slug}" ${b.slug === b0 ? 'checked' : ''}><span>${esc(b.name)}</span></label>`).join('');
+  v.innerHTML = `${modeSwitch()}<form class="up" id="qForm">
+    <div><h2>Lanzadera</h2><p class="muted small">Pones titular, entradilla, texto y foto. No se cambia nada: se hace la imagen de Canva y se publica en la web y en las redes del medio.</p></div>
+    ${BRANDS.length > 1 ? `<div><p class="small" style="font-weight:700;margin:0 0 6px">Medio</p><div class="seg" id="qBrand">${brandOpts}</div></div>` : ''}
+    <label>Sección<select name="section" id="qSec">${sectionOptions(b0, '')}</select></label>
+    <label>Titular <span class="muted" id="qFit"></span><textarea name="headline" rows="2" required placeholder="Titular tal cual irá en la imagen"></textarea></label>
+    <label>Entradilla<textarea name="subtitle" rows="2" maxlength="300" placeholder="Va debajo del titular en la imagen"></textarea></label>
+    <label>Texto de la noticia<textarea name="body" rows="8" placeholder="Para la web y el pie de la publicación en redes"></textarea></label>
+    <div class="drop" id="qDrop" tabindex="0" role="button" aria-label="Elegir foto"><b>Foto</b><span class="muted small" id="qPhotoName">Pulsa o arrastra aquí la foto de la noticia</span><input type="file" id="qPhoto" accept="image/jpeg,image/png,image/webp"></div>
+    <img id="qPrev" alt="" style="display:none;max-width:100%;border-radius:12px">
+    <details class="alts"><summary>Enlace de la fuente o publicar más tarde (opcional)</summary>
+      <label>Enlace<input name="link" type="url" placeholder="https://…"></label>
+      <label>Publicar el día y hora<input name="at" type="datetime-local"></label></details>
+    <button class="btn primary" id="qBtn">🚀 Publicar ya</button>
+    <div id="qOut"></div></form>`;
+  let file = null;
+  const input = $('#qPhoto'), drop = $('#qDrop');
+  const setFile = f => { if (!f) return; file = f; $('#qPhotoName').textContent = f.name; const img = $('#qPrev'); img.src = URL.createObjectURL(f); img.style.display = 'block' };
+  drop.onclick = () => input.click(); drop.onkeydown = e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); input.click() } };
+  input.onchange = () => setFile(input.files[0]);
+  drop.ondragover = e => { e.preventDefault(); drop.classList.add('over') }; drop.ondragleave = () => drop.classList.remove('over');
+  drop.ondrop = e => { e.preventDefault(); drop.classList.remove('over'); setFile(e.dataTransfer.files[0]) };
+  const brandSel = () => (document.querySelector('#qBrand input:checked') || {}).value || b0;
+  if ($('#qBrand')) $('#qBrand').onchange = () => { $('#qSec').innerHTML = sectionOptions(brandSel(), '') };
+  const ta = $('#qForm').headline; ta.oninput = () => { const n = lines(ta.value); $('#qFit').textContent = ta.value ? (n <= 4 ? `${n} ${n === 1 ? 'línea' : 'líneas'} en la imagen` : `${n} líneas: no cabe, acórtalo`) : '' };
+  $('#qForm').at.oninput = e => { $('#qBtn').textContent = e.target.value ? '⏰ Programar' : '🚀 Publicar ya' };
+  $('#qForm').onsubmit = async e => {
+    e.preventDefault();
+    if (!file) return toast('Falta la foto');
+    const fd = new FormData(e.target); fd.set('brand', brandSel()); fd.append('photo', file);
+    const b = $('#qBtn'); b.disabled = true; b.textContent = 'Creando imagen y publicando…';
+    try {
+      const r = await api('/api/quick', { method: 'POST', body: fd });
+      const lines_ = (r.results || []).filter(x => x.message).map(x => (x.ok ? '✓ ' : '✗ ') + esc(x.message));
+      $('#qOut').innerHTML = `<div class="${r.ok === false ? 'error' : ''}"><p><b>${r.scheduled_at ? '⏰ Programada para ' + esc(whenText(r.scheduled_at)) : r.published ? '✓ Publicada' : esc(r.message || 'No se pudo publicar')}</b></p>
+        ${lines_.length ? `<p class="small">${lines_.join('<br>')}</p>` : ''}${r.canva ? `<p class="small error">Imagen de Canva: ${esc(r.canva)}</p>` : ''}
+        <div class="row wrap"><a class="btn small" href="#editor/${r.id}">Ver la noticia</a><button type="button" class="btn small" onclick="render()">Otra noticia</button></div></div>`;
+      b.textContent = 'Hecho'; counts();
+    } catch (er) { toast(er.message); b.disabled = false; b.textContent = '🚀 Publicar ya' }
   };
 }
 

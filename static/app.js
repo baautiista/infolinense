@@ -336,18 +336,22 @@ function modeSwitch() {
   return `<div class="seg upmode" role="tablist"><label><input type="radio" name="upmode" value="ai" ${upMode === 'ai' ? 'checked' : ''}><span>✍️ Redactar con IA</span></label><label><input type="radio" name="upmode" value="quick" ${upMode === 'quick' ? 'checked' : ''}><span>🚀 Lanzadera (ya está escrita)</span></label></div>`;
 }
 document.addEventListener('change', e => { if (e.target.name === 'upmode') { upMode = e.target.value; render() } });
+let quickReady = true;
 // Lanzadera: la noticia ya escrita (titular, entradilla, texto y foto) se publica tal cual con la imagen de Canva
 function quickView(v) {
   const b0 = netBrand();
   const brandOpts = BRANDS.map(b => `<label><input type="radio" name="brand" value="${b.slug}" ${b.slug === b0 ? 'checked' : ''}><span>${esc(b.name)}</span></label>`).join('');
   v.innerHTML = `${modeSwitch()}<form class="up" id="qForm">
-    <div><h2>Lanzadera</h2><p class="muted small">Pones titular, entradilla, texto y foto. No se cambia nada: se hace la imagen de Canva y se publica en la web y en las redes del medio.</p></div>
+    <div><h2>Lanzadera</h2><p class="muted small">Pones tu titular, texto e imagen y se publica tal cual en la web y en las redes del medio. No se cambia nada.</p></div>
+    <div><p class="small" style="font-weight:700;margin:0 0 6px">Imagen</p><div class="seg" id="qKind">
+      <label><input type="radio" name="qkind" value="ready" ${quickReady ? 'checked' : ''}><span>🎨 Ya la traigo hecha de Canva</span></label>
+      <label><input type="radio" name="qkind" value="photo" ${quickReady ? '' : 'checked'}><span>📷 Es una foto: haz tú la imagen</span></label></div></div>
     ${BRANDS.length > 1 ? `<div><p class="small" style="font-weight:700;margin:0 0 6px">Medio</p><div class="seg" id="qBrand">${brandOpts}</div></div>` : ''}
     <label>Sección<select name="section" id="qSec">${sectionOptions(b0, '')}</select></label>
-    <label>Titular <span class="muted" id="qFit"></span><textarea name="headline" rows="2" required placeholder="Titular tal cual irá en la imagen"></textarea></label>
-    <label>Entradilla<textarea name="subtitle" rows="2" maxlength="300" placeholder="Va debajo del titular en la imagen"></textarea></label>
+    <label>Titular <span class="muted" id="qFit"></span><textarea name="headline" rows="2" required placeholder="Titular de la noticia"></textarea></label>
+    <label>Entradilla<textarea name="subtitle" rows="2" maxlength="300" placeholder="Opcional"></textarea></label>
     <label>Texto de la noticia<textarea name="body" rows="8" placeholder="Para la web y el pie de la publicación en redes"></textarea></label>
-    <div class="drop" id="qDrop" tabindex="0" role="button" aria-label="Elegir foto"><b>Foto</b><span class="muted small" id="qPhotoName">Pulsa o arrastra aquí la foto de la noticia</span><input type="file" id="qPhoto" accept="image/jpeg,image/png,image/webp"></div>
+    <div class="drop" id="qDrop" tabindex="0" role="button" aria-label="Elegir imagen"><b id="qDropTitle">${quickReady ? 'Imagen de Canva terminada' : 'Foto'}</b><span class="muted small" id="qPhotoName">${quickReady ? 'Pulsa o arrastra aquí la imagen que has descargado de Canva' : 'Pulsa o arrastra aquí la foto de la noticia'}</span><input type="file" id="qPhoto" accept="image/jpeg,image/png,image/webp"></div>
     <img id="qPrev" alt="" style="display:none;max-width:100%;border-radius:12px">
     <details class="alts"><summary>Enlace de la fuente o publicar más tarde (opcional)</summary>
       <label>Enlace<input name="link" type="url" placeholder="https://…"></label>
@@ -363,13 +367,18 @@ function quickView(v) {
   drop.ondrop = e => { e.preventDefault(); drop.classList.remove('over'); setFile(e.dataTransfer.files[0]) };
   const brandSel = () => (document.querySelector('#qBrand input:checked') || {}).value || b0;
   if ($('#qBrand')) $('#qBrand').onchange = () => { $('#qSec').innerHTML = sectionOptions(brandSel(), '') };
-  const ta = $('#qForm').headline; ta.oninput = () => { const n = lines(ta.value); $('#qFit').textContent = ta.value ? (n <= 4 ? `${n} ${n === 1 ? 'línea' : 'líneas'} en la imagen` : `${n} líneas: no cabe, acórtalo`) : '' };
+  const ta = $('#qForm').headline; ta.oninput = () => { const n = lines(ta.value); $('#qFit').textContent = ta.value && !quickReady ? (n <= 4 ? `${n} ${n === 1 ? 'línea' : 'líneas'} en la imagen` : `${n} líneas: no cabe, acórtalo`) : '' };
+  $('#qKind').onchange = e => {
+    quickReady = e.target.value === 'ready'; ta.oninput();
+    $('#qDropTitle').textContent = quickReady ? 'Imagen de Canva terminada' : 'Foto';
+    if (!file) $('#qPhotoName').textContent = quickReady ? 'Pulsa o arrastra aquí la imagen que has descargado de Canva' : 'Pulsa o arrastra aquí la foto de la noticia';
+  };
   $('#qForm').at.oninput = e => { $('#qBtn').textContent = e.target.value ? '⏰ Programar' : '🚀 Publicar ya' };
   $('#qForm').onsubmit = async e => {
     e.preventDefault();
-    if (!file) return toast('Falta la foto');
-    const fd = new FormData(e.target); fd.set('brand', brandSel()); fd.append('photo', file);
-    const b = $('#qBtn'); b.disabled = true; b.textContent = 'Creando imagen y publicando…';
+    if (!file) return toast(quickReady ? 'Falta la imagen' : 'Falta la foto');
+    const fd = new FormData(e.target); fd.set('brand', brandSel()); fd.append('photo', file); fd.delete('qkind'); if (quickReady) fd.set('ready', '1');
+    const b = $('#qBtn'); b.disabled = true; b.textContent = quickReady ? 'Publicando…' : 'Creando imagen y publicando…';
     try {
       const r = await api('/api/quick', { method: 'POST', body: fd });
       const lines_ = (r.results || []).filter(x => x.message).map(x => (x.ok ? '✓ ' : '✗ ') + esc(x.message));

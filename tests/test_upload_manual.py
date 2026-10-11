@@ -230,3 +230,21 @@ class QuickPublishTests(unittest.TestCase):
         self.assertEqual(a['headline'], 'Mi titular exacto de la redacción')
         self.assertEqual(calls['canva'], 'Mi titular exacto de la redacción')
         self.assertTrue(Path(a['image_local']).exists())
+
+    def test_launcher_with_finished_canva_image_skips_canva(self):
+        db.init_db()
+        buf = BytesIO(); Image.new('RGB', (1080, 1350), 'red').save(buf, 'PNG')
+        calls = {}
+        def fake_publish(aid, body):
+            calls['pub'] = aid; return {'ok': True, 'published': True, 'results': []}
+        with patch.object(main.canva, 'ready', return_value=True), patch.object(main.canva, 'connected', return_value=True), \
+                patch.object(main.canva, 'create_design', side_effect=AssertionError('no debe usar Canva')), patch.object(main, 'publish', side_effect=fake_publish):
+            r = asyncio.run(main.quick_publish(headline='Titular de la imagen ya hecha', subtitle='', body='Texto.',
+                                               section='CIUDAD', brand='infolinense', link='', at='', networks='', ready='1',
+                                               photo=FakeUpload('canva.png', buf.getvalue())))
+        self.assertTrue(r['published'])
+        a = db.row('SELECT * FROM articles WHERE id=?', (r['id'],))
+        self.assertTrue(Path(a['render_path']).is_file())
+        from PIL import Image as I
+        self.assertEqual(I.open(a['render_path']).size, (1080, 1350))
+        self.assertEqual(main.social_publish.article_images(a), [a['render_path']])

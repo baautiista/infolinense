@@ -13,7 +13,7 @@ from . import db, sources, pipeline, publishers, photos, canva, ai, planner, lay
 from .auth import login, require_auth
 from .config import BASE_DIR, RENDER_DIR, UPLOAD_DIR, SCAN_INTERVAL_MINUTES, AUTO_PIPELINE, OPENAI_API_KEY, ADMIN_PASSWORD, JWT_SECRET, PUBLISH_MODE, CORS_ORIGINS, PUBLIC_BASE_URL, AUTO_PUBLISH
 
-VERSION='6.9.0'
+VERSION='6.9.1'
 app=FastAPI(title='InfoLinense Desk',version=VERSION)
 app.add_middleware(CORSMiddleware,allow_origins=CORS_ORIGINS,allow_credentials=False,allow_methods=['*'],allow_headers=['Authorization','Content-Type'])
 db.init_db()
@@ -377,9 +377,10 @@ async def manual_news(text:str=Form(''),title:str=Form(''),link:str=Form(''),bra
 
 @app.post('/api/quick',dependencies=[Depends(require_auth)])
 async def quick_publish(headline:str=Form(...),subtitle:str=Form(''),body:str=Form(''),section:str=Form(''),brand:str=Form('infolinense'),
-                        link:str=Form(''),at:str=Form(''),networks:str=Form(''),photo:UploadFile=File(...)):
+                        link:str=Form(''),at:str=Form(''),networks:str=Form(''),ready:str=Form(''),photo:UploadFile=File(...)):
     """Lanzadera: la redacción trae su noticia ya escrita (titular, entradilla, texto y foto). No se reescribe nada:
-    se hace la imagen de Canva y se publica al momento (o a la hora indicada) en la web y en las redes del medio."""
+    se hace la imagen de Canva y se publica al momento (o a la hora indicada) en la web y en las redes del medio.
+    Con ready=1 la imagen subida ya es la definitiva (hecha en Canva por la redacción) y se publica tal cual."""
     from uuid import uuid4
     headline=re.sub(r'\s+',' ',headline).strip(); subtitle=re.sub(r'\s+',' ',subtitle).strip(); body=(body or '').strip()
     if len(headline)<8: raise HTTPException(400,'Escribe el titular')
@@ -402,7 +403,12 @@ async def quick_publish(headline:str=Form(...),subtitle:str=Form(''),body:str=Fo
     db.log('quick',f'Lanzadera: {headline[:80]}')
     a=db.row('SELECT * FROM articles WHERE id=?',(aid,))
     canva_msg=''
-    if canva.ready() and canva.connected():
+    if isinstance(ready,str) and ready.strip().lower() in ('1','true','si','sí','on'):
+        RENDER_DIR.mkdir(parents=True,exist_ok=True)
+        final=RENDER_DIR/f'article_{aid}.png'
+        im.convert('RGB').save(final,'PNG')
+        db.exec_('UPDATE articles SET render_path=?,updated_at=CURRENT_TIMESTAMP WHERE id=?',(str(final),aid))
+    elif canva.ready() and canva.connected():
         try:
             r=canva.create_design(a)
             if not r.get('exported'): canva_msg=r.get('export_error') or 'Canva no exportó la imagen'

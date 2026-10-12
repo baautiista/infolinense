@@ -248,3 +248,21 @@ class QuickPublishTests(unittest.TestCase):
         from PIL import Image as I
         self.assertEqual(I.open(a['render_path']).size, (1080, 1350))
         self.assertEqual(main.social_publish.article_images(a), [a['render_path']])
+
+
+class ChatGPTExportTest(unittest.TestCase):
+    def test_export_marked_news(self):
+        db.init_db()
+        cid = db.exec_("""INSERT INTO candidates(source_name,outlet,title,url,published_at,excerpt,raw_text,score,relevance,status,editorial_priority,brand)
+                          VALUES('Ayuntamiento','Ayuntamiento','Obras en la calle Real','https://ejemplo.es/obras','2026-10-12','Resumen',
+                          'El Ayuntamiento empieza las obras el lunes.',80,'high','new','today','infolinense')""")
+        db.exec_("""INSERT INTO candidates(source_name,outlet,title,url,status,editorial_priority,brand)
+                    VALUES('X','X','Noticia descartada','https://ejemplo.es/no','archived','no_interest','infolinense')""")
+        text, n = main.chatgpt_export_text('infolinense', 'marked')
+        self.assertIn('Obras en la calle Real', text)
+        self.assertIn('El Ayuntamiento empieza las obras el lunes.', text)
+        self.assertIn('https://ejemplo.es/obras', text)
+        self.assertNotIn('Noticia descartada', text)
+        self.assertIn('TITULAR:', text)
+        r = main.export_chatgpt(brand='infolinense', scope='marked', download=1)
+        self.assertIn('attachment', r.headers['content-disposition'])

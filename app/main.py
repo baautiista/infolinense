@@ -13,7 +13,7 @@ from . import db, sources, pipeline, publishers, photos, canva, ai, planner, lay
 from .auth import login, require_auth
 from .config import BASE_DIR, RENDER_DIR, UPLOAD_DIR, SCAN_INTERVAL_MINUTES, AUTO_PIPELINE, OPENAI_API_KEY, ADMIN_PASSWORD, JWT_SECRET, PUBLISH_MODE, CORS_ORIGINS, PUBLIC_BASE_URL, AUTO_PUBLISH
 
-VERSION='6.9.1'
+VERSION='6.10.0'
 app=FastAPI(title='InfoLinense Desk',version=VERSION)
 app.add_middleware(CORSMiddleware,allow_origins=CORS_ORIGINS,allow_credentials=False,allow_methods=['*'],allow_headers=['Authorization','Content-Type'])
 db.init_db()
@@ -256,6 +256,67 @@ def _bf(rows,brand):
     """Filtra por medio (InfoLinense, Cofrade, Carnaval); vacío o «all» = todos."""
     if not brand or brand=='all': return rows
     return [r for r in rows if (r.get('brand') or brands.DEFAULT)==brand]
+
+_PRIO_NAME={'urgent':'URGENTE','today':'Hoy','tomorrow':'Mañana','this_week':'Esta semana','future':'Más adelante'}
+
+def chatgpt_export_text(brand='',scope='marked'):
+    """Texto listo para pegar en ChatGPT con las noticias marcadas («sirve») y aún sin publicar, o con las que quedan por ordenar."""
+    if scope=='queue':
+        rows=[r for r in _sort_queue(brand) if not str(r.get('url') or '').startswith('social:')] or _sort_queue(brand)
+    else:
+        rows=db.rows("""SELECT c.* FROM candidates c
+                        WHERE c.editorial_priority IN ('urgent','today','tomorrow','this_week','future')
+                          AND c.status NOT IN ('published','archived','discarded')
+                          AND c.created_at>=datetime('now','-21 days')
+                          AND NOT EXISTS(SELECT 1 FROM articles a WHERE a.candidate_id=c.id AND a.status='published')""")
+        rows=_bf(rows,brand)
+        order={k:i for i,k in enumerate(_PRIO_NAME)}
+        rows.sort(key=lambda r:(order.get(r.get('editorial_priority'),9),str(r.get('planned_at') or '')))
+    links=sources.links_for([r['id'] for r in rows]) if rows else {}
+    names=sorted({brands.valid(r.get('brand')) for r in rows}) or [brands.valid(brand)]
+    head=[]
+    for slug in names:
+        st=brands.settings(slug)
+        secs=', '.join(st.get('sections') or [])
+        head.append(f"- {st['name']}: {st['about']}."+(f" Secciones: {secs}." if secs else ''))
+    out=["Eres redactor de un medio local de La Línea de la Concepción (Cádiz). Redacta TODAS las noticias de abajo, una por una, en español de España.",
+         "", "Medios:", *head, "",
+         "Para cada noticia escribe, con estas etiquetas exactas:",
+         "NOTICIA n",
+         "MEDIO: (el indicado)",
+         "SECCIÓN:",
+         "TITULAR: (claro e informativo, entre 60 y 110 caracteres, sin punto final)",
+         "ENTRADILLA: (una o dos frases, máximo 250 caracteres)",
+         "TEXTO: (noticia completa para la web, 3 a 6 párrafos, con lo más importante primero)",
+         "REDES: (texto breve para Instagram y Facebook, sin hashtags)",
+         "",
+         "Reglas: usa solo los datos de la fuente; no inventes nombres, cifras, fechas ni declaraciones. Si falta un dato, no lo pongas. "
+         "Cuenta qué significa para los vecinos de La Línea. Cita la fuente («según…») cuando sea de otro medio. "
+         "Si dos noticias son el mismo hecho, júntalas en una sola.",
+         "", "="*60]
+    for i,r in enumerate(rows,1):
+        text=re.sub(r'\n{3,}','\n\n',(r.get('raw_text') or r.get('excerpt') or '').strip())[:6000]
+        extra=[l.get('url') for l in links.get(r['id'],[]) if l.get('url')]
+        src=str(r.get('url') or '')
+        if src.startswith('manual:'): src=src.split('#',1)[1] if '#' in src else ''
+        out+=[f"\nNOTICIA {i}",
+              f"Medio: {brands.settings(r.get('brand')).get('name')}",
+              *( [f"Cuándo publicar: {_PRIO_NAME[r['editorial_priority']]}"] if r.get('editorial_priority') in _PRIO_NAME else []),
+              f"Título original: {r.get('title') or ''}",
+              f"Fuente: {r.get('outlet') or r.get('source_name') or ''}"+(f" · {str(r.get('published_at') or '')[:10]}" if r.get('published_at') else ''),
+              *( [f"Enlace: {src}"] if src.startswith('http') else []),
+              *( [f"Otras fuentes: {', '.join(extra[:5])}"] if extra else []),
+              "Texto de la fuente:", text or '(sin texto: usa el título y el enlace)', "-"*60]
+    return '\n'.join(out)+'\n', len(rows)
+
+@app.get('/api/export/chatgpt',dependencies=[Depends(require_auth)])
+def export_chatgpt(brand:str='',scope:str='marked',download:int=0):
+    text,n=chatgpt_export_text(brand,scope if scope in ('marked','queue') else 'marked')
+    if download:
+        from fastapi.responses import PlainTextResponse
+        name=f"noticias-chatgpt-{datetime.now(MADRID).strftime('%Y-%m-%d-%H%M')}.txt"
+        return PlainTextResponse(text,headers={'Content-Disposition':f'attachment; filename="{name}"'})
+    return {'text':text,'count':n}
 
 def _sort_queue(brand=''):
     rows=[r for r in candidates('pending',brand) if not r.get('article_id') and (r.get('editorial_priority') or 'undecided') in ('undecided','')]

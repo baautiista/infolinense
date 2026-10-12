@@ -271,6 +271,9 @@ body.editing .actions{bottom:0}
 .sort-search{background:#fff;border-radius:var(--r-md);padding:12px 14px;margin:0 0 10px;box-shadow:var(--lift)}
 .sort-search label{display:block;font-weight:700;color:var(--navy);margin-bottom:7px}
 .sort-search .row{display:flex;gap:8px;align-items:center}
+.gpt-export{background:#fff;border-radius:var(--r-md);padding:10px 14px;margin:0 0 10px;box-shadow:var(--lift);display:flex;flex-direction:column;gap:8px}
+.gpt-export .row{display:flex;gap:8px;align-items:center}
+.gpt-export select{flex:1;min-width:0}
 .sort-search .row input{min-width:0;flex:1}
 .sort-search .row button{flex:0 0 auto;white-space:nowrap}
 .sort-search p{margin:7px 0 0}

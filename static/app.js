@@ -165,6 +165,27 @@ function searchWidget() {
     + '</form></section>'
     + (queueSearch.trim() ? '<p class="sort-count muted small">' + filteredQueueCount() + ' noticias coinciden con la búsqueda</p>' : '');
 }
+// Exportar para ChatGPT: las noticias marcadas («sirve») o las que quedan por ordenar, en un texto listo para pegar
+let gptScope = 'marked';
+function gptWidget() {
+  return `<section class="gpt-export"><div><b>🤖 Para ChatGPT</b><span class="muted small"> · copia o descarga las noticias para que las redacte todas</span></div>
+    <div class="row wrap"><select id="gptScope" aria-label="Qué noticias"><option value="marked" ${gptScope === 'marked' ? 'selected' : ''}>Las marcadas «sirve» sin publicar</option><option value="queue" ${gptScope === 'queue' ? 'selected' : ''}>Las que quedan por ordenar</option></select>
+    <button type="button" class="btn small" id="gptCopy">📋 Copiar</button><button type="button" class="btn small" id="gptTxt">⬇️ Descargar .txt</button></div></section>`;
+}
+function armGpt(v) {
+  const qs = () => `brand=${encodeURIComponent(BRAND)}&scope=${gptScope}`;
+  v.querySelector('#gptScope').onchange = e => { gptScope = e.target.value };
+  v.querySelector('#gptCopy').onclick = async () => {
+    try {
+      const r = await api('/api/export/chatgpt?' + qs());
+      if (!r.count) return toast('No hay noticias para exportar');
+      try { await navigator.clipboard.writeText(r.text) }
+      catch (e) { const t = document.createElement('textarea'); t.value = r.text; document.body.appendChild(t); t.select(); document.execCommand('copy'); t.remove() }
+      toast(`Copiadas ${r.count} noticias: pégalas en ChatGPT`);
+    } catch (e) { toast(e.message) }
+  };
+  v.querySelector('#gptTxt').onclick = () => download('/api/export/chatgpt?download=1&' + qs(), `noticias-chatgpt-${new Date().toISOString().slice(0, 10)}.txt`);
+}
 function filteredQueueCount() {
   const words = searchFold(queueSearch).trim().split(/\s+/).filter(Boolean);
   return queue.filter(n => {
@@ -190,7 +211,8 @@ function drawSort(v = $('#view')) {
         <button class="round yes" id="yesBtn" aria-label="Sirve" title="Sirve (→)">✓</button></div>
       <p class="deck-hint">Desliza a la derecha si sirve y a la izquierda si no.</p>`
     : queue.length ? '' : `<p class="empty">Todo ordenado. Pulsa «Buscar» para traer noticias nuevas.</p>${nextPhase('Ir a Redacción', 'writing', 'Las noticias marcadas se están redactando solas.')}`}`;
-  v.insertAdjacentHTML('afterbegin', searchWidget());
+  v.insertAdjacentHTML('afterbegin', searchWidget() + gptWidget());
+  armGpt(v);
   const input = v.querySelector('#newsQuery');
   input.oninput = e => {
     const position = e.target.selectionStart;

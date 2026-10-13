@@ -377,9 +377,12 @@ function quickView(v) {
     <label>Texto de la noticia<textarea name="body" rows="8" placeholder="Para la web y el pie de la publicación en redes"></textarea></label>
     <div class="drop" id="qDrop" tabindex="0" role="button" aria-label="Elegir imagen"><b id="qDropTitle">${quickReady ? 'Imágenes de Canva terminadas' : 'Fotos'}</b><span class="muted small" id="qPhotoName">${dropHint()}</span><input type="file" id="qPhoto" accept="image/jpeg,image/png,image/webp" multiple></div>
     <div class="qthumbs" id="qThumbs"></div>
-    <details class="alts"><summary>Enlace de la fuente o publicar más tarde (opcional)</summary>
-      <label>Enlace<input name="link" type="url" placeholder="https://…"></label>
-      <label>Publicar el día y hora<input name="at" type="datetime-local"></label></details>
+    <details class="alts"><summary>Enlace de la fuente (opcional)</summary>
+      <label>Enlace<input name="link" type="url" placeholder="https://…"></label></details>
+    <div><p class="small" style="font-weight:700;margin:0 0 6px">¿Cuándo?</p><div class="seg" id="qWhen">
+      <label><input type="radio" name="qwhen" value="now" checked><span>🚀 Publicar ya</span></label>
+      <label><input type="radio" name="qwhen" value="later"><span>⏰ Programar</span></label></div></div>
+    <label id="qAtWrap" hidden>Día y hora de publicación<input name="at" type="datetime-local" min="${madridNow()}"></label>
     <button class="btn primary" id="qBtn">🚀 Publicar ya</button>
     <div id="qOut"></div></form>`;
   // Varias imágenes = carrusel: la primera es la portada; se pueden reordenar y quitar
@@ -411,12 +414,20 @@ function quickView(v) {
     $('#qDropTitle').textContent = quickReady ? 'Imágenes de Canva terminadas' : 'Fotos';
     if (!files.length) $('#qPhotoName').textContent = dropHint();
   };
-  $('#qForm').at.oninput = e => { $('#qBtn').textContent = e.target.value ? '⏰ Programar' : '🚀 Publicar ya' };
+  const btnLabel = () => $('#qWhen input:checked').value === 'later' ? '⏰ Programar' : '🚀 Publicar ya';
+  $('#qWhen').onchange = () => {
+    const later = $('#qWhen input:checked').value === 'later';
+    $('#qAtWrap').hidden = !later;
+    if (later && !$('#qForm').at.value) $('#qForm').at.value = defaultWhen('');
+    if (!later) $('#qForm').at.value = '';
+    $('#qBtn').textContent = btnLabel();
+  };
   $('#qForm').onsubmit = async e => {
     e.preventDefault();
     if (!files.length) return toast(quickReady ? 'Falta la imagen' : 'Falta la foto');
-    const fd = new FormData(e.target); fd.set('brand', brandSel()); fd.append('photo', files[0].f); files.slice(1).forEach(x => fd.append('extra', x.f)); fd.delete('qkind'); if (quickReady) fd.set('ready', '1');
-    const b = $('#qBtn'); b.disabled = true; b.textContent = quickReady ? 'Publicando…' : 'Creando imagen y publicando…';
+    if ($('#qWhen input:checked').value === 'later' && !(e.target.at.value > madridNow())) return toast('Elige un día y una hora futuros');
+    const fd = new FormData(e.target); fd.set('brand', brandSel()); fd.append('photo', files[0].f); files.slice(1).forEach(x => fd.append('extra', x.f)); fd.delete('qkind'); fd.delete('qwhen'); if (quickReady) fd.set('ready', '1');
+    const b = $('#qBtn'); b.disabled = true; b.textContent = e.target.at.value ? 'Programando…' : quickReady ? 'Publicando…' : 'Creando imagen y publicando…';
     try {
       const r = await api('/api/quick', { method: 'POST', body: fd });
       const lines_ = (r.results || []).filter(x => x.message).map(x => (x.ok ? '✓ ' : '✗ ') + esc(x.message));
@@ -424,7 +435,7 @@ function quickView(v) {
         ${lines_.length ? `<p class="small">${lines_.join('<br>')}</p>` : ''}${r.canva ? `<p class="small error">Imagen de Canva: ${esc(r.canva)}</p>` : ''}
         <div class="row wrap"><a class="btn small" href="#editor/${r.id}">Ver la noticia</a><button type="button" class="btn small" onclick="render()">Otra noticia</button></div></div>`;
       b.textContent = 'Hecho'; counts();
-    } catch (er) { toast(er.message); b.disabled = false; b.textContent = '🚀 Publicar ya' }
+    } catch (er) { toast(er.message); b.disabled = false; b.textContent = btnLabel() }
   };
 }
 
@@ -486,7 +497,14 @@ function armDrag(v) {
   v.querySelectorAll('.rv-slot[data-slot]:not(.rv-loose)').forEach(z => {
     z.ondragover = e => { e.preventDefault(); z.classList.add('over') };
     z.ondragleave = () => z.classList.remove('over');
-    z.ondrop = e => { e.preventDefault(); z.classList.remove('over'); const aid = +e.dataTransfer.getData('text/plain'); if (aid) moveTo(aid, z.dataset.date, z.dataset.slot) };
+    z.ondrop = e => {
+      e.preventDefault(); z.classList.remove('over'); const aid = +e.dataTransfer.getData('text/plain'); if (!aid) return;
+      if (z.dataset.slot === 'keep') {  // vista de mes: mismo hora, otro día
+        const tag = document.querySelector(`.mc-item[data-aid="${aid}"] i`); const t = tag ? tag.textContent.trim() : '';
+        return moveTo(aid, z.dataset.date, t ? slotOf('0000-00-00T' + t) : 'morning', t);
+      }
+      moveTo(aid, z.dataset.date, z.dataset.slot);
+    };
   });
 }
 function whenLabel(at) {
@@ -519,6 +537,7 @@ window.moveSheet = aid => {
   sheet.innerHTML = `<div class="sheet" role="dialog" aria-label="Mover noticia"><h2>Mover a…</h2>
     <p class="muted small">Día</p><div class="chips wrapc">${opts.map((d, i) => `<button class="chip ${i === 0 ? 'on' : ''}" data-d="${d}">${esc(dayTitle(d)[0])}${i > 1 ? ' ' + new Date(d + 'T12:00:00Z').getUTCDate() : ''}</button>`).join('')}</div>
     <p class="muted small">Franja</p><div class="chips wrapc">${SLOTS.map(([k, n, i], j) => `<button class="chip ${j === 0 ? 'on' : ''}" data-s="${k}">${i} ${n}</button>`).join('')}</div>
+    <label class="small">Otro día<input type="date" id="mvDate" min="${today}"></label>
     <label class="small">Hora exacta (opcional)<input type="time" id="mvTime"></label>
     <div class="row"><button class="btn" id="mvCancel">Cancelar</button><button class="btn primary" id="mvOk">Mover</button></div></div>`;
   document.body.appendChild(sheet);
@@ -528,7 +547,8 @@ window.moveSheet = aid => {
   sheet.onclick = e => { if (e.target === sheet) sheet.remove() };
   sheet.querySelector('#mvCancel').onclick = () => sheet.remove();
   sheet.querySelector('#mvOk').onclick = () => {
-    const t = sheet.querySelector('#mvTime').value;
+    const t = sheet.querySelector('#mvTime').value, other = sheet.querySelector('#mvDate').value;
+    if (other) d = other;
     if (t) { const h = +t.slice(0, 2); sl = h < 14 ? 'morning' : h < 20 ? 'afternoon' : 'night' }
     sheet.remove(); moveTo(aid, d, sl, t);
   };
@@ -550,6 +570,26 @@ const NET_NAMES = { web: 'Web', instagram: 'Instagram', facebook: 'Facebook', ti
 function netPrefs(available) { return available }  // todas las redes conectadas, siempre
 function saveNetPrefs() { try { localStorage.setItem('nets', JSON.stringify([...document.querySelectorAll('.netpick input:checked')].map(i => i.value))) } catch (e) { } }
 function netStatus(r) { const n = r.networks || {}; return Object.keys(n).map(k => n[k].status === 'published' ? (n[k].url ? `<a class="net ok" href="${safeUrl(n[k].url)}" target="_blank" rel="noopener">${NET_NAMES[k]} ✓</a>` : `<span class="net ok">${NET_NAMES[k]} ✓</span>`) : `<span><button class="net bad" title="${esc(n[k].message)}" onclick="retryNet(${r.id},'${k}',this)">${NET_NAMES[k]}: reintentar</button><small class="neterr">${esc(String(n[k].message || '').slice(0, 160))}</small></span>`).join('') }
+// Vista de mes del calendario de Publicar
+let calView = 'days', calMonth = madridDate().slice(0, 7), calFocus = '';
+const addMonths = (ym, n) => { const d = new Date(ym + '-15T12:00:00Z'); d.setUTCMonth(d.getUTCMonth() + n); return d.toISOString().slice(0, 7) };
+function monthHtml(rows, place) {
+  const first = calMonth + '-01', today = madridDate();
+  const start = addDays(first, -((new Date(first + 'T12:00:00Z').getUTCDay() + 6) % 7));  // lunes de la primera semana
+  const title = new Date(first + 'T12:00:00Z').toLocaleDateString('es-ES', { month: 'long', year: 'numeric', timeZone: 'UTC' });
+  const cells = Array.from({ length: 42 }, (_, i) => addDays(start, i)).filter((d, i) => i < 35 || d.slice(0, 7) === calMonth);
+  const later = rows.filter(r => place(r)[0] === 'later');
+  return `<div class="mcal"><div class="mc-head"><button class="btn small" data-mstep="-1" aria-label="Mes anterior">‹</button><h2>${esc(title.charAt(0).toUpperCase() + title.slice(1))}</h2><button class="btn small" data-mstep="1" aria-label="Mes siguiente">›</button></div>
+    <div class="mc-grid">${['L', 'M', 'X', 'J', 'V', 'S', 'D'].map(d => `<b class="mc-wd">${d}</b>`).join('')}
+    ${cells.map(d => {
+      const list = rows.filter(r => place(r)[0] === d).sort((a, b) => String(a._at).localeCompare(String(b._at)));
+      const past = d < today, other = d.slice(0, 7) !== calMonth;
+      return `<div class="mc-day rv-slot ${d === today ? 'today' : ''} ${other ? 'other' : ''} ${past ? 'past' : ''}" data-date="${d}" ${past ? '' : 'data-slot="keep"'}>
+        <span class="mc-n">${+d.slice(8, 10)}</span>${list.slice(0, 4).map(r => `<a class="mc-item rv-card ${r.status === 'published' ? 'done' : ''}" ${r.status === 'published' ? '' : 'draggable="true"'} data-aid="${r.id}" href="#editor/${r.id}" style="--bc:${brandOf(r.brand).color}" title="${esc(r.headline)}">${r._at ? `<i>${esc(String(r._at).slice(11, 16))}</i> ` : ''}${esc(r.headline)}</a>`).join('')}
+        ${list.length > 4 ? `<span class="mc-more">+${list.length - 4} más</span>` : ''}</div>`;
+    }).join('')}</div>
+    ${later.length ? `<p class="muted small">🗓️ Sin día fijado: ${later.length}. Arrástralas a un día del mes.</p><div class="mc-later rv-slot">${later.map(r => `<a class="mc-item rv-card" draggable="true" data-aid="${r.id}" href="#editor/${r.id}" style="--bc:${brandOf(r.brand).color}">${esc(r.headline)}</a>`).join('')}</div>` : ''}</div>`;
+}
 async function publishView(v) {
   const rows = await api('/api/to-publish');
   // Cada medio publica en SUS cuentas: se mira lo conectado de cada uno
@@ -587,12 +627,17 @@ async function publishView(v) {
       ${!done && (r.brand || 'infolinense') !== 'infolinense' && noNets(r.brand) ? `<p class="error small">${esc(bname(r.brand))} no tiene redes conectadas. <a href="#settings">Conectar</a></p>` : ''}
       ${actions}</article>`;
   };
-  v.innerHTML = rows.length ? `${picker}
-    <div class="rv-intro"><p>Organiza el día: arrastra las tarjetas (o «Mover») a otro día o franja. Si cambias el día, «hoy», «mañana»… se ajustan solos en el texto.</p>
+  const viewSwitch = `<div class="seg calview" role="tablist"><label><input type="radio" name="calview" value="days" ${calView === 'days' ? 'checked' : ''}><span>📋 Por días</span></label><label><input type="radio" name="calview" value="month" ${calView === 'month' ? 'checked' : ''}><span>📅 Mes</span></label></div>`;
+  v.innerHTML = rows.length ? `${picker}${viewSwitch}
+    <div class="rv-intro"><p>Organiza ${calView === 'month' ? 'el mes: arrastra cada noticia a otro día o pulsa un día para verlo' : 'el día: arrastra las tarjetas (o «Mover») a otro día o franja'}. Si cambias el día, «hoy», «mañana»… se ajustan solos en el texto.</p>
       ${pending.length ? `<button class="btn primary" id="schedAll">Programar las ${pending.length} a su hora</button>` : ''}</div>
-    ${calendarHtml(rows, place, card)}`
+    ${calView === 'month' ? monthHtml(rows, place) : calendarHtml(rows, place, card)}`
     : `<p class="empty">Aún no hay noticias para publicar.</p>${nextPhase('Ir a Revisar', 'review')}`;
+  v.querySelectorAll('[name=calview]').forEach(i => i.onchange = () => { calView = i.value; render() });
+  v.querySelectorAll('[data-mstep]').forEach(b => b.onclick = () => { calMonth = addMonths(calMonth, +b.dataset.mstep); render() });
+  v.querySelectorAll('.mc-day[data-date]').forEach(c => c.onclick = e => { if (e.target.closest('a')) return; calView = 'days'; calFocus = c.dataset.date; render() });
   armDrag(v);
+  if (calFocus) { const el = v.querySelector(`.rv-slot[data-date="${calFocus}"]`); calFocus = ''; if (el) el.closest('.rv-day').scrollIntoView({ behavior: 'smooth' }) }
   if ($('#schedAll')) $('#schedAll').onclick = async e => {
     const b = e.target; b.disabled = true; b.textContent = 'Programando…'; let ok = 0; const errs = [];
     for (const r of pending) {

@@ -359,3 +359,26 @@ class AyuntamientoTests(unittest.TestCase):
                                      datetime.now(timezone.utc).isoformat(), {'priority': 100, 'official': 1, 'local_scope': 1})
         self.assertIsNotNone(other)
         self.assertIsNotNone(mine)
+
+
+class CanvaSinglePageTests(unittest.TestCase):
+    def test_other_pages_are_deleted(self):
+        from app import canva
+        calls = []
+        def fake_api(method, path, **kw):
+            calls.append((method, path, kw.get('json')))
+            if path.startswith('/designs/'): return {'design': {'page_count': 12}}
+            if path == '/merges': return {'job': {'id': 'J', 'status': 'success'}}
+            return {}
+        with patch.object(canva, '_api', side_effect=fake_api):
+            self.assertTrue(canva._keep_only_page('DX', 5))
+        body = [c for c in calls if c[1] == '/merges'][0][2]
+        self.assertEqual(body['operations'][0]['page_numbers'], [1, 2, 3, 4, 6, 7, 8, 9, 10, 11, 12])
+
+    def test_keeps_design_if_canva_refuses(self):
+        from app import canva
+        def fake_api(method, path, **kw):
+            if path.startswith('/designs/'): return {'design': {'page_count': 3}}
+            raise ValueError('Canva (403): sin permiso')
+        with patch.object(canva, '_api', side_effect=fake_api):
+            self.assertFalse(canva._keep_only_page('DX', 2))

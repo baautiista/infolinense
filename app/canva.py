@@ -284,6 +284,30 @@ def _photo_for_canvas(photo, article):
     return buffer.getvalue()
 
 
+def _page_count(design_id):
+    try:
+        return int((_api('GET', '/designs/' + design_id).get('design') or {}).get('page_count') or 0)
+    except Exception:
+        return 0
+
+
+def _keep_only_page(design_id, page):
+    """Deja en el diseño solo la página de la noticia (la plantilla trae todas las secciones).
+    Así, al abrirlo en Canva para retocarlo, solo hay una página. Si Canva no lo permite, se deja como estaba."""
+    total = _page_count(design_id)
+    page = int(page or 1)
+    if total <= 1 or page > total:
+        return total <= 1
+    others = [n for n in range(1, total + 1) if n != page]
+    try:
+        job = _api('POST', '/merges', json={'type': 'modify_existing_design', 'design_id': design_id,
+                                             'operations': [{'type': 'delete_pages', 'page_numbers': others}]})
+        _wait('/merges/' + job['job']['id'], job)
+        return True
+    except Exception:
+        return False
+
+
 def _export_png(article, design_id, output_suffix=None, mark_main=True, page=None):
     from io import BytesIO
     from PIL import Image
@@ -331,7 +355,7 @@ def export_design(article):
         raise ValueError('La noticia o la foto cambió; vuelve a crear el diseño de Canva')
     db.exec_('UPDATE canva_designs SET exported=0 WHERE article_id=?', (article['id'],))
     db.exec_('UPDATE articles SET render_path=NULL,status=CASE WHEN status="approved" THEN "review_ready" ELSE status END WHERE id=?', (article['id'],))
-    _export_png(article, design['design_id'], page=_page_for(article))
+    _export_png(article, design['design_id'], page=1 if _page_count(design['design_id']) == 1 else _page_for(article))
     return {'url': design['url'], 'design_id': design['design_id'], 'exported': True}
 
 
@@ -395,8 +419,9 @@ def create_design(article, store=True, title_suffix='', output_suffix=None, stri
         db.exec_('INSERT OR REPLACE INTO canva_designs(article_id,design_id,url,exported,content_hash,updated_at) VALUES(?,?,?,0,?,CURRENT_TIMESTAMP)',
                  (article['id'], design['id'], url, _content_hash(article)))
         db.exec_('UPDATE articles SET render_path=NULL,status=CASE WHEN status="approved" THEN "review_ready" ELSE status END WHERE id=?', (article['id'],))
+    page = 1 if _keep_only_page(design['id'], texts['page']) else texts['page']
     try:
-        _export_png(article, design['id'], output_suffix=output_suffix, mark_main=store, page=texts['page'])
+        _export_png(article, design['id'], output_suffix=output_suffix, mark_main=store, page=page)
         output['exported'] = True
     except (ValueError, requests.RequestException, KeyError, OSError) as exc:
         output['export_error'] = str(exc)

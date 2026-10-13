@@ -290,3 +290,22 @@ body.editing .actions{bottom:0}
 .qthumbs figcaption{position:absolute;top:4px;left:4px;background:rgba(0,0,0,.65);color:#fff;font-size:11px;font-weight:700;padding:1px 6px;border-radius:6px}
 .qthumbs .qt-btns{display:flex;justify-content:center;gap:4px;margin-top:4px}
 .qthumbs .qt-btns button{border:0;background:#eef1f6;border-radius:6px;min-width:28px;height:28px;cursor:pointer;font-size:12px}
+.calview{margin:0 0 10px}
+.mcal{background:#fff;border-radius:var(--r-md);padding:12px;box-shadow:var(--lift)}
+.mc-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px}
+.mc-head h2{margin:0;font-size:1.1rem}
+.mc-grid{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:4px}
+.mc-wd{text-align:center;font-size:12px;color:#667}
+.mc-day{min-height:92px;border:1px solid #e6e9ef;border-radius:8px;padding:4px;display:flex;flex-direction:column;gap:3px;cursor:pointer;overflow:hidden;background:#fff}
+.mc-day.today{border-color:var(--navy,#03306a);box-shadow:inset 0 0 0 1px var(--navy,#03306a)}
+.mc-day.other{opacity:.45}
+.mc-day.past{background:#f6f7f9}
+.mc-day.over{background:#eaf1ff}
+.mc-n{font-size:12px;font-weight:700;color:#334}
+.mc-item{display:block;font-size:11px;line-height:1.25;padding:2px 4px;border-left:3px solid var(--bc,#0150FE);background:#f3f6fb;border-radius:4px;color:#111;text-decoration:none;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin:0;box-shadow:none}
+.mc-item.done{opacity:.6}
+.mc-item i{font-style:normal;font-weight:700}
+.mc-more{font-size:11px;color:#667}
+.mc-later{display:flex;flex-wrap:wrap;gap:4px;margin-top:6px}
+.mc-later .mc-item{max-width:100%}
+@media (max-width:600px){.mc-day{min-height:64px}.mc-item{font-size:10px}}

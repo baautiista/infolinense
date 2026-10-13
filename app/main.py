@@ -13,7 +13,7 @@ from . import db, sources, pipeline, publishers, photos, canva, ai, planner, lay
 from .auth import login, require_auth
 from .config import BASE_DIR, RENDER_DIR, UPLOAD_DIR, SCAN_INTERVAL_MINUTES, AUTO_PIPELINE, OPENAI_API_KEY, ADMIN_PASSWORD, JWT_SECRET, PUBLISH_MODE, CORS_ORIGINS, PUBLIC_BASE_URL, AUTO_PUBLISH
 
-VERSION='6.10.0'
+VERSION='6.11.0'
 app=FastAPI(title='InfoLinense Desk',version=VERSION)
 app.add_middleware(CORSMiddleware,allow_origins=CORS_ORIGINS,allow_credentials=False,allow_methods=['*'],allow_headers=['Authorization','Content-Type'])
 db.init_db()
@@ -438,10 +438,12 @@ async def manual_news(text:str=Form(''),title:str=Form(''),link:str=Form(''),bra
 
 @app.post('/api/quick',dependencies=[Depends(require_auth)])
 async def quick_publish(headline:str=Form(...),subtitle:str=Form(''),body:str=Form(''),section:str=Form(''),brand:str=Form('infolinense'),
-                        link:str=Form(''),at:str=Form(''),networks:str=Form(''),ready:str=Form(''),photo:UploadFile=File(...)):
+                        link:str=Form(''),at:str=Form(''),networks:str=Form(''),ready:str=Form(''),photo:UploadFile=File(...),
+                        extra:list[UploadFile]=File(default=[])):
     """Lanzadera: la redacción trae su noticia ya escrita (titular, entradilla, texto y foto). No se reescribe nada:
     se hace la imagen de Canva y se publica al momento (o a la hora indicada) en la web y en las redes del medio.
-    Con ready=1 la imagen subida ya es la definitiva (hecha en Canva por la redacción) y se publica tal cual."""
+    Con ready=1 la imagen subida ya es la definitiva (hecha en Canva por la redacción) y se publica tal cual.
+    «extra»: más imágenes (hasta 9) que van detrás de la primera como carrusel en Instagram y Facebook."""
     from uuid import uuid4
     headline=re.sub(r'\s+',' ',headline).strip(); subtitle=re.sub(r'\s+',' ',subtitle).strip(); body=(body or '').strip()
     if len(headline)<8: raise HTTPException(400,'Escribe el titular')
@@ -453,6 +455,15 @@ async def quick_publish(headline:str=Form(...),subtitle:str=Form(''),body:str=Fo
         if im.format not in ('JPEG','PNG','WEBP','MPO'): raise ValueError('formato no permitido')
         dest=UPLOAD_DIR/(uuid4().hex+'.jpg'); im.convert('RGB').save(dest,'JPEG',quality=93)
     except Exception as e: raise HTTPException(400,f'La foto no es válida ({str(e)[:80]})')
+    slides=[]
+    for i,f in enumerate([f for f in (extra if isinstance(extra,list) else []) if f is not None][:9],1):
+        raw=await f.read(25_000_001)
+        if len(raw)>25_000_000: raise HTTPException(400,f'La imagen {i+1} pesa más de 25 MB')
+        try:
+            sim=Image.open(BytesIO(raw)); sim.load()
+            if sim.format not in ('JPEG','PNG','WEBP','MPO'): raise ValueError('formato no permitido')
+        except Exception as e: raise HTTPException(400,f'La imagen {i+1} no es válida ({str(e)[:80]})')
+        slides.append(sim.convert('RGB'))
     brand=brand if brand in brands.BRANDS else brands.DEFAULT
     sec=(section or '').strip() or (layout.normalize_section('',headline+' '+subtitle) if brand==brands.DEFAULT else '')
     url=('manual:'+uuid4().hex)+('#'+link.strip()[:300] if link.strip().startswith('http') else '')
@@ -469,12 +480,18 @@ async def quick_publish(headline:str=Form(...),subtitle:str=Form(''),body:str=Fo
         final=RENDER_DIR/f'article_{aid}.png'
         im.convert('RGB').save(final,'PNG')
         db.exec_('UPDATE articles SET render_path=?,updated_at=CURRENT_TIMESTAMP WHERE id=?',(str(final),aid))
+        db.exec_("INSERT OR REPLACE INTO canva_designs(article_id,design_id,url,exported,content_hash) VALUES(?,'upload','',1,'upload')",(aid,))
     elif canva.ready() and canva.connected():
         try:
             r=canva.create_design(a)
             if not r.get('exported'): canva_msg=r.get('export_error') or 'Canva no exportó la imagen'
         except ValueError as e: canva_msg=str(e)
     else: canva_msg='Canva no está conectado'
+    if slides:  # carrusel: las demás imágenes van tal cual detrás de la primera
+        RENDER_DIR.mkdir(parents=True,exist_ok=True)
+        for i,sim in enumerate(slides,1):
+            sim.save(RENDER_DIR/f'article_{aid}_carousel_{i}.png','PNG')
+            db.exec_("INSERT OR REPLACE INTO carousel_designs(article_id,slide_index,design_id,url,exported) VALUES(?,?,'upload','',1)",(aid,i))
     nets=[n for n in (networks.split(',') if networks else []) if n] or None
     if at.strip():
         try: res=schedule_article(aid,ScheduleIn(at=at.strip(),networks=nets))

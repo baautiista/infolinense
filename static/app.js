@@ -359,6 +359,8 @@ function modeSwitch() {
 }
 document.addEventListener('change', e => { if (e.target.name === 'upmode') { upMode = e.target.value; render() } });
 let quickReady = true;
+const dropHint = () => quickReady ? 'Pulsa o arrastra las imágenes de Canva. Si subes varias, se publica como carrusel (la primera es la portada)'
+  : 'Pulsa o arrastra la foto. La primera lleva el titular; si añades más, van detrás como carrusel';
 // Lanzadera: la noticia ya escrita (titular, entradilla, texto y foto) se publica tal cual con la imagen de Canva
 function quickView(v) {
   const b0 = netBrand();
@@ -373,33 +375,47 @@ function quickView(v) {
     <label>Titular <span class="muted" id="qFit"></span><textarea name="headline" rows="2" required placeholder="Titular de la noticia"></textarea></label>
     <label>Entradilla<textarea name="subtitle" rows="2" maxlength="300" placeholder="Opcional"></textarea></label>
     <label>Texto de la noticia<textarea name="body" rows="8" placeholder="Para la web y el pie de la publicación en redes"></textarea></label>
-    <div class="drop" id="qDrop" tabindex="0" role="button" aria-label="Elegir imagen"><b id="qDropTitle">${quickReady ? 'Imagen de Canva terminada' : 'Foto'}</b><span class="muted small" id="qPhotoName">${quickReady ? 'Pulsa o arrastra aquí la imagen que has descargado de Canva' : 'Pulsa o arrastra aquí la foto de la noticia'}</span><input type="file" id="qPhoto" accept="image/jpeg,image/png,image/webp"></div>
-    <img id="qPrev" alt="" style="display:none;max-width:100%;border-radius:12px">
+    <div class="drop" id="qDrop" tabindex="0" role="button" aria-label="Elegir imagen"><b id="qDropTitle">${quickReady ? 'Imágenes de Canva terminadas' : 'Fotos'}</b><span class="muted small" id="qPhotoName">${dropHint()}</span><input type="file" id="qPhoto" accept="image/jpeg,image/png,image/webp" multiple></div>
+    <div class="qthumbs" id="qThumbs"></div>
     <details class="alts"><summary>Enlace de la fuente o publicar más tarde (opcional)</summary>
       <label>Enlace<input name="link" type="url" placeholder="https://…"></label>
       <label>Publicar el día y hora<input name="at" type="datetime-local"></label></details>
     <button class="btn primary" id="qBtn">🚀 Publicar ya</button>
     <div id="qOut"></div></form>`;
-  let file = null;
+  // Varias imágenes = carrusel: la primera es la portada; se pueden reordenar y quitar
+  let files = [];
   const input = $('#qPhoto'), drop = $('#qDrop');
-  const setFile = f => { if (!f) return; file = f; $('#qPhotoName').textContent = f.name; const img = $('#qPrev'); img.src = URL.createObjectURL(f); img.style.display = 'block' };
+  const drawThumbs = () => {
+    $('#qThumbs').innerHTML = files.map((f, i) => `<figure><img src="${f.url}" alt="Imagen ${i + 1}"><figcaption>${i === 0 ? 'Portada' : i + 1}</figcaption>
+      <div class="qt-btns">${i ? `<button type="button" data-mv="${i}" data-d="-1" aria-label="Mover a la izquierda">◀</button>` : ''}${i < files.length - 1 ? `<button type="button" data-mv="${i}" data-d="1" aria-label="Mover a la derecha">▶</button>` : ''}<button type="button" data-rm="${i}" aria-label="Quitar">✕</button></div></figure>`).join('');
+    $('#qPhotoName').textContent = files.length ? (files.length === 1 ? '1 imagen · añade más para hacer un carrusel' : `${files.length} imágenes · se publica como carrusel`) : dropHint();
+    $('#qThumbs').querySelectorAll('[data-rm]').forEach(b => b.onclick = () => { files.splice(+b.dataset.rm, 1); drawThumbs() });
+    $('#qThumbs').querySelectorAll('[data-mv]').forEach(b => b.onclick = () => { const i = +b.dataset.mv, j = i + +b.dataset.d; [files[i], files[j]] = [files[j], files[i]]; drawThumbs() });
+  };
+  const addFiles = list => {
+    const imgs = [...(list || [])].filter(f => /^image\//.test(f.type));
+    const room = 10 - files.length;
+    if (imgs.length > room) toast('Máximo 10 imágenes por carrusel');
+    files.push(...imgs.slice(0, Math.max(0, room)).map(f => ({ f, url: URL.createObjectURL(f) })));
+    drawThumbs();
+  };
   drop.onclick = () => input.click(); drop.onkeydown = e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); input.click() } };
-  input.onchange = () => setFile(input.files[0]);
+  input.onchange = () => { addFiles(input.files); input.value = '' };
   drop.ondragover = e => { e.preventDefault(); drop.classList.add('over') }; drop.ondragleave = () => drop.classList.remove('over');
-  drop.ondrop = e => { e.preventDefault(); drop.classList.remove('over'); setFile(e.dataTransfer.files[0]) };
+  drop.ondrop = e => { e.preventDefault(); drop.classList.remove('over'); addFiles(e.dataTransfer.files) };
   const brandSel = () => (document.querySelector('#qBrand input:checked') || {}).value || b0;
   if ($('#qBrand')) $('#qBrand').onchange = () => { $('#qSec').innerHTML = sectionOptions(brandSel(), '') };
   const ta = $('#qForm').headline; ta.oninput = () => { const n = lines(ta.value); $('#qFit').textContent = ta.value && !quickReady ? (n <= 4 ? `${n} ${n === 1 ? 'línea' : 'líneas'} en la imagen` : `${n} líneas: no cabe, acórtalo`) : '' };
   $('#qKind').onchange = e => {
     quickReady = e.target.value === 'ready'; ta.oninput();
-    $('#qDropTitle').textContent = quickReady ? 'Imagen de Canva terminada' : 'Foto';
-    if (!file) $('#qPhotoName').textContent = quickReady ? 'Pulsa o arrastra aquí la imagen que has descargado de Canva' : 'Pulsa o arrastra aquí la foto de la noticia';
+    $('#qDropTitle').textContent = quickReady ? 'Imágenes de Canva terminadas' : 'Fotos';
+    if (!files.length) $('#qPhotoName').textContent = dropHint();
   };
   $('#qForm').at.oninput = e => { $('#qBtn').textContent = e.target.value ? '⏰ Programar' : '🚀 Publicar ya' };
   $('#qForm').onsubmit = async e => {
     e.preventDefault();
-    if (!file) return toast(quickReady ? 'Falta la imagen' : 'Falta la foto');
-    const fd = new FormData(e.target); fd.set('brand', brandSel()); fd.append('photo', file); fd.delete('qkind'); if (quickReady) fd.set('ready', '1');
+    if (!files.length) return toast(quickReady ? 'Falta la imagen' : 'Falta la foto');
+    const fd = new FormData(e.target); fd.set('brand', brandSel()); fd.append('photo', files[0].f); files.slice(1).forEach(x => fd.append('extra', x.f)); fd.delete('qkind'); if (quickReady) fd.set('ready', '1');
     const b = $('#qBtn'); b.disabled = true; b.textContent = quickReady ? 'Publicando…' : 'Creando imagen y publicando…';
     try {
       const r = await api('/api/quick', { method: 'POST', body: fd });

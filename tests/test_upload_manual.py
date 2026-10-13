@@ -266,3 +266,45 @@ class ChatGPTExportTest(unittest.TestCase):
         self.assertIn('TITULAR:', text)
         r = main.export_chatgpt(brand='infolinense', scope='marked', download=1)
         self.assertIn('attachment', r.headers['content-disposition'])
+
+
+class LauncherCarouselTest(unittest.TestCase):
+    def test_launcher_carousel_with_ready_images(self):
+        db.init_db()
+        def img(color):
+            b = BytesIO(); Image.new('RGB', (1080, 1350), color).save(b, 'PNG'); return b.getvalue()
+        with patch.object(main.canva, 'create_design', side_effect=AssertionError('no debe usar Canva')), \
+                patch.object(main, 'publish', side_effect=lambda aid, body: {'ok': True, 'published': True, 'results': []}):
+            r = asyncio.run(main.quick_publish(headline='Carrusel de la procesión', subtitle='', body='Texto.',
+                                               section='', brand='cofrade', link='', at='', networks='', ready='1',
+                                               photo=FakeUpload('1.png', img('red')),
+                                               extra=[FakeUpload('2.png', img('green')), FakeUpload('3.png', img('blue'))]))
+        a = db.row('SELECT * FROM articles WHERE id=?', (r['id'],))
+        paths = main.social_publish.article_images(a)
+        self.assertEqual(len(paths), 3)
+        self.assertEqual(paths[0], a['render_path'])
+        self.assertTrue(paths[2].endswith('_carousel_2.png'))
+
+    def test_endpoint_accepts_several_files(self):
+        try:
+            import httpx  # noqa: F401
+        except ImportError:
+            self.skipTest('httpx no está instalado')
+        from fastapi.testclient import TestClient
+        db.init_db()
+        def img(color):
+            b = BytesIO(); Image.new('RGB', (100, 100), color).save(b, 'PNG'); return b.getvalue()
+        seen = {}
+        def fake_publish(aid, body):
+            seen['n'] = len(main.social_publish.article_images(db.row('SELECT * FROM articles WHERE id=?', (aid,))))
+            return {'ok': True, 'published': True, 'results': []}
+        main.app.dependency_overrides[main.require_auth] = lambda: None
+        try:
+            with patch.object(main, 'publish', side_effect=fake_publish):
+                res = TestClient(main.app).post('/api/quick', data={'headline': 'Titular del carrusel subido', 'body': 'Texto', 'ready': '1'},
+                                                files=[('photo', ('a.png', img('red'), 'image/png')), ('extra', ('b.png', img('blue'), 'image/png')),
+                                                       ('extra', ('c.png', img('green'), 'image/png'))])
+        finally:
+            main.app.dependency_overrides.clear()
+        self.assertEqual(res.status_code, 200, res.text)
+        self.assertEqual(seen['n'], 3)

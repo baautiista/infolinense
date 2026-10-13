@@ -475,11 +475,12 @@ def public_file(token):
 
 def article_images(article):
     """Imagen de la noticia; si hay carrusel exportado, todas sus diapositivas en orden."""
-    slides = db.rows('SELECT slide_index FROM carousel_designs WHERE article_id=? AND exported=1 ORDER BY slide_index',
+    slides = db.rows('SELECT slide_index,design_id FROM carousel_designs WHERE article_id=? AND exported=1 ORDER BY slide_index',
                      (article['id'],))
     paths = [RENDER_DIR / ('article_%s_carousel_%s.png' % (article['id'], s['slide_index'])) for s in slides]
     paths = [str(p) for p in paths if p.is_file()]
-    if len(paths) >= 2:
+    uploaded = any(s.get('design_id') == 'upload' for s in slides)  # imágenes subidas en la Lanzadera: van todas
+    if len(paths) >= 2 or (uploaded and paths):
         main = article.get('render_path') or ''
         return ([main] if main and Path(main).is_file() else []) + paths[:9]
     if article.get('render_path') and Path(article['render_path']).is_file():

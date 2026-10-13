@@ -516,6 +516,10 @@ def caption(article, limit=2200):
 
 # ---------- publicar ----------
 
+import contextvars
+_fb_page_name = contextvars.ContextVar('fb_page_name', default='')
+
+
 def _facebook(article, paths):
     """Facebook: la imagen se SUBE directamente (no se le da un enlace), así nunca falla por no poder descargarla."""
     page = _meta()
@@ -524,7 +528,9 @@ def _facebook(article, paths):
     token, pid = page['access_token'], page['id']
     message = caption(article, 60000)
     try:
-        return _facebook_post(pid, token, message, paths)
+        post_id, link = _facebook_post(pid, token, message, paths)
+        _fb_page_name.set(page.get('name') or '')
+        return post_id, link
     except SocialError as exc:
         if getattr(exc, 'code', None) in (10, 200, 190) or 'ermission' in str(exc):
             chk = facebook_check()
@@ -547,7 +553,12 @@ def _facebook_post(pid, token, message, paths):
         for i, mid in enumerate(ids):
             form['attached_media[%d]' % i] = json.dumps({'media_fbid': mid})
         post_id = _graph('POST', '/%s/feed' % pid, data=form)['id']
-    return post_id, 'https://www.facebook.com/' + str(post_id)
+    link = 'https://www.facebook.com/' + str(post_id)
+    try:  # enlace real de la publicación (para comprobar que está y en qué página)
+        link = _graph('GET', '/%s' % post_id, params={'fields': 'permalink_url', 'access_token': token}).get('permalink_url') or link
+    except SocialError:
+        pass
+    return post_id, link
 
 
 def _ig_wait(container, token, seconds=90, base=None):
@@ -690,6 +701,8 @@ def _publish(network, article):
         db.exec_('INSERT OR REPLACE INTO social_posts(article_id,network,status,message,updated_at) VALUES(?,?,?,?,CURRENT_TIMESTAMP)',
                  (article['id'], network, 'error', 'Error inesperado: %s' % str(exc)[:300]))
         return {'network': network, 'ok': False, 'message': 'Error inesperado: %s' % str(exc)[:200]}
+    if network == 'facebook' and _fb_page_name.get():
+        note = ' (página «%s»)' % _fb_page_name.get()
     message = 'Publicada en %s%s' % (NAMES[network], note)
     db.exec_('INSERT OR REPLACE INTO social_posts(article_id,network,status,remote_id,url,message,updated_at) VALUES(?,?,?,?,?,?,CURRENT_TIMESTAMP)',
              (article['id'], network, 'published', str(remote), url, message))

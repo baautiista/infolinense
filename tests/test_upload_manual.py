@@ -308,3 +308,21 @@ class LauncherCarouselTest(unittest.TestCase):
             main.app.dependency_overrides.clear()
         self.assertEqual(res.status_code, 200, res.text)
         self.assertEqual(seen['n'], 3)
+
+
+class SourceReadingTests(unittest.TestCase):
+    def test_wordpress_site_is_read_through_its_feed(self):
+        from app import sources
+        class R:
+            text = '<html><head></head><body><img src="/wp-content/uploads/x.jpg"><h5><a href="/a/">Noticia corta pero suficiente de longitud</a></h5></body></html>'
+            def raise_for_status(self): pass
+        feed_items = [{'title': 'Cultos en honor a la Estrella', 'url': 'https://www.lalineacofrade.com/cultos/', 'excerpt': 'x', 'published_at': 'Thu, 09 Oct 2026 10:00:00 +0200'}]
+        with patch.object(sources, 'fetch', return_value=R()), patch.object(sources, 'parse_rss', return_value=feed_items) as rss:
+            items = sources.parse_html({'url': 'https://www.lalineacofrade.com/'})
+        self.assertEqual(items, feed_items)
+        self.assertEqual(rss.call_args[0][0]['url'], 'https://www.lalineacofrade.com/feed/')
+
+    def test_latin_america_is_not_la_linea(self):
+        from app import sources
+        self.assertFalse(sources.place_ok('Cierre del túnel de La Línea entre Quindío y Tolima'))
+        self.assertTrue(sources.place_ok('El Ayuntamiento de La Línea aprueba los presupuestos'))

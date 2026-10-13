@@ -22,10 +22,23 @@ UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like 
 _scan_lock = threading.Lock()
 # La Línea de la Concepción (la ciudad), no «la línea 1 del metro», «línea de alta velocidad», etc.
 _CITY = re.compile(r'(La\s+L[ií]nea\s+de\s+la\s+Concepci[oó]n|\blinens[ea]s?\b|\bLa\s+L[ií]nea\b)', re.I)
-_CITY_STRONG = re.compile(r'(l[ií]nea\s+de\s+la\s+concepci[oó]n|\blinens[ea]s?\b|\batunara\b|real\s+balompédica|\bbalona\b|'
-                          r'san\s+bernardo|santa\s+margarita|\bel\s+zabal\b|junquillos)', re.I)
+_CITY_STRONG = re.compile(r'(l[ií]nea\s+de\s+la\s+concepci[oó]n|\blinens[ea]s?\b|\batunara\b|real\s+balompédica|'
+                          r'\bel\s+zabal\b|junquillos)', re.I)
+# Señales inequívocas de La Línea (ganan aunque la noticia hable también de otro país)
+_CITY_SURE = re.compile(r'l[ií]nea\s+de\s+la\s+concepci[oó]n|\blinens[ea]s?\b|campo\s+de\s+gibraltar', re.I)
+# Latinoamérica y otros países: «La Línea» allí es otra cosa (túnel de La Línea en Colombia, barrios, cerros…)
+_FOREIGN = re.compile(r'\b(colombia\w*|bogot[aá]|medell[ií]n|\bcali\b|quind[ií]o|tolima|ibagu[eé]|calarc[aá]|cajamarca|'
+                      r'cundinamarca|antioquia|barranquilla|cartagena\s+de\s+indias|m[eé]xic\w*|cdmx|jalisco|monterrey|'
+                      r'argentin\w*|buenos\s+aires|c[oó]rdoba,\s+argentina|chile\w*|santiago\s+de\s+chile|valpara[ií]so|'
+                      r'per[uú]\b|peruan\w*|venezol\w*|caracas|ecuador\w*|quito|guayaquil|bolivia\w*|uruguay\w*|montevideo|'
+                      r'paraguay\w*|guatemal\w*|hondur\w*|nicarag\w*|salvadore\w*|el\s+salvador|costa\s+rica|costarricense|panam[aá]\b|'
+                      r'paname[ñn]\w*|cuban[oa]s?|rep[uú]blica\s+dominicana|dominican[oa]s?|puerto\s+rico|'
+                      r'pesos?\s+(colombianos|mexicanos|argentinos|chilenos)|gobernaci[oó]n\s+de|invías|invias|'
+                      r't[uú]nel\s+de\s+la\s+l[ií]nea|alto\s+de\s+la\s+l[ií]nea|carabineros)', re.I)
+
 _CONTEXT = re.compile(r'(gibraltar|c[aá]diz|algeciras|san\s+roque|frontera|verja|ayuntamiento|juan\s+franco|poniente|levante|'
-                      r'alcaidesa|cruz\s+herrera|parque\s+princesa\s+sof[ií]a|feria|velada|campo\s+de\s+gibraltar)', re.I)
+                      r'alcaidesa|cruz\s+herrera|parque\s+princesa\s+sof[ií]a|feria|velada|campo\s+de\s+gibraltar|'
+                      r'san\s+bernardo|santa\s+margarita|\bbalona\b|andaluc[ií]a|junta\s+de\s+andaluc)', re.I)
 _UNRELATED = re.compile(r'\bl[ií]neas?\s+(?:\d+|[a-z]\d*\b|de\s+metro|del\s+metro|ferroviaria|de\s+tren|de\s+alta|el[eé]ctrica|a[eé]rea|editorial|'
                         r'de\s+autob[uú]s|de\s+salida|de\s+meta|de\s+cr[eé]dito|roja|telef[oó]nica|de\s+fuego|de\s+defensa|de\s+ayuda|'
                         r'de\s+flotaci[oó]n|del\s+horizonte|de\s+producci[oó]n|de\s+negocio|de\s+investigaci[oó]n|de\s+trabajo|'
@@ -148,11 +161,31 @@ def parse_rss(source):
                                                     or it.findtext('a:updated', default='', namespaces=ns))})
     return items
 
+def _feed_of(source, r, soup):
+    """Si la web tiene RSS (WordPress, Blogger…), se lee el RSS: trae todas las noticias con su fecha."""
+    feeds = [urljoin(source['url'], l.get('href', '')) for l in soup.select('link[rel=alternate][href]')
+             if 'rss' in (l.get('type') or '') or 'atom' in (l.get('type') or '')]
+    feeds = [f for f in feeds if '/comments/' not in f]
+    if not feeds and 'wp-content' in r.text:
+        feeds = [urljoin(source['url'], '/feed/')]
+    for feed in feeds[:2]:
+        try:
+            items = parse_rss({'url': feed})
+            if items:
+                return items
+        except Exception:
+            continue
+    return []
+
+
 def parse_html(source):
     r = fetch(source['url']); r.raise_for_status()
     soup = BeautifulSoup(r.text, 'html.parser')
+    items = _feed_of(source, r, soup)
+    if items:
+        return items
     for node in soup.select('nav, footer, header, aside, script, style'): node.decompose()
-    links = soup.select('article a[href], h2 a[href], h3 a[href]')
+    links = soup.select('article a[href], h2 a[href], h3 a[href], h4 a[href], h5 a[href], h6 a[href], .elementor-post__title a[href]')
     if not links: links = soup.select('main a[href]')
     items, seen = [], set()
     host = urlparse(source['url']).hostname
@@ -160,11 +193,11 @@ def parse_html(source):
         title = clean(a.get_text(' ', strip=True))
         if len(title) < 28 or len(title) > 300: continue
         link = urljoin(source['url'], a.get('href', ''))
-        if urlparse(link).scheme not in ('http', 'https') or urlparse(link).hostname != host: continue
+        if urlparse(link).scheme not in ('http', 'https') or (urlparse(link).hostname or '').removeprefix('www.') != (host or '').removeprefix('www.'): continue
         link, _ = urldefrag(link)
         if link in seen or link.rstrip('/') == source['url'].rstrip('/'): continue
         seen.add(link)
-        parent = a.find_parent(['article', 'h2', 'h3']) or a.parent
+        parent = a.find_parent(['article', 'h2', 'h3', 'h4', 'h5', 'h6']) or a.parent
         excerpt = clean(parent.get_text(' ', strip=True) if parent else title)[:900]
         items.append({'title': title, 'url': link, 'excerpt': excerpt, 'published_at': ''})
         if len(items) >= 100: break
@@ -489,9 +522,17 @@ def parse_edictos(source):
     return out
 
 
+def foreign(text):
+    """Noticia de otro país (sobre todo Latinoamérica) sin nada que la ate de verdad a La Línea de la Concepción."""
+    text = text or ''
+    return bool(_FOREIGN.search(text)) and not _CITY_SURE.search(text)
+
+
 def exact_locality(text):
     """Solo la ciudad de La Línea de la Concepción."""
     text = text or ''
+    if foreign(text):
+        return False
     if _CITY_STRONG.search(text):
         return True
     # «La Línea» a secas: con mayúscula y con contexto local, y sin ser una línea de metro, tren, etc.
@@ -513,6 +554,8 @@ def gibraltar_topic(text):
 def place_ok(text, extra=''):
     """¿Interesa a InfoLinense? Solo La Línea; de Gibraltar, lo que afecta (rellenos, obras, eventos, elecciones, frontera)."""
     text = text or ''
+    if foreign(text):
+        return False
     if exact_locality(text):
         return True
     if re.search(r'\bLa\s+L[ií]nea\b', text) and not _UNRELATED.search(text):
@@ -856,6 +899,8 @@ def add_candidate(title, url, excerpt, source_name, source_id=None, published_at
                 return None  # comarcal sin nada de La Línea, o de otro municipio
             local_angle = ('ENFOQUE LA LÍNEA: es una noticia comarcal; el titular y la entradilla se centran en lo que toca a '
                            'La Línea y el resto va después en el texto. Dato de La Línea: ' + angle)
+    if not source_meta.get('local_scope') and foreign(title + ' ' + excerpt[:600]):
+        return None  # otro país (p. ej. Semana Santa de Latinoamérica)
     own_brand = (source_meta.get('brand') or 'infolinense') != 'infolinense' and source_meta.get('local_scope')
     if not own_brand and _OTHER_TOWNS.search(title) and not exact_locality(title) and not gibraltar_topic(title) and not local_angle.startswith('ENFOQUE'):
         return None  # titular de otro municipio (Algeciras, San Roque…) sin nada de La Línea
@@ -971,9 +1016,25 @@ def read_source(source, remember_state=True):
         parts = (target.path or '/').strip('/').split('/')
         account = '/'.join(parts[:2]) if parts[0] == 'groups' else parts[0]
         if not account: raise ValueError('Indica el nombre de la página o grupo')
-        query = f'site:{host}/{account} "La Línea de la Concepción" when:7d'
-        feed = 'https://news.google.com/rss/search?q=' + quote(query) + '&hl=es&gl=ES&ceid=ES:es'
-        return parse_rss({'url': feed})  # Coverage depends on public search indexing.
+        # Facebook no deja leer páginas sin permiso de Meta: se usa lo que los buscadores tienen indexado de la página
+        from . import social
+        if account == 'profile.php':  # páginas sin nombre: se busca por el nombre de la fuente
+            query = 'site:facebook.com "%s" "La Línea"' % re.sub(r'\s*\(.*?\)|\s*·.*', '', source.get('name') or '')
+        else:
+            query = f'site:{host}/{account}'
+        items = []
+        for it in social.web_search(query, days=7, limit=15):
+            if not re.search(r'facebook\.com|instagram\.com', it.get('url') or ''):
+                continue
+            items.append({'title': it.get('title') or '', 'url': it['url'], 'excerpt': it.get('snippet') or it.get('title') or '',
+                          'published_at': parse_es_date(it.get('snippet', '')) or parse_es_date(it.get('title', ''))})
+        if not items:  # plan B: Google News
+            feed = 'https://news.google.com/rss/search?q=' + quote(f'site:{host}/{account} when:7d') + '&hl=es&gl=ES&ceid=ES:es'
+            try:
+                items = parse_rss({'url': feed})
+            except Exception:
+                items = []
+        return items
     raise ValueError('Tipo de fuente no soportado')
 
 
@@ -985,7 +1046,7 @@ def search_news(query):
 
     # Primero se busca con el municipio explícito. Si no llega ninguna noticia
     # nueva, se amplía la consulta y add_candidate aplica el filtro de localidad.
-    variants = [f'{query} "La Línea" when:30d', f'{query} when:30d']
+    variants = [f'{query} "La Línea de la Concepción" when:30d', f'{query} "La Línea" (Cádiz OR Gibraltar OR linense) when:30d']
     seen = 0
     errors = []
     for index, term in enumerate(variants):
@@ -1191,6 +1252,9 @@ def archive_off_topic():
                         WHERE c.status IN ('new','researched','needs_config') AND c.editorial_priority IN ('undecided','')
                         AND c.social_type IS NULL"""):
         title, excerpt = r['title'] or '', r['excerpt'] or ''
+        if not r.get('local_scope') and foreign(title + ' ' + excerpt[:600]):
+            db.exec_("UPDATE candidates SET status='archived',reason='Fuera de La Línea' WHERE id=?", (r['id'],)); n += 1
+            continue
         if str(r.get('local_angle') or '').startswith('ENFOQUE') or (r.get('brand') or 'infolinense') != 'infolinense':
             continue  # comarcal con dato de La Línea comprobado, o de Cofrade/Carnaval
         tender = bool(_TENDER.search(title))

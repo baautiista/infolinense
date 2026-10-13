@@ -194,3 +194,12 @@ class FacebookUploadTests(SocialPublishTests):
             r = sp.publish('instagram', self.article)
         self.assertTrue(r['ok'], r)
         self.assertEqual(n['media'], 2)
+
+
+class JpegSizeTests(unittest.TestCase):
+    def test_big_image_is_reduced_for_instagram(self):
+        from io import BytesIO
+        big = RENDER_DIR / 'big.png'; RENDER_DIR.mkdir(parents=True, exist_ok=True)
+        Image.new('RGB', (4320, 5400), 'red').save(big)
+        with Image.open(BytesIO(sp.jpeg_bytes(big))) as im:
+            self.assertEqual(im.size, (1440, 1800))

@@ -13,7 +13,7 @@ from . import db, sources, pipeline, publishers, photos, canva, ai, planner, lay
 from .auth import login, require_auth
 from .config import BASE_DIR, RENDER_DIR, UPLOAD_DIR, SCAN_INTERVAL_MINUTES, AUTO_PIPELINE, OPENAI_API_KEY, ADMIN_PASSWORD, JWT_SECRET, PUBLISH_MODE, CORS_ORIGINS, PUBLIC_BASE_URL, AUTO_PUBLISH
 
-VERSION='6.11.1'
+VERSION='6.11.2'
 app=FastAPI(title='InfoLinense Desk',version=VERSION)
 app.add_middleware(CORSMiddleware,allow_origins=CORS_ORIGINS,allow_credentials=False,allow_methods=['*'],allow_headers=['Authorization','Content-Type'])
 db.init_db()
@@ -436,6 +436,11 @@ async def manual_news(text:str=Form(''),title:str=Form(''),link:str=Form(''),bra
     db.log('manual',f'Noticia subida por la redacción: {first[:80]}')
     return {'ok':True,'id':cid,'title':first,'chars':len(body),'photo':bool(photo)}
 
+def _fit_width(im,width):
+    """Reduce la imagen a ese ancho como mucho (las redes publican a 1080 px)."""
+    from PIL import Image as _I
+    return im.resize((width,round(im.height*width/im.width)),_I.LANCZOS) if im.width>width else im
+
 @app.post('/api/quick',dependencies=[Depends(require_auth)])
 async def quick_publish(headline:str=Form(...),subtitle:str=Form(''),body:str=Form(''),section:str=Form(''),brand:str=Form('infolinense'),
                         link:str=Form(''),at:str=Form(''),networks:str=Form(''),ready:str=Form(''),photo:UploadFile=File(...),
@@ -453,7 +458,8 @@ async def quick_publish(headline:str=Form(...),subtitle:str=Form(''),body:str=Fo
         from PIL import Image
         im=Image.open(BytesIO(data)); im.load()
         if im.format not in ('JPEG','PNG','WEBP','MPO'): raise ValueError('formato no permitido')
-        dest=UPLOAD_DIR/(uuid4().hex+'.jpg'); im.convert('RGB').save(dest,'JPEG',quality=93)
+        im=_fit_width(im.convert('RGB'),1600)  # las imágenes enormes (p. ej. Canva a 2x o 4x) hacen fallar la web e Instagram
+        dest=UPLOAD_DIR/(uuid4().hex+'.jpg'); im.save(dest,'JPEG',quality=90)
     except Exception as e: raise HTTPException(400,f'La foto no es válida ({str(e)[:80]})')
     slides=[]
     for i,f in enumerate([f for f in (extra if isinstance(extra,list) else []) if f is not None][:9],1):
@@ -463,7 +469,7 @@ async def quick_publish(headline:str=Form(...),subtitle:str=Form(''),body:str=Fo
             sim=Image.open(BytesIO(raw)); sim.load()
             if sim.format not in ('JPEG','PNG','WEBP','MPO'): raise ValueError('formato no permitido')
         except Exception as e: raise HTTPException(400,f'La imagen {i+1} no es válida ({str(e)[:80]})')
-        slides.append(sim.convert('RGB'))
+        slides.append(_fit_width(sim.convert('RGB'),1080))
     brand=brand if brand in brands.BRANDS else brands.DEFAULT
     sec=(section or '').strip() or (layout.normalize_section('',headline+' '+subtitle) if brand==brands.DEFAULT else '')
     url=('manual:'+uuid4().hex)+('#'+link.strip()[:300] if link.strip().startswith('http') else '')
@@ -478,7 +484,7 @@ async def quick_publish(headline:str=Form(...),subtitle:str=Form(''),body:str=Fo
     if isinstance(ready,str) and ready.strip().lower() in ('1','true','si','sí','on'):
         RENDER_DIR.mkdir(parents=True,exist_ok=True)
         final=RENDER_DIR/f'article_{aid}.png'
-        im.convert('RGB').save(final,'PNG')
+        _fit_width(im,1080).save(final,'PNG',optimize=True)
         db.exec_('UPDATE articles SET render_path=?,updated_at=CURRENT_TIMESTAMP WHERE id=?',(str(final),aid))
         db.exec_("INSERT OR REPLACE INTO canva_designs(article_id,design_id,url,exported,content_hash) VALUES(?,'upload','',1,'upload')",(aid,))
     elif canva.ready() and canva.connected():

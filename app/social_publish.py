@@ -448,11 +448,18 @@ TIKTOK_ERRORS = {
 
 # ---------- imágenes públicas para las redes ----------
 
-def jpeg_bytes(path):
-    """La imagen en JPG (lo que aceptan todas las redes)."""
+def jpeg_bytes(path, max_width=1440, max_bytes=7_500_000):
+    """La imagen en JPG (lo que aceptan todas las redes): como mucho 1440 px de ancho (el máximo de Instagram)
+    y menos de 8 MB (si no, Instagram no la descarga)."""
     with Image.open(path) as im:
-        buf = BytesIO()
-        im.convert('RGB').save(buf, 'JPEG', quality=92)
+        im = im.convert('RGB')
+        if im.width > max_width:
+            im = im.resize((max_width, round(im.height * max_width / im.width)), Image.LANCZOS)
+        for q in (92, 85, 78, 70):
+            buf = BytesIO()
+            im.save(buf, 'JPEG', quality=q, optimize=True)
+            if buf.tell() <= max_bytes:
+                break
     return buf.getvalue()
 
 

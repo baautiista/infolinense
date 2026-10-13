@@ -13,6 +13,24 @@ def slugify(text):
     return re.sub(r'[^a-z0-9]+', '-', text).strip('-')[:90] or 'noticia'
 
 
+def _b64_image(path, fmt, width, limit=2_500_000):
+    """Imagen en base64 para la web; si es muy grande se reduce (las enormes hacen fallar el guardado en la web)."""
+    if not path.is_file():
+        return None
+    raw = path.read_bytes()
+    if len(raw) > limit:
+        from io import BytesIO
+        from PIL import Image
+        with Image.open(path) as im:
+            im = im.convert('RGB')
+            if im.width > width:
+                im = im.resize((width, round(im.height * width / im.width)), Image.LANCZOS)
+            buf = BytesIO()
+            im.save(buf, fmt, **({'quality': 85, 'optimize': True} if fmt == 'JPEG' else {'optimize': True}))
+            raw = buf.getvalue()
+    return base64.b64encode(raw).decode()
+
+
 def web_payload(article):
     """Noticia lista para la web de InfoLinense (Lovable)."""
     family = layout.family_for(article.get('section'), article.get('headline'))
@@ -32,9 +50,9 @@ def web_payload(article):
         'source_url': article.get('source_url') or '',
         'source_name': article.get('outlet') or article.get('source_name') or '',
         'sources': [x for x in sources if isinstance(x, dict) and x.get('url')],
-        'image_base64': base64.b64encode(photo.read_bytes()).decode() if photo.is_file() else None,
+        'image_base64': _b64_image(photo, 'JPEG', 1600),
         'image_content_type': 'image/jpeg',
-        'social_image_base64': base64.b64encode(card.read_bytes()).decode() if card.is_file() else None,
+        'social_image_base64': _b64_image(card, 'PNG', 1080),
         'published_at': __import__('datetime').datetime.now(__import__('datetime').timezone.utc).isoformat(timespec='seconds'),
         'status': 'published',
     }
@@ -86,7 +104,9 @@ def publish(article):
         if slug != brands.DEFAULT:
             payload['section'] = (article.get('section') or '').upper()
         r = requests.post(cfg['webhook_url'], json=payload, headers=h, timeout=60)
-        if not r.ok: raise RuntimeError('La web de %s respondió HTTP %s: %s' % (name, r.status_code, r.text[:200]))
+        if not r.ok:
+            size = len(json.dumps(payload)) / 1_000_000
+            raise RuntimeError('La web de %s respondió HTTP %s: %s (envío de %.1f MB)' % (name, r.status_code, r.text[:200], size))
         try: d = r.json()
         except Exception: d = {}
         return d.get('url') or d.get('public_url') or ''

@@ -567,6 +567,16 @@ def _fetch_failed(exc):
     return 'could not be fetched' in str(exc) or 'no se pudo' in str(exc).lower() or getattr(exc, 'subcode', None) in (2207052, 2207003)
 
 
+def _self_check(url):
+    """Qué ve alguien de fuera al abrir la imagen pública (para saber por qué Meta no la descarga)."""
+    try:
+        r = requests.get(url, timeout=20)
+        kind = r.headers.get('content-type', '')
+        return 'la dirección responde %s, %s, %d KB' % (r.status_code, kind or 'sin tipo', len(r.content) // 1000)
+    except requests.RequestException as e:
+        return 'la dirección no responde: %s' % str(e)[:80]
+
+
 def _ig_media(ig, base, data, tries=3):
     """Crea el contenedor de Instagram. Si Meta no pudo descargar la imagen (p. ej. justo mientras se actualiza el panel),
     comprueba que la URL responde y lo reintenta."""
@@ -576,8 +586,8 @@ def _ig_media(ig, base, data, tries=3):
         except SocialError as exc:
             if not _fetch_failed(exc) or attempt == tries - 1:
                 if _fetch_failed(exc):
-                    raise SocialError('Instagram no pudo descargar la imagen desde el panel. Vuelve a pulsar «Publicar» en un minuto '
-                                      '(suele pasar si el panel se estaba actualizando).')
+                    raise SocialError('Instagram no pudo descargar la imagen desde el panel (%s). Vuelve a pulsar «Publicar» en un minuto.'
+                                      % _self_check(data['image_url']))
                 raise
             time.sleep(6 * (attempt + 1))
             try:

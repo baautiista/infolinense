@@ -41,7 +41,9 @@ def web_payload(article):
     paragraphs = [p.strip() for p in (article.get('body') or '').split('\n') if p.strip()]
     return {
         'external_id': 'desk-%s' % article['id'],
-        'slug': slugify(article.get('headline')) + '-%s' % article['id'],
+        # la web recorta el slug a 80 caracteres: el número de la noticia tiene que caber o dos noticias con el mismo
+        # titular chocan («No se pudo guardar la noticia»)
+        'slug': slugify(article.get('headline'))[:68].strip('-') + '-%s' % article['id'],
         'title': article.get('headline') or '',
         'subtitle': article.get('subtitle') or '',
         'body': article.get('body') or '',

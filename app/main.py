@@ -14,7 +14,7 @@ from .auth import login, require_auth
 from starlette.concurrency import run_in_threadpool
 from .config import BASE_DIR, RENDER_DIR, UPLOAD_DIR, SCAN_INTERVAL_MINUTES, AUTO_PIPELINE, OPENAI_API_KEY, ADMIN_PASSWORD, JWT_SECRET, PUBLISH_MODE, CORS_ORIGINS, PUBLIC_BASE_URL, AUTO_PUBLISH
 
-VERSION='6.11.5'
+VERSION='6.11.6'
 app=FastAPI(title='InfoLinense Desk',version=VERSION)
 app.add_middleware(CORSMiddleware,allow_origins=CORS_ORIGINS,allow_credentials=False,allow_methods=['*'],allow_headers=['Authorization','Content-Type'])
 db.init_db()
@@ -1083,6 +1083,45 @@ def legal_privacy(): return FileResponse(BASE_DIR/'static'/'legal'/'privacidad.h
 def legal_delete(): return FileResponse(BASE_DIR/'static'/'legal'/'eliminar-datos.html',media_type='text/html')
 @app.get('/terminos')
 def legal_terms(): return FileResponse(BASE_DIR/'static'/'legal'/'terminos.html',media_type='text/html')
+
+_LEGAL_CSS='body{font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;max-width:760px;margin:0 auto;padding:32px 18px;line-height:1.6;color:#1b1f24;background:#fff}h1{font-size:1.6rem}h2{font-size:1.15rem;margin-top:1.6em}a{color:#0150FE}'
+
+@app.get('/privacidad',include_in_schema=False)
+def privacy_policy():
+    """Política de privacidad pública (la pide Meta para publicar la app que conecta las páginas)."""
+    from fastapi.responses import HTMLResponse
+    return HTMLResponse(f"""<!doctype html><html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Política de privacidad · InfoLinense</title><style>{_LEGAL_CSS}</style></head><body>
+<h1>Política de privacidad</h1>
+<p>Esta política explica cómo la herramienta de redacción de <b>InfoLinense</b>, <b>El Cofrade Linense</b> y <b>Carnavalinense</b> (medios de La Línea de la Concepción, Cádiz) trata los datos cuando se conecta a Facebook e Instagram.</p>
+<h2>Para qué sirve la aplicación</h2>
+<p>Es una herramienta interna de la redacción. Solo publica noticias, con su imagen y su texto, en las páginas de Facebook y cuentas de Instagram de estos medios, siempre que una persona de la redacción lo ordena.</p>
+<h2>Qué datos usamos</h2>
+<ul><li>El identificador y el nombre de las páginas de Facebook y cuentas de Instagram que administra la redacción.</li>
+<li>El permiso de acceso (token) que Facebook entrega al conectar la página, necesario para publicar en ella.</li></ul>
+<p>No recogemos datos de seguidores, lectores ni de ninguna otra persona. No leemos mensajes ni comentarios.</p>
+<h2>Cómo los guardamos</h2>
+<p>Los datos se guardan cifrados en tránsito y solo en nuestro servidor. No se venden ni se ceden a terceros y no se usan para publicidad.</p>
+<h2>Cuánto tiempo</h2>
+<p>Mientras la página siga conectada. Si se retira el permiso en Facebook deja de funcionar al momento, y borramos la copia guardada cuando nos lo pidas.</p>
+<h2>Borrar tus datos</h2>
+<p>Consulta las <a href="/eliminar-datos">instrucciones para eliminar los datos</a>.</p>
+<h2>Contacto</h2>
+<p>Para cualquier consulta sobre privacidad escribe a la redacción a través de <a href="https://infolinense.com/contacto">infolinense.com/contacto</a>.</p>
+<p><small>Última actualización: 13 de octubre de 2026.</small></p></body></html>""")
+
+@app.get('/eliminar-datos',include_in_schema=False)
+def data_deletion():
+    """Instrucciones para eliminar los datos (las pide Meta)."""
+    from fastapi.responses import HTMLResponse
+    return HTMLResponse(f"""<!doctype html><html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Eliminar datos · InfoLinense</title><style>{_LEGAL_CSS}</style></head><body>
+<h1>Cómo eliminar tus datos</h1>
+<p>La herramienta de InfoLinense solo guarda el nombre, el identificador y el permiso de publicación de las páginas de Facebook e Instagram que conecta la propia redacción.</p>
+<ol><li>En Facebook, entra en <b>Configuración y privacidad → Configuración → Integraciones empresariales</b> (o «Apps y sitios web»).</li>
+<li>Busca la app de InfoLinense y pulsa <b>Eliminar</b>. El permiso deja de funcionar al momento.</li>
+<li>Si quieres que borremos también la copia guardada, escríbenos desde <a href="https://infolinense.com/contacto">infolinense.com/contacto</a> y la eliminamos en un máximo de 30 días.</li></ol>
+<p><a href="/privacidad">Política de privacidad</a></p></body></html>""")
 
 @app.get('/p/{name}')
 def public_media(name:str):

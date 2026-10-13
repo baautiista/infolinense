@@ -326,3 +326,14 @@ class SourceReadingTests(unittest.TestCase):
         from app import sources
         self.assertFalse(sources.place_ok('Cierre del túnel de La Línea entre Quindío y Tolima'))
         self.assertTrue(sources.place_ok('El Ayuntamiento de La Línea aprueba los presupuestos'))
+
+
+class AyuntamientoTests(unittest.TestCase):
+    def test_official_feed_reads_extra_pages(self):
+        from app import sources
+        pages = {'https://lalinea.es/feed/': [{'url': 'u%d' % i, 'title': 't'} for i in range(10)],
+                 'https://lalinea.es/feed/?paged=2': [{'url': 'v%d' % i, 'title': 't'} for i in range(10)],
+                 'https://lalinea.es/feed/?paged=3': []}
+        with patch.object(sources, 'parse_rss', side_effect=lambda s: pages[s['url']]):
+            items = sources.read_source({'url': 'https://lalinea.es/feed/', 'kind': 'rss', 'official': 1})
+        self.assertEqual(len(items), 20)

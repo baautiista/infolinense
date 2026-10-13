@@ -606,7 +606,7 @@ def _open_tender_deadline(title, excerpt, now=None):
     return bool(date and _deadline_open(date.group(1), now))
 
 # Días que una pieza sigue siendo actual según su bloque
-WINDOW_DAYS = {'Licitaciones y edictos': 20, 'Ayuntamiento': 3}
+WINDOW_DAYS = {'Licitaciones y edictos': 20, 'Ayuntamiento': 7}
 
 
 def recent_enough(value, days=None):
@@ -902,7 +902,7 @@ def add_candidate(title, url, excerpt, source_name, source_id=None, published_at
     if not source_meta.get('local_scope') and foreign(title + ' ' + excerpt[:600]):
         return None  # otro país (p. ej. Semana Santa de Latinoamérica)
     own_brand = (source_meta.get('brand') or 'infolinense') != 'infolinense' and source_meta.get('local_scope')
-    if not own_brand and _OTHER_TOWNS.search(title) and not exact_locality(title) and not gibraltar_topic(title) and not local_angle.startswith('ENFOQUE'):
+    if not own_brand and not (source_meta.get('local_scope') and source_meta.get('official')) and _OTHER_TOWNS.search(title) and not exact_locality(title) and not gibraltar_topic(title) and not local_angle.startswith('ENFOQUE'):
         return None  # titular de otro municipio (Algeciras, San Roque…) sin nada de La Línea
     if url and (db.row('SELECT 1 FROM candidates WHERE url=?', (url,)) or db.row('SELECT 1 FROM candidate_links WHERE url=?', (url,))):
         return None
@@ -1003,6 +1003,20 @@ def read_source(source, remember_state=True):
             items = parse_rss(source)
         except ET.ParseError:
             return parse_html(source)  # se añadió como RSS pero es una página web normal
+        url = source.get('url') or ''
+        if items and source.get('official') and re.search(r'/feed/?$', url):
+            # RSS de WordPress oficial (lalinea.es): solo da las 10 últimas; se leen también las páginas 2 y 3 para no perder ninguna
+            seen = {i.get('url') for i in items}
+            for page in (2, 3):
+                try:
+                    more = parse_rss(dict(source, url=url.rstrip('/') + '/?paged=%d' % page))
+                except Exception:
+                    break
+                more = [i for i in more if i.get('url') not in seen]
+                if not more:
+                    break
+                seen.update(i.get('url') for i in more)
+                items += more
         return items or parse_html(source)
     if source['kind'] == 'bop': return parse_bop(source)
     if source['kind'] == 'procurement': return parse_procurement(source)
@@ -1256,7 +1270,7 @@ def auto_ayto(ids):
 def archive_off_topic():
     """Retira del radar lo que no es de La Línea (ni de Gibraltar con interés) y nadie ha marcado."""
     n = 0
-    for r in db.rows("""SELECT c.id,c.title,c.excerpt,c.source_name,c.local_angle,c.brand,s.local_scope FROM candidates c LEFT JOIN sources s ON s.id=c.source_id
+    for r in db.rows("""SELECT c.id,c.title,c.excerpt,c.source_name,c.local_angle,c.brand,s.local_scope,s.official FROM candidates c LEFT JOIN sources s ON s.id=c.source_id
                         WHERE c.status IN ('new','researched','needs_config') AND c.editorial_priority IN ('undecided','')
                         AND c.social_type IS NULL"""):
         title, excerpt = r['title'] or '', r['excerpt'] or ''
@@ -1265,6 +1279,8 @@ def archive_off_topic():
             continue
         if str(r.get('local_angle') or '').startswith('ENFOQUE') or (r.get('brand') or 'infolinense') != 'infolinense':
             continue  # comarcal con dato de La Línea comprobado, o de Cofrade/Carnaval
+        if r.get('local_scope') and r.get('official'):
+            continue  # fuentes oficiales de La Línea (Ayuntamiento): todo lo suyo se queda
         tender = bool(_TENDER.search(title))
         bad = (_OTHER_TOWNS.search(title) and not exact_locality(title) and not gibraltar_topic(title))
         if not r.get('local_scope'):

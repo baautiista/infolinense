@@ -223,3 +223,22 @@ class InstagramFallbackTests(SocialPublishTests):
             r = sp.publish('instagram', self.article)
         self.assertTrue(r['ok'], r)
         self.assertEqual(used[-1], 'https://scontent.fbcdn.net/x.jpg')
+
+
+class ManagedPageTests(SocialPublishTests):
+    def test_reads_posts_of_a_page_you_manage(self):
+        sp._save_account('meta', {'pages': [{'id': '555', 'name': 'Hermandad del Silencio', 'access_token': 'PT'}],
+                                  'page': {'id': 'PAGE', 'name': 'InfoLinense', 'access_token': 'TOK'}})
+        sp._page_usernames.clear()
+        def fake(method, url, timeout=60, **kw):
+            if url.endswith('/555'): return Resp({'username': 'SilencioLaLinea'})
+            if url.endswith('/555/posts'):
+                return Resp({'data': [{'message': 'Solemne triduo en honor a Nuestra Señora de la Esperanza. Os esperamos.',
+                                       'created_time': '2026-10-12T18:00:00+0000', 'permalink_url': 'https://facebook.com/p/1'}]})
+            return Resp({})
+        with patch.object(sp.requests, 'request', side_effect=fake):
+            items = sp.page_posts_for('https://www.facebook.com/SilencioLaLinea')
+            none = sp.page_posts_for('https://www.facebook.com/otrapagina')
+        self.assertEqual(len(items), 1)
+        self.assertTrue(items[0]['title'].startswith('Solemne triduo'))
+        self.assertIsNone(none)

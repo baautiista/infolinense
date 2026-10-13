@@ -1016,7 +1016,15 @@ def read_source(source, remember_state=True):
         parts = (target.path or '/').strip('/').split('/')
         account = '/'.join(parts[:2]) if parts[0] == 'groups' else parts[0]
         if not account: raise ValueError('Indica el nombre de la página o grupo')
-        # Facebook no deja leer páginas sin permiso de Meta: se usa lo que los buscadores tienen indexado de la página
+        # 1) Si la hermandad te ha dado acceso a su página, se leen sus publicaciones directamente de Facebook (todas)
+        from . import social_publish
+        try:
+            direct = social_publish.page_posts_for(source['url'], source.get('name') or '')
+        except Exception:
+            direct = None
+        if direct is not None:
+            return direct
+        # 2) Sin acceso, Facebook no deja leer la página: se usa lo que los buscadores tienen indexado
         from . import social
         if account == 'profile.php':  # páginas sin nombre: se busca por el nombre de la fuente
             query = 'site:facebook.com "%s" "La Línea"' % re.sub(r'\s*\(.*?\)|\s*·.*', '', source.get('name') or '')

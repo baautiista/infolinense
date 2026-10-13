@@ -1,3 +1,4 @@
+from datetime import datetime, timezone
 import asyncio
 import os
 import tempfile
@@ -337,3 +338,24 @@ class AyuntamientoTests(unittest.TestCase):
         with patch.object(sources, 'parse_rss', side_effect=lambda s: pages[s['url']]):
             items = sources.read_source({'url': 'https://lalinea.es/feed/', 'kind': 'rss', 'official': 1})
         self.assertEqual(len(items), 20)
+
+    def test_pasted_link_brings_back_merged_news(self):
+        from app import sources
+        db.init_db()
+        cid = db.exec_("INSERT INTO candidates(source_name,title,url,status) VALUES('Ayto','Récord en el Salón Manga','https://lalinea.es/manga/','merged')")
+        r = sources.search_news('https://lalinea.es/manga/')
+        self.assertEqual(r['added'], 1)
+        self.assertIn('unida a otra tarjeta', r['note'])
+        self.assertEqual(db.row('SELECT status FROM candidates WHERE id=?', (cid,))['status'], 'new')
+
+    def test_official_news_is_not_merged_into_other_media(self):
+        from app import sources
+        db.init_db()
+        other = sources.add_candidate('Récord de asistencia en el XIV Salón Manga y ComicCon de La Línea', 'https://medio.es/manga',
+                                      'Más de 3.000 personas en La Línea', 'Medio', None, datetime.now(timezone.utc).isoformat(),
+                                      {'priority': 60, 'official': 0, 'local_scope': 1})
+        mine = sources.add_candidate('El XIV Salón Manga y ComicCon superó los 3.000 asistentes con récord de asistencia',
+                                     'https://lalinea.es/manga2/', 'Récord en La Línea', 'Ayuntamiento de La Línea', None,
+                                     datetime.now(timezone.utc).isoformat(), {'priority': 100, 'official': 1, 'local_scope': 1})
+        self.assertIsNotNone(other)
+        self.assertIsNotNone(mine)

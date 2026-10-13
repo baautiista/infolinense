@@ -846,8 +846,10 @@ def links_for(ids):
 def merge_duplicates(days=7):
     """Une en una sola tarjeta las noticias del radar que son la misma historia contada por distintas fuentes."""
     since = (datetime.now(timezone.utc) - timedelta(days=days)).strftime('%Y-%m-%d %H:%M:%S')
-    rows = db.rows("""SELECT c.*,(SELECT id FROM articles a WHERE a.candidate_id=c.id AND a.status!='rejected') article_id
-                      FROM candidates c WHERE c.status NOT IN ('archived','rejected','merged') AND c.created_at>=? ORDER BY c.id""", (since,))
+    rows = db.rows("""SELECT c.*,(SELECT id FROM articles a WHERE a.candidate_id=c.id AND a.status!='rejected') article_id,
+                             COALESCE(s.official,0) AND COALESCE(s.local_scope,0) official_local
+                      FROM candidates c LEFT JOIN sources s ON s.id=c.source_id
+                      WHERE c.status NOT IN ('archived','rejected','merged') AND c.created_at>=? ORDER BY c.id""", (since,))
     rows = [r for r in rows if not _TENDER.search(r['title'] or '') and r.get('social_type') in (None, '')]
     rank = lambda r: (1 if r.get('article_id') else 0, 1 if (r.get('editorial_priority') or 'undecided') not in ('undecided', '') else 0, -r['id'])
     gone, merged = set(), 0
@@ -856,7 +858,9 @@ def merge_duplicates(days=7):
         for b in rows[i + 1:]:
             if b['id'] in gone or not story_match(a['title'], a.get('excerpt'), b['title'], b.get('excerpt')): continue
             keep, drop = (a, b) if rank(a) >= rank(b) else (b, a)
-            if drop.get('article_id') or drop['status'] not in ('new', 'needs_config', 'researched'):
+            if drop.get('official_local') and not keep.get('official_local'):
+                keep, drop = drop, keep  # la del Ayuntamiento manda; la del otro medio se une a ella
+            if drop.get('official_local') or drop.get('article_id') or drop['status'] not in ('new', 'needs_config', 'researched'):
                 continue  # algo ya en redacción no se toca
             attach_link(keep['id'], drop['title'], drop['url'], drop.get('excerpt') or '', drop.get('source_name') or '',
                         drop.get('outlet') or '', drop.get('published_at') or '')
@@ -906,12 +910,13 @@ def add_candidate(title, url, excerpt, source_name, source_id=None, published_at
         return None  # titular de otro municipio (Algeciras, San Roque…) sin nada de La Línea
     if url and (db.row('SELECT 1 FROM candidates WHERE url=?', (url,)) or db.row('SELECT 1 FROM candidate_links WHERE url=?', (url,))):
         return None
-    if similar_to_published(title): return None
-    same = find_tender(title) if tender else find_story(title, excerpt=excerpt)
+    if similar_to_published(title) and not (source_meta.get('official') and source_meta.get('local_scope')): return None
+    official_local = bool(source_meta.get('official') and source_meta.get('local_scope'))
+    same = None if official_local else (find_tender(title) if tender else find_story(title, excerpt=excerpt))
     if same:  # la misma noticia desde otra fuente: se une a la que ya hay
         attach_link(same, title, url, excerpt, source_name, outlet, published_at)
         return None
-    if is_duplicate(title, url): return None
+    if not official_local and is_duplicate(title, url): return None
     score = heuristic_score(title, excerpt + ' ' + local_angle, source_meta)
     if tender:
         score = min(100, score + 30)  # licitaciones y edictos, prioridad alta
@@ -1060,8 +1065,44 @@ def read_source(source, remember_state=True):
     raise ValueError('Tipo de fuente no soportado')
 
 
+def add_by_url(url):
+    """Pegar un enlace en el buscador: dice dónde está esa noticia en el panel y, si no está, la añade."""
+    url = url.strip()
+    row = db.row('SELECT id,title,status,reason,merged_into FROM candidates WHERE url=?', (url,))
+    if row:
+        if row['status'] in ('merged', 'archived'):
+            why = 'estaba unida a otra tarjeta' if row['status'] == 'merged' else 'estaba retirada (%s)' % (row.get('reason') or 'antigua o descartada')
+            db.exec_("UPDATE candidates SET status='new',merged_into=NULL,reason=NULL,editorial_priority='undecided' WHERE id=?", (row['id'],))
+            return {'query': url, 'seen': 1, 'added': 1, 'candidate_ids': [row['id']], 'note': 'La noticia %s; ya está otra vez en Ordenar.' % why}
+        return {'query': url, 'seen': 1, 'added': 0, 'candidate_ids': [],
+                'note': 'Ya estaba en el panel (%s): «%s».' % ({'new': 'en Ordenar', 'review_ready': 'en Redacción o Revisar',
+                                                               'published': 'publicada'}.get(row['status'], row['status']), row['title'][:90])}
+    link = db.row('SELECT c.id,c.title FROM candidate_links l JOIN candidates c ON c.id=l.candidate_id WHERE l.url=?', (url,))
+    if link:
+        return {'query': url, 'seen': 1, 'added': 0, 'candidate_ids': [],
+                'note': 'Está dentro de la tarjeta «%s» (la misma noticia contada por otro medio).' % link['title'][:90]}
+    r = fetch(url, timeout=25); r.raise_for_status()
+    soup = BeautifulSoup(r.text, 'html.parser')
+    meta = lambda *names: next((m.get('content') for n in names for m in soup.select('meta[property="%s"], meta[name="%s"]' % (n, n)) if m.get('content')), '')
+    title = clean(meta('og:title') or (soup.title.get_text() if soup.title else ''))
+    title = re.sub(r'\s+[-–|]\s+[^-–|]{3,40}$', '', title)
+    excerpt = clean(meta('og:description', 'description'))
+    published = meta('article:published_time', 'og:published_time') or page_date(url) or datetime.now(timezone.utc).isoformat()
+    host = (urlparse(url).hostname or '').removeprefix('www.')
+    src = db.row("SELECT * FROM sources WHERE url LIKE ? AND active=1 ORDER BY official DESC LIMIT 1", ('%' + host + '%',)) or {}
+    cid = add_candidate(title, url, excerpt, src.get('name') or host, src.get('id'), published,
+                        {'priority': 80, 'official': src.get('official') or 0, 'local_scope': 1, 'brand': src.get('brand') or 'infolinense'},
+                        image=best_image(r.text, url))
+    if cid:
+        return {'query': url, 'seen': 1, 'added': 1, 'candidate_ids': [cid], 'note': 'Añadida a Ordenar: «%s».' % title[:90]}
+    return {'query': url, 'seen': 1, 'added': 0, 'candidate_ids': [],
+            'note': 'No se añadió: el panel cree que ya está publicada en InfoLinense o es demasiado antigua.'}
+
+
 def search_news(query):
     """Busca noticias recientes por tema en Google News y añade solo las que pasan el filtro local."""
+    if re.match(r'\s*https?://', query or ''):
+        return add_by_url(query)
     query = re.sub(r'\s+', ' ', clean(query or '')).strip()[:120]
     if len(query) < 3:
         raise ValueError('Escribe al menos tres caracteres para buscar.')
@@ -1163,6 +1204,14 @@ def _read_batch(sources, added, errors):
             try:
                 items = job.result(); raw_count = len(items); count = 0
                 resurfaced = set()
+                if source.get('official') and source.get('local_scope') and source.get('kind') == 'rss':
+                    for item in items:
+                        row = db.row("""SELECT id,status FROM candidates WHERE url=? AND (status='merged'
+                                         OR (status='archived' AND reason='Fuera de La Línea'))""", (item.get('url') or '',))
+                        if row and recent_enough(item.get('published_at'), WINDOW_DAYS['Ayuntamiento']):
+                            db.exec_("UPDATE candidates SET status='new',merged_into=NULL,reason=NULL WHERE id=?", (row['id'],))
+                            added.append(row['id']); resurfaced.add(item.get('url') or '')
+                            count += 1; _scan_state['added'] += 1
                 for item in items:
                     cid = _resurface_archived_official(item, source)
                     if cid:

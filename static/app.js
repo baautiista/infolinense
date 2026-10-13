@@ -160,7 +160,7 @@ function searchWidget() {
     + '<div class="row"><input id="newsQuery" type="search" value="' + esc(queueSearch) + '" placeholder="Tema, titular o medio" autocomplete="off" ' + (newsSearchBusy ? 'disabled' : '') + '>'
     + '<button class="btn small primary" type="submit" ' + (newsSearchBusy || queueSearch.trim().length < 3 ? 'disabled' : '') + '>'
     + (newsSearchBusy ? '<span class="spin"></span> Buscando…' : 'Buscar en la web') + '</button></div>'
-    + '<p class="muted small">Al escribir filtras el radar. «Buscar en la web» consulta noticias recientes y añade al radar las que afectan a La Línea.</p>'
+    + '<p class="muted small">Al escribir filtras el radar. «Buscar en la web» consulta noticias recientes y añade al radar las que afectan a La Línea. Si pegas el enlace de una noticia, te dice dónde está o la añade.</p>'
     + (newsSearchNote ? '<p class="small ' + (newsSearchError ? 'error' : 'muted') + '">' + esc(newsSearchNote) + '</p>' : '')
     + '</form></section>'
     + (queueSearch.trim() ? '<p class="sort-count muted small">' + filteredQueueCount() + ' noticias coinciden con la búsqueda</p>' : '');
@@ -228,7 +228,7 @@ function drawSort(v = $('#view')) {
     newsSearchBusy = true; newsSearchError = false; newsSearchNote = 'Buscando «' + query + '» en noticias recientes…'; drawSort(v);
     try {
       const result = await api('/api/news/search', { method: 'POST', body: JSON.stringify({ query }) });
-      newsSearchNote = result.added
+      newsSearchNote = result.note ? result.note : result.added
         ? 'Se añadieron ' + result.added + ' noticias nuevas; ' + result.seen + ' resultados consultados.'
         : 'Se consultaron ' + result.seen + ' resultados; no hay noticias locales nuevas para este tema.';
       await sortView(v);

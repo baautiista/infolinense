@@ -164,3 +164,33 @@ class SocialPublishTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class FacebookUploadTests(SocialPublishTests):
+    def test_facebook_uploads_image_bytes_not_url(self):
+        calls = []
+        def fake(method, url, timeout=60, **kw):
+            calls.append((url, kw)); return Resp({'id': 'PH1', 'post_id': 'PAGE_1'})
+        with patch.object(sp.requests, 'request', side_effect=fake):
+            r = sp.publish('facebook', self.article)
+        self.assertTrue(r['ok'], r)
+        url, kw = calls[0]
+        self.assertTrue(url.endswith('/PAGE/photos'))
+        self.assertIn('source', kw['files'])
+        self.assertNotIn('url', kw['data'])
+
+    def test_instagram_retries_when_meta_cannot_fetch(self):
+        n = {'media': 0}
+        def fake(method, url, timeout=60, **kw):
+            if url.endswith('/IG/media'):
+                n['media'] += 1
+                if n['media'] == 1:
+                    return Resp({'error': {'message': 'The media could not be fetched from this URI', 'code': 9004, 'error_subcode': 2207052}}, 400)
+                return Resp({'id': 'C1'})
+            if url.endswith('/C1'): return Resp({'status_code': 'FINISHED'})
+            if url.endswith('/media_publish'): return Resp({'id': 'M1'})
+            return Resp({'permalink': 'https://instagram.com/p/x'})
+        with patch.object(sp.requests, 'request', side_effect=fake), patch.object(sp.requests, 'get'), patch.object(sp.time, 'sleep'):
+            r = sp.publish('instagram', self.article)
+        self.assertTrue(r['ok'], r)
+        self.assertEqual(n['media'], 2)

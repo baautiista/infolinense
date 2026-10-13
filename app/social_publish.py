@@ -448,6 +448,14 @@ TIKTOK_ERRORS = {
 
 # ---------- imágenes públicas para las redes ----------
 
+def jpeg_bytes(path):
+    """La imagen en JPG (lo que aceptan todas las redes)."""
+    with Image.open(path) as im:
+        buf = BytesIO()
+        im.convert('RGB').save(buf, 'JPEG', quality=92)
+    return buf.getvalue()
+
+
 def public_image(path):
     """Copia en JPG la imagen y devuelve una URL pública temporal (las redes la descargan desde aquí)."""
     src = Path(path or '')
@@ -457,10 +465,7 @@ def public_image(path):
         raise SocialError('Falta PUBLIC_BASE_URL (https://…) en Railway: las redes necesitan descargar la imagen')
     token = secrets.token_urlsafe(24)
     out = RENDER_DIR / ('public_%s.jpg' % token)
-    im = Image.open(src).convert('RGB')
-    buf = BytesIO()
-    im.save(buf, 'JPEG', quality=92)
-    out.write_bytes(buf.getvalue())
+    out.write_bytes(jpeg_bytes(src))
     db.exec_('DELETE FROM public_media WHERE expires_at<?', (int(time.time()),))
     db.exec_('INSERT INTO public_media VALUES(?,?,?)', (token, str(out), int(time.time()) + 7 * 86400))
     return PUBLIC_BASE_URL + '/p/' + token + '.jpg'
@@ -504,14 +509,15 @@ def caption(article, limit=2200):
 
 # ---------- publicar ----------
 
-def _facebook(article, urls):
+def _facebook(article, paths):
+    """Facebook: la imagen se SUBE directamente (no se le da un enlace), así nunca falla por no poder descargarla."""
     page = _meta()
     if not page.get('access_token'):
         raise SocialError('Facebook no está conectado')
     token, pid = page['access_token'], page['id']
     message = caption(article, 60000)
     try:
-        return _facebook_post(pid, token, message, urls)
+        return _facebook_post(pid, token, message, paths)
     except SocialError as exc:
         if getattr(exc, 'code', None) in (10, 200, 190) or 'ermission' in str(exc):
             chk = facebook_check()
@@ -519,14 +525,17 @@ def _facebook(article, urls):
         raise
 
 
-def _facebook_post(pid, token, message, urls):
-    if len(urls) == 1:
-        d = _graph('POST', '/%s/photos' % pid, data={'url': urls[0], 'message': message, 'published': 'true',
-                                                     'access_token': token})
+def _fb_photo(pid, token, path, **data):
+    return _graph('POST', '/%s/photos' % pid, data=dict(data, access_token=token),
+                  files={'source': ('imagen.jpg', jpeg_bytes(path), 'image/jpeg')})
+
+
+def _facebook_post(pid, token, message, paths):
+    if len(paths) == 1:
+        d = _fb_photo(pid, token, paths[0], message=message, published='true')
         post_id = d.get('post_id') or d.get('id')
     else:
-        ids = [_graph('POST', '/%s/photos' % pid, data={'url': u, 'published': 'false', 'access_token': token})['id']
-               for u in urls]
+        ids = [_fb_photo(pid, token, p, published='false')['id'] for p in paths]
         form = {'message': message, 'access_token': token}
         for i, mid in enumerate(ids):
             form['attached_media[%d]' % i] = json.dumps({'media_fbid': mid})
@@ -547,6 +556,29 @@ def _ig_wait(container, token, seconds=90, base=None):
     raise SocialError('Instagram tardó demasiado en procesar la imagen; inténtalo de nuevo')
 
 
+def _fetch_failed(exc):
+    return 'could not be fetched' in str(exc) or 'no se pudo' in str(exc).lower() or getattr(exc, 'subcode', None) in (2207052, 2207003)
+
+
+def _ig_media(ig, base, data, tries=3):
+    """Crea el contenedor de Instagram. Si Meta no pudo descargar la imagen (p. ej. justo mientras se actualiza el panel),
+    comprueba que la URL responde y lo reintenta."""
+    for attempt in range(tries):
+        try:
+            return _graph('POST', '/%s/media' % ig, base=base, data=data)['id']
+        except SocialError as exc:
+            if not _fetch_failed(exc) or attempt == tries - 1:
+                if _fetch_failed(exc):
+                    raise SocialError('Instagram no pudo descargar la imagen desde el panel. Vuelve a pulsar «Publicar» en un minuto '
+                                      '(suele pasar si el panel se estaba actualizando).')
+                raise
+            time.sleep(6 * (attempt + 1))
+            try:
+                requests.get(data['image_url'], timeout=20)  # «despierta» la URL antes del reintento
+            except requests.RequestException:
+                pass
+
+
 def _instagram(article, urls):
     direct = _instagram_direct()
     if direct:  # cuenta de Instagram conectada directamente (sin página de Facebook)
@@ -558,11 +590,11 @@ def _instagram(article, urls):
         token, ig, base = page['access_token'], page['instagram_id'], None
     text = caption(article, 2200)
     if len(urls) == 1:
-        container = _graph('POST', '/%s/media' % ig, base=base, data={'image_url': urls[0], 'caption': text, 'access_token': token})['id']
+        container = _ig_media(ig, base, {'image_url': urls[0], 'caption': text, 'access_token': token})
     else:
         children = []
         for u in urls[:10]:
-            child = _graph('POST', '/%s/media' % ig, base=base, data={'image_url': u, 'is_carousel_item': 'true', 'access_token': token})['id']
+            child = _ig_media(ig, base, {'image_url': u, 'is_carousel_item': 'true', 'access_token': token})
             _ig_wait(child, token, base=base)
             children.append(child)
         container = _graph('POST', '/%s/media' % ig, base=base, data={'media_type': 'CAROUSEL', 'children': ','.join(children),
@@ -605,13 +637,14 @@ def _publish(network, article):
         return {'network': network, 'ok': True, 'url': done.get('url') or '', 'message': 'Ya estaba publicada'}
     note = ''
     try:
-        urls = [public_image(p) for p in article_images(article)]
+        paths = article_images(article)
         if network == 'facebook':
-            remote, url = _facebook(article, urls)
+            remote, url = _facebook(article, paths)
         elif network == 'instagram':
+            urls = [public_image(p) for p in paths]
             remote, url = _instagram(article, urls)
         else:
-            remote, url, note = _tiktok_post(article, urls)
+            remote, url, note = _tiktok_post(article, [public_image(p) for p in paths])
     except SocialError as exc:
         db.exec_('INSERT OR REPLACE INTO social_posts(article_id,network,status,message,updated_at) VALUES(?,?,?,?,CURRENT_TIMESTAMP)',
                  (article['id'], network, 'error', str(exc)[:400]))

@@ -203,3 +203,23 @@ class JpegSizeTests(unittest.TestCase):
         Image.new('RGB', (4320, 5400), 'red').save(big)
         with Image.open(BytesIO(sp.jpeg_bytes(big))) as im:
             self.assertEqual(im.size, (1440, 1800))
+
+
+class InstagramFallbackTests(SocialPublishTests):
+    def test_uses_facebook_hosted_copy_when_panel_url_fails(self):
+        used = []
+        def fake(method, url, timeout=60, **kw):
+            if url.endswith('/IG/media'):
+                used.append(kw['data']['image_url'])
+                if 'fbcdn' not in kw['data']['image_url']:
+                    return Resp({'error': {'message': 'The media could not be fetched from this URI', 'code': 9004, 'error_subcode': 2207052}}, 400)
+                return Resp({'id': 'C1'})
+            if url.endswith('/PAGE/photos'): return Resp({'id': 'PH9'})
+            if url.endswith('/PH9'): return Resp({'images': [{'width': 1080, 'source': 'https://scontent.fbcdn.net/x.jpg'}]})
+            if url.endswith('/C1'): return Resp({'status_code': 'FINISHED'})
+            if url.endswith('/media_publish'): return Resp({'id': 'M1'})
+            return Resp({'permalink': 'https://instagram.com/p/x'})
+        with patch.object(sp.requests, 'request', side_effect=fake), patch.object(sp.time, 'sleep'):
+            r = sp.publish('instagram', self.article)
+        self.assertTrue(r['ok'], r)
+        self.assertEqual(used[-1], 'https://scontent.fbcdn.net/x.jpg')

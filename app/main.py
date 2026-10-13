@@ -11,9 +11,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from . import db, sources, pipeline, publishers, photos, canva, ai, planner, layout, social, social_publish, brands
 from .auth import login, require_auth
+from starlette.concurrency import run_in_threadpool
 from .config import BASE_DIR, RENDER_DIR, UPLOAD_DIR, SCAN_INTERVAL_MINUTES, AUTO_PIPELINE, OPENAI_API_KEY, ADMIN_PASSWORD, JWT_SECRET, PUBLISH_MODE, CORS_ORIGINS, PUBLIC_BASE_URL, AUTO_PUBLISH
 
-VERSION='6.11.3'
+VERSION='6.11.4'
 app=FastAPI(title='InfoLinense Desk',version=VERSION)
 app.add_middleware(CORSMiddleware,allow_origins=CORS_ORIGINS,allow_credentials=False,allow_methods=['*'],allow_headers=['Authorization','Content-Type'])
 db.init_db()
@@ -489,7 +490,7 @@ async def quick_publish(headline:str=Form(...),subtitle:str=Form(''),body:str=Fo
         db.exec_("INSERT OR REPLACE INTO canva_designs(article_id,design_id,url,exported,content_hash) VALUES(?,'upload','',1,'upload')",(aid,))
     elif canva.ready() and canva.connected():
         try:
-            r=canva.create_design(a)
+            r=await run_in_threadpool(canva.create_design,a)
             if not r.get('exported'): canva_msg=r.get('export_error') or 'Canva no exportó la imagen'
         except ValueError as e: canva_msg=str(e)
     else: canva_msg='Canva no está conectado'
@@ -500,10 +501,10 @@ async def quick_publish(headline:str=Form(...),subtitle:str=Form(''),body:str=Fo
             db.exec_("INSERT OR REPLACE INTO carousel_designs(article_id,slide_index,design_id,url,exported) VALUES(?,?,'upload','',1)",(aid,i))
     nets=[n for n in (networks.split(',') if networks else []) if n] or None
     if at.strip():
-        try: res=schedule_article(aid,ScheduleIn(at=at.strip(),networks=nets))
+        try: res=await run_in_threadpool(schedule_article,aid,ScheduleIn(at=at.strip(),networks=nets))
         except HTTPException as e: return {'ok':False,'id':aid,'message':str(e.detail),'canva':canva_msg}
         return {'ok':True,'id':aid,'scheduled_at':res['scheduled_at'],'canva':canva_msg,'message':'Programada'}
-    try: res=publish(aid,PublishIn(networks=nets))
+    try: res=await run_in_threadpool(publish,aid,PublishIn(networks=nets))
     except HTTPException as e: return {'ok':False,'id':aid,'message':str(e.detail),'canva':canva_msg}
     return {**res,'id':aid,'canva':canva_msg}
 

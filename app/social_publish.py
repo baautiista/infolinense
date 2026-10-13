@@ -574,29 +574,48 @@ def _self_check(url):
         kind = r.headers.get('content-type', '')
         return 'la dirección responde %s, %s, %d KB' % (r.status_code, kind or 'sin tipo', len(r.content) // 1000)
     except requests.RequestException as e:
-        return 'la dirección no responde: %s' % str(e)[:80]
+        return 'la dirección no responde: %s' % (type(e).__name__ + ' ' + str(e)[-120:])
 
 
-def _ig_media(ig, base, data, tries=3):
-    """Crea el contenedor de Instagram. Si Meta no pudo descargar la imagen (p. ej. justo mientras se actualiza el panel),
-    comprueba que la URL responde y lo reintenta."""
+def _fb_hosted_url(path):
+    """Plan B: sube la imagen a la página de Facebook SIN publicarla y devuelve su dirección en los servidores de Meta
+    (Instagram siempre puede descargarla de ahí)."""
+    page = _meta()
+    if not page.get('access_token') or not page.get('id'):
+        return None
+    try:
+        pid = _fb_photo(page['id'], page['access_token'], path, published='false', temporary='true')['id']
+        imgs = _graph('GET', '/' + pid, params={'fields': 'images', 'access_token': page['access_token']}).get('images') or []
+        best = max(imgs, key=lambda i: i.get('width', 0), default={})
+        return best.get('source')
+    except SocialError:
+        return None
+
+
+def _ig_media(ig, base, data, path=None, tries=2):
+    """Crea el contenedor de Instagram. Si Meta no pudo descargar la imagen del panel, lo reintenta y,
+    si sigue sin poder, usa una copia de la imagen alojada en Facebook."""
     for attempt in range(tries):
         try:
             return _graph('POST', '/%s/media' % ig, base=base, data=data)['id']
         except SocialError as exc:
-            if not _fetch_failed(exc) or attempt == tries - 1:
-                if _fetch_failed(exc):
-                    raise SocialError('Instagram no pudo descargar la imagen desde el panel (%s). Vuelve a pulsar «Publicar» en un minuto.'
-                                      % _self_check(data['image_url']))
+            if not _fetch_failed(exc):
                 raise
-            time.sleep(6 * (attempt + 1))
-            try:
-                requests.get(data['image_url'], timeout=20)  # «despierta» la URL antes del reintento
-            except requests.RequestException:
-                pass
+            if attempt < tries - 1:
+                time.sleep(5)
+                continue
+            hosted = _fb_hosted_url(path) if path else None
+            if hosted:
+                try:
+                    return _graph('POST', '/%s/media' % ig, base=base, data=dict(data, image_url=hosted))['id']
+                except SocialError as exc2:
+                    if not _fetch_failed(exc2):
+                        raise
+            raise SocialError('Instagram no pudo descargar la imagen desde el panel (%s). Vuelve a pulsar «Publicar» en un minuto.'
+                              % _self_check(data['image_url']))
 
 
-def _instagram(article, urls):
+def _instagram(article, urls, paths=None):
     direct = _instagram_direct()
     if direct:  # cuenta de Instagram conectada directamente (sin página de Facebook)
         token, ig, base = direct['access_token'], direct.get('user_id') or 'me', IG_GRAPH
@@ -607,11 +626,12 @@ def _instagram(article, urls):
         token, ig, base = page['access_token'], page['instagram_id'], None
     text = caption(article, 2200)
     if len(urls) == 1:
-        container = _ig_media(ig, base, {'image_url': urls[0], 'caption': text, 'access_token': token})
+        container = _ig_media(ig, base, {'image_url': urls[0], 'caption': text, 'access_token': token}, (paths or [None])[0])
     else:
         children = []
-        for u in urls[:10]:
-            child = _ig_media(ig, base, {'image_url': u, 'is_carousel_item': 'true', 'access_token': token})
+        for i, u in enumerate(urls[:10]):
+            child = _ig_media(ig, base, {'image_url': u, 'is_carousel_item': 'true', 'access_token': token},
+                              paths[i] if paths and i < len(paths) else None)
             _ig_wait(child, token, base=base)
             children.append(child)
         container = _graph('POST', '/%s/media' % ig, base=base, data={'media_type': 'CAROUSEL', 'children': ','.join(children),
@@ -659,7 +679,7 @@ def _publish(network, article):
             remote, url = _facebook(article, paths)
         elif network == 'instagram':
             urls = [public_image(p) for p in paths]
-            remote, url = _instagram(article, urls)
+            remote, url = _instagram(article, urls, paths)
         else:
             remote, url, note = _tiktok_post(article, [public_image(p) for p in paths])
     except SocialError as exc:

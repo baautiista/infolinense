@@ -649,8 +649,20 @@ async function publishView(v) {
   };
 }
 window.scheduleAt = async (id, at, b) => {
-  let when = String(at || '').slice(0, 16);
-  if (!when || when <= madridNow()) { when = prompt('¿A qué hora se publica? (AAAA-MM-DD HH:MM)', defaultWhen(at).replace('T', ' ')); if (!when) return; when = when.trim().replace(' ', 'T') }
+  // Siempre se elige el día y la hora (viene propuesta la de la planificación)
+  const when = await new Promise(res => {
+    const sheet = document.createElement('div'); sheet.className = 'sheet-bg';
+    sheet.innerHTML = `<div class="sheet" role="dialog" aria-label="Programar"><h2>¿Cuándo se publica?</h2>
+      <label>Día y hora<input type="datetime-local" id="schWhen" min="${madridNow()}" value="${defaultWhen(at)}"></label>
+      <div class="row"><button class="btn" id="schNo">Cancelar</button><button class="btn primary" id="schOk">Programar</button></div></div>`;
+    document.body.appendChild(sheet);
+    const close = v => { sheet.remove(); res(v) };
+    sheet.onclick = e => { if (e.target === sheet) close('') };
+    sheet.querySelector('#schNo').onclick = () => close('');
+    sheet.querySelector('#schOk').onclick = () => { const v = sheet.querySelector('#schWhen').value; if (!v || v <= madridNow()) return toast('Elige un día y una hora futuros'); close(v) };
+    setTimeout(() => sheet.querySelector('#schWhen').focus(), 50);
+  });
+  if (!when) return;
   b.disabled = true; b.textContent = 'Programando…';
   try { const r = await api(`/api/articles/${id}/schedule`, { method: 'POST', body: JSON.stringify({ at: when, networks: pickedNets() }) }); toast('Programada: se publicará sola ' + whenText(r.scheduled_at)); render(); counts() }
   catch (e) { toast(e.message); b.disabled = false; b.textContent = 'Programar' }

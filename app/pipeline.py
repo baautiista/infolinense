@@ -119,7 +119,7 @@ def finish_article(aid):
     from zoneinfo import ZoneInfo
     today = _dt.now(ZoneInfo('Europe/Madrid')).date().isoformat()
     # En cuanto una noticia se aprueba (cualquier día), su imagen de Canva se hace sola
-    if db.get_setting('auto_canva', '1') != '1' or not a.get('image_local'):
+    if db.get_setting('auto_canva', '0') != '1' or not a.get('image_local'):
         return
     from . import canva
     if not (canva.ready() and canva.connected()):
@@ -187,9 +187,21 @@ _PRIO = {'urgent': 0, 'today': 1, 'this_week': 2, 'future': 3}
 USEFUL = tuple(_PRIO)
 
 
+def blank_article(cid):
+    """Ficha vacía (titular, entradilla, texto e imagen por rellenar) para una noticia marcada como útil."""
+    c = db.row('SELECT id,brand,section,status FROM candidates WHERE id=?', (cid,))
+    if not c or c['status'] == 'archived' or existing_article(cid):
+        return None
+    db.exec_("DELETE FROM articles WHERE candidate_id=? AND status='rejected'", (cid,))
+    return db.exec_('''INSERT INTO articles(candidate_id,section,headline,subtitle,body,social_text,status,brand,workflow)
+                       VALUES(?,?,?,?,?,?,?,?,?)''', (cid, c.get('section') or '', '', '', '', '', 'draft', c.get('brand') or 'infolinense', 'manual'))
+
+
 def queue_auto_write(cid, priority=None):
     """Pone en cola la redacción de una noticia útil (una a una, sin duplicados)."""
     global _auto_thread
+    if db.get_setting('manual_mode', '1') == '1':
+        return bool(blank_article(cid))  # modo lanzador: huecos vacíos, sin IA (la IA solo con su botón)
     if not AUTO_DRAFT_USEFUL:
         return False
     c = db.row('SELECT id,editorial_priority,status FROM candidates WHERE id=?', (cid,))

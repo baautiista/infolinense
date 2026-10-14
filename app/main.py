@@ -14,7 +14,7 @@ from .auth import login, require_auth
 from starlette.concurrency import run_in_threadpool
 from .config import BASE_DIR, RENDER_DIR, UPLOAD_DIR, SCAN_INTERVAL_MINUTES, AUTO_PIPELINE, OPENAI_API_KEY, ADMIN_PASSWORD, JWT_SECRET, PUBLISH_MODE, CORS_ORIGINS, PUBLIC_BASE_URL, AUTO_PUBLISH
 
-VERSION='6.13.0'
+VERSION='6.14.0'
 app=FastAPI(title='InfoLinense Desk',version=VERSION)
 app.add_middleware(CORSMiddleware,allow_origins=CORS_ORIGINS,allow_credentials=False,allow_methods=['*'],allow_headers=['Authorization','Content-Type'])
 db.init_db()
@@ -542,7 +542,7 @@ def mark_ready(aid:int):
 
 @app.get('/api/to-publish',dependencies=[Depends(require_auth)])
 def to_publish(brand:str=''):
-    rows=db.rows("""SELECT a.id,a.brand,a.headline,a.section,a.status,a.image_local,a.publish_url,c.planned_at,c.editorial_priority,c.id candidate_id,
+    rows=db.rows("""SELECT a.id,a.brand,COALESCE(NULLIF(a.headline,''),'✏️ '||c.title) headline,a.section,a.status,a.image_local,a.publish_url,c.planned_at,c.editorial_priority,c.id candidate_id,
                       a.scheduled_at,a.scheduled_networks,a.schedule_error,d.exported canva_exported FROM articles a LEFT JOIN candidates c ON c.id=a.candidate_id
                       LEFT JOIN canva_designs d ON d.article_id=a.id
                       WHERE a.status IN ('draft','review_ready','approved') OR (a.status='published' AND a.updated_at>=date('now') AND COALESCE(a.hidden,0)=0)""")
@@ -1236,7 +1236,7 @@ class BrandIn(BaseModel):
     page_mode:str|None=None; carousel_page:int|None=None; headline_lines:int|None=None; line_chars:int|None=None
 class PrefIn(BaseModel): auto_ayto:bool|None=None; auto_canva:bool|None=None
 @app.get('/api/prefs',dependencies=[Depends(require_auth)])
-def prefs(): return {'auto_ayto':db.get_setting('auto_ayto','1')=='1','auto_canva':db.get_setting('auto_canva','1')=='1'}
+def prefs(): return {'auto_ayto':db.get_setting('auto_ayto','1')=='1','auto_canva':db.get_setting('auto_canva','0')=='1'}
 @app.put('/api/prefs',dependencies=[Depends(require_auth)])
 def prefs_save(p:PrefIn):
     for k,v in p.model_dump(exclude_none=True).items(): db.set_setting(k,'1' if v else '0')

@@ -503,7 +503,7 @@ def article_images(article):
 # ---------- textos ----------
 
 def caption(article, limit=2200):
-    parts = [article.get('headline') or '', article.get('subtitle') or '', article.get('body') or '']
+    parts = [article.get('body') or '']  # en redes solo el texto de la noticia (titular y entradilla ya van en la imagen)
     text = '\n\n'.join(p.strip() for p in parts if p and p.strip())
     tags = SOCIAL_HASHTAGS if _brand.get() == brands.DEFAULT and os.getenv('SOCIAL_HASHTAGS') else brands.settings(_brand.get())['hashtags']
     room = limit - (len(tags) + 2 if tags else 0)

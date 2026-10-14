@@ -720,6 +720,12 @@ window.saveNetPrefs = saveNetPrefs;
 function cw(c) { const W = { ' ': .26, '.': .28, ',': .28, ':': .28, ';': .28, '-': .36, "'": .25 }; if (c in W) return W[c]; if ('iljIJ1!¡íÍ'.includes(c)) return .33; if ('tf'.includes(c)) return .40; if ('mwMW'.includes(c)) return .92; if (c !== c.toLowerCase()) return .72; if (/[0-9]/.test(c)) return .62; return .60 }
 function lines(t) { let n = 0, cur = ''; for (const w of String(t || '').split(/\s+/).filter(Boolean)) { const x = (cur + ' ' + w).trim(); if ([...x].reduce((a, c) => a + cw(c), 0) * 74 <= 870 || !cur) cur = x; else { n++; cur = w } } return n + (cur ? 1 : 0) }
 
+window.aiWrite = async b => {
+  if (!confirm('¿Redactar esta noticia con IA? Se sustituye lo que hayas escrito.')) return;
+  b.disabled = true; b.textContent = 'Redactando… (puede tardar un minuto)';
+  try { const a = await api(`/api/articles/${editorId}/research-more`, { method: 'POST' }); toast('Redactada'); go('editor/' + a.id) }
+  catch (e) { toast(e.message); b.disabled = false; b.textContent = '✍️ Redactar con IA' }
+};
 async function editor(v) {
   const [a, kit] = await Promise.all([api(`/api/articles/${editorId}`), api(`/api/articles/${editorId}/kit`)]);
   cache.article = a; cache.kit = kit;
@@ -744,6 +750,7 @@ async function editor(v) {
     <section class="fields">
       <div class="meta"><span class="st st-${a.status}">${STATUS[a.status] || a.status}</span>${a.source_url ? `<a href="${safeUrl(a.source_url)}" target="_blank" rel="noopener noreferrer">Fuente: ${esc(a.outlet || a.source_name || host(a.source_url))}</a>` : ''}${published && a.publish_url ? `<a href="${safeUrl(a.publish_url)}" target="_blank" rel="noopener">Ver en la web</a>` : ''}</div>
       ${a.focus ? `<p class="focus"><b>Enfoque:</b> ${esc(a.focus)}</p>` : ''}
+      ${published ? '' : `<div class="row wrap"><button class="btn small" id="aiWrite" title="Solo cuando lo necesites: usa la IA">✍️ Redactar con IA</button><span class="muted small">Opcional. Si no, rellena tú los huecos.</span></div>`}
       ${BRANDS.length > 1 ? `<label>Medio<select id="f-brand">${BRANDS.map(b => `<option value="${b.slug}" ${b.slug === (a.brand || 'infolinense') ? 'selected' : ''}>${esc(b.name)}</option>`).join('')}</select></label>` : ''}
       <label>Sección<select id="f-section">${sectionOptions(a.brand, a.section)}</select></label>
       <label id="labelBox" ${freeSection(a.brand) && a.section === freeSection(a.brand) ? '' : 'hidden'}>Título de la etiqueta en la imagen<input id="f-section_label" maxlength="40" value="${esc(a.section_label || '')}" placeholder="Ej.: Consejo de Hermandades"></label>
@@ -778,6 +785,7 @@ async function editor(v) {
   f('section').onchange = () => { const fs = freeSection(f('brand') ? f('brand').value : a.brand); $('#labelBox').hidden = !(fs && f('section').value === fs) };
   if (f('brand')) f('brand').onchange = async e => { const b = e.target.value; f('section').innerHTML = sectionOptions(b, ''); try { await saveArticle(); toast('Ahora es de ' + brandOf(b).name + ': crea la imagen con su plantilla'); render() } catch (er) { toast(er.message) } };
   f('headline').oninput = fit; f('subtitle').oninput = sub; f('body').oninput = count; fit(); sub(); count();
+  if ($('#aiWrite')) $('#aiWrite').onclick = e => aiWrite(e.target);
   v.querySelectorAll('.alt').forEach(b => b.onclick = () => { f('headline').value = options[b.dataset.i]; fit(); toast('Titular cambiado') });
   $('#moreHeads').onclick = async e => { e.target.textContent = 'Pensando…'; try { await saveArticle(); await api(`/api/articles/${a.id}/headlines`, { method: 'POST' }); render() } catch (er) { toast(er.message); e.target.textContent = 'Reintentar' } };
   const img = $('#preview');

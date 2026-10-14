@@ -60,7 +60,7 @@ class SocialPublishTests(unittest.TestCase):
         self.assertTrue(r['ok'])
         self.assertEqual(r['url'], 'https://www.facebook.com/PAGE_9')
         self.assertTrue(calls[0][1].endswith('/PAGE/photos'))
-        self.assertIn('19 patinetes', calls[0][2]['message'])
+        self.assertNotIn('19 patinetes', calls[0][2]['message']); self.assertIn('Texto de la noticia', calls[0][2]['message'])
 
     def test_instagram_waits_and_publishes_once(self):
         def fake(method, url, **kw):

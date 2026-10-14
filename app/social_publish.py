@@ -497,7 +497,9 @@ def article_images(article):
         return ([main] if main and Path(main).is_file() else []) + paths[:9]
     if article.get('render_path') and Path(article['render_path']).is_file():
         return [article['render_path']]
-    raise SocialError('Falta la imagen final. Crea la imagen en Canva antes de publicar en redes.')
+    if article.get('image_local') and Path(article['image_local']).is_file():
+        return [article['image_local']]  # sin imagen de Canva: se publica la imagen que has subido tal cual
+    raise SocialError('Falta la imagen: sube una imagen o crea la de Canva antes de publicar en redes.')
 
 
 # ---------- textos ----------

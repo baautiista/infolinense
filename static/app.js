@@ -165,26 +165,56 @@ function searchWidget() {
     + '</form></section>'
     + (queueSearch.trim() ? '<p class="sort-count muted small">' + filteredQueueCount() + ' noticias coinciden con la búsqueda</p>' : '');
 }
-// Exportar para ChatGPT: las noticias marcadas («sirve») o las que quedan por ordenar, en un texto listo para pegar
-let gptScope = 'marked';
+// Para ChatGPT: las noticias de Publicar sin publicar ni programar (con su ID). Luego se sube en lote lo redactado.
+// Para Canva: un solo diseño con todas las noticias subidas en lote (titular y entradilla, sin imagen).
 function gptWidget() {
-  return `<section class="gpt-export"><div><b>🤖 Para ChatGPT</b><span class="muted small"> · copia o descarga las noticias para que las redacte todas</span></div>
-    <div class="row wrap"><select id="gptScope" aria-label="Qué noticias"><option value="marked" ${gptScope === 'marked' ? 'selected' : ''}>Las marcadas «sirve» sin publicar</option><option value="queue" ${gptScope === 'queue' ? 'selected' : ''}>Las que quedan por ordenar</option></select>
-    <button type="button" class="btn small" id="gptCopy">📋 Copiar</button><button type="button" class="btn small" id="gptTxt">⬇️ Descargar .txt</button></div></section>`;
+  return `<section class="gpt-export"><div><b>🤖 Para ChatGPT</b><span class="muted small"> · las noticias de Publicar sin publicar ni programar</span></div>
+    <div class="row wrap"><button type="button" class="btn small" id="gptCopy">📋 Copiar</button><button type="button" class="btn small" id="gptTxt">⬇️ Descargar .txt</button>
+    <button type="button" class="btn small primary" id="gptUp">📥 Subir lo redactado (en lote)</button></div></section>
+    <section class="gpt-export"><div><b>🎨 Para Canva</b><span class="muted small"> · un solo diseño con todas las noticias subidas en lote (titular y entradilla, sin imagen)</span></div>
+    <div class="row wrap"><button type="button" class="btn small" id="canvaBatch">Crear el diseño en Canva</button><span class="muted small" id="canvaBatchOut"></span></div></section>`;
 }
 function armGpt(v) {
-  const qs = () => `brand=${encodeURIComponent(BRAND)}&scope=${gptScope}`;
-  v.querySelector('#gptScope').onchange = e => { gptScope = e.target.value };
+  const qs = () => `brand=${encodeURIComponent(BRAND)}`;
   v.querySelector('#gptCopy').onclick = async () => {
     try {
       const r = await api('/api/export/chatgpt?' + qs());
-      if (!r.count) return toast('No hay noticias para exportar');
+      if (!r.count) return toast('No hay noticias en Publicar sin publicar ni programar');
       try { await navigator.clipboard.writeText(r.text) }
       catch (e) { const t = document.createElement('textarea'); t.value = r.text; document.body.appendChild(t); t.select(); document.execCommand('copy'); t.remove() }
       toast(`Copiadas ${r.count} noticias: pégalas en ChatGPT`);
     } catch (e) { toast(e.message) }
   };
   v.querySelector('#gptTxt').onclick = () => download('/api/export/chatgpt?download=1&' + qs(), `noticias-chatgpt-${new Date().toISOString().slice(0, 10)}.txt`);
+  v.querySelector('#gptUp').onclick = () => {
+    const sheet = document.createElement('div'); sheet.className = 'sheet-bg';
+    sheet.innerHTML = `<div class="sheet" role="dialog" aria-label="Subir en lote"><h2>Subir lo que ha redactado ChatGPT</h2>
+      <p class="muted small">Pega aquí la respuesta entera (o elige el .txt). Cada noticia se rellena por su ID: medio, sección, titular, entradilla y texto.</p>
+      <textarea id="batchText" rows="12" placeholder="ID: 123&#10;MEDIO: InfoLinense&#10;SECCIÓN: …&#10;TITULAR: …&#10;ENTRADILLA: …&#10;TEXTO: …"></textarea>
+      <input type="file" id="batchFile" accept=".txt,text/plain">
+      <div class="row"><button class="btn" id="bNo">Cancelar</button><button class="btn primary" id="bOk">Subir</button></div><div id="bOut"></div></div>`;
+    document.body.appendChild(sheet);
+    sheet.onclick = e => { if (e.target === sheet) sheet.remove() };
+    sheet.querySelector('#bNo').onclick = () => sheet.remove();
+    sheet.querySelector('#batchFile').onchange = async e => { const f = e.target.files[0]; if (f) sheet.querySelector('#batchText').value = await f.text() };
+    sheet.querySelector('#bOk').onclick = async e => {
+      const b = e.target; b.disabled = true; b.textContent = 'Subiendo…';
+      try {
+        const r = await api('/api/import/chatgpt', { method: 'POST', body: JSON.stringify({ text: sheet.querySelector('#batchText').value }) });
+        sheet.querySelector('#bOut').innerHTML = `<p><b>✓ ${r.updated} noticias rellenadas.</b> Ya puedes crear el diseño en Canva o revisarlas en Publicar.</p>${r.errors.length ? `<p class="error small">${r.errors.map(esc).join('<br>')}</p>` : ''}`;
+        b.textContent = 'Hecho'; counts();
+      } catch (er) { toast(er.message); b.disabled = false; b.textContent = 'Subir' }
+    };
+  };
+  v.querySelector('#canvaBatch').onclick = async e => {
+    const b = e.target, out = v.querySelector('#canvaBatchOut'); b.disabled = true; b.textContent = 'Creando en Canva… (1-2 min)';
+    try {
+      const r = await api('/api/canva/batch?' + qs(), { method: 'POST' });
+      out.innerHTML = `<a class="btn small primary" href="${safeUrl(r.url)}" target="_blank" rel="noopener">Abrir en Canva (${r.pages} páginas)</a>${r.errors.length ? ` <span class="error">${r.errors.length} no se pudieron añadir</span>` : ''}`;
+      window.open(r.url, '_blank', 'noopener');
+    } catch (er) { toast(er.message) }
+    b.disabled = false; b.textContent = 'Crear el diseño en Canva';
+  };
 }
 function filteredQueueCount() {
   const words = searchFold(queueSearch).trim().split(/\s+/).filter(Boolean);

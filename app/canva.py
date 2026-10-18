@@ -498,3 +498,53 @@ def create_carousel_designs(article, slides, selected_photos):
         'design_url': first_url,
         'download_url': '/api/articles/%s/carousel/download' % article['id'],
     }
+
+
+def _autofill_text_only(article):
+    """Diseño de la noticia con titular, entradilla y sección (sin foto). Devuelve (design_id, página)."""
+    texts = design_fields(article, strict=False)
+    template_id = texts['template']
+    if not template_id:
+        raise ValueError('Falta la plantilla de Canva del medio')
+    schema = _api('GET', '/brand-templates/' + template_id + '/dataset').get('dataset', {})
+    fields = {k: {'type': 'text', 'text': texts[k]} for k in ('HEADLINE', 'SUMMARY', 'SECTION')
+              if schema.get(k, {}).get('type') == 'text' and texts.get(k)}
+    fields.update(size_variants(schema, texts, 'auto'))
+    job = _api('POST', '/autofills', json={'type': 'create_from_brand_template', 'brand_template_id': template_id,
+                                          'title': 'Lote · ' + (article.get('headline') or '')[:80], 'data': fields})
+    design = _design_from_job(_wait('/autofills/' + job['job']['id'], job))
+    if not design.get('id'):
+        raise ValueError('Canva no devolvió el diseño')
+    return design['id'], int(texts['page'] or 1)
+
+
+def batch_design(articles):
+    """Un solo diseño con una página por noticia (titular y entradilla, sin imagen) para retocarlas todas juntas."""
+    if not ready() or not connected():
+        raise ValueError('Conecta tu cuenta de Canva desde Ajustes')
+    from datetime import datetime
+    parts, errors = [], []
+    for a in articles:
+        try:
+            parts.append((a, *_autofill_text_only(a)))
+        except (ValueError, requests.RequestException) as exc:
+            errors.append('«%s»: %s' % ((a.get('headline') or '')[:50], str(exc)[:120]))
+    if not parts:
+        raise ValueError('Canva no pudo crear ninguna página: ' + '; '.join(errors[:3]))
+    title = 'Lote de noticias · ' + datetime.now().strftime('%d/%m/%Y %H:%M')
+    first, did, page = parts[0]
+    job = _api('POST', '/merges', json={'type': 'create_new_design', 'title': title, 'operations': [
+        {'type': 'insert_pages', 'source': {'type': 'design', 'design_id': did, 'page_numbers': [page]}}]})
+    design = _design_from_job(_wait('/merges/' + job['job']['id'], job))
+    target = design.get('id')
+    if not target:
+        raise ValueError('Canva no devolvió el diseño del lote')
+    for a, did, page in parts[1:]:  # una operación por llamada (lo que Canva permite)
+        try:
+            j = _api('POST', '/merges', json={'type': 'modify_existing_design', 'design_id': target, 'operations': [
+                {'type': 'insert_pages', 'source': {'type': 'design', 'design_id': did, 'page_numbers': [page]}}]})
+            _wait('/merges/' + j['job']['id'], j)
+        except (ValueError, requests.RequestException) as exc:
+            errors.append('«%s»: %s' % ((a.get('headline') or '')[:50], str(exc)[:120]))
+    url = design.get('url') or (design.get('urls') or {}).get('edit_url') or 'https://www.canva.com/design/%s/edit' % target
+    return {'url': url, 'design_id': target, 'pages': len(parts), 'errors': errors}

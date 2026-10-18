@@ -14,7 +14,7 @@ from .auth import login, require_auth
 from starlette.concurrency import run_in_threadpool
 from .config import BASE_DIR, RENDER_DIR, UPLOAD_DIR, SCAN_INTERVAL_MINUTES, AUTO_PIPELINE, OPENAI_API_KEY, ADMIN_PASSWORD, JWT_SECRET, PUBLISH_MODE, CORS_ORIGINS, PUBLIC_BASE_URL, AUTO_PUBLISH
 
-VERSION='6.14.2'
+VERSION='6.15.0'
 app=FastAPI(title='InfoLinense Desk',version=VERSION)
 app.add_middleware(CORSMiddleware,allow_origins=CORS_ORIGINS,allow_credentials=False,allow_methods=['*'],allow_headers=['Authorization','Content-Type'])
 db.init_db()
@@ -260,19 +260,18 @@ def _bf(rows,brand):
 
 _PRIO_NAME={'urgent':'URGENTE','today':'Hoy','tomorrow':'Mañana','this_week':'Esta semana','future':'Más adelante'}
 
-def chatgpt_export_text(brand='',scope='marked'):
-    """Texto listo para pegar en ChatGPT con las noticias marcadas («sirve») y aún sin publicar, o con las que quedan por ordenar."""
-    if scope=='queue':
-        rows=[r for r in _sort_queue(brand) if not str(r.get('url') or '').startswith('social:')] or _sort_queue(brand)
-    else:
-        rows=db.rows("""SELECT c.* FROM candidates c
-                        WHERE c.editorial_priority IN ('urgent','today','tomorrow','this_week','future')
-                          AND c.status NOT IN ('published','archived','discarded')
-                          AND c.created_at>=datetime('now','-21 days')
-                          AND NOT EXISTS(SELECT 1 FROM articles a WHERE a.candidate_id=c.id AND a.status='published')""")
-        rows=_bf(rows,brand)
-        order={k:i for i,k in enumerate(_PRIO_NAME)}
-        rows.sort(key=lambda r:(order.get(r.get('editorial_priority'),9),str(r.get('planned_at') or '')))
+def _publish_queue(brand=''):
+    """Lo que está en Publicar sin publicar y sin programar (lo que hay que redactar)."""
+    rows=db.rows("""SELECT a.id aid,a.brand,a.section,a.headline,c.* FROM articles a JOIN candidates c ON c.id=a.candidate_id
+                    WHERE a.status IN ('draft','review_ready','approved') AND a.scheduled_at IS NULL AND COALESCE(a.hidden,0)=0
+                    ORDER BY COALESCE(c.planned_at,'9999'),a.id""")
+    for r in rows: r['brand']=r.get('brand') or 'infolinense'
+    return _bf(rows,brand)
+
+def chatgpt_export_text(brand='',scope='publish'):
+    """Texto para ChatGPT con las noticias de Publicar aún sin publicar ni programar. Cada una lleva su ID
+    para poder subir después en lote lo que redacte ChatGPT."""
+    rows=_publish_queue(brand)
     links=sources.links_for([r['id'] for r in rows]) if rows else {}
     names=sorted({brands.valid(r.get('brand')) for r in rows}) or [brands.valid(brand)]
     head=[]
@@ -282,27 +281,25 @@ def chatgpt_export_text(brand='',scope='marked'):
         head.append(f"- {st['name']}: {st['about']}."+(f" Secciones: {secs}." if secs else ''))
     out=["Eres redactor de un medio local de La Línea de la Concepción (Cádiz). Redacta TODAS las noticias de abajo, una por una, en español de España.",
          "", "Medios:", *head, "",
-         "Para cada noticia escribe, con estas etiquetas exactas:",
-         "NOTICIA n",
+         "Devuelve cada noticia EXACTAMENTE con estas etiquetas, en este orden y sin negritas (respeta el ID de cada una):",
+         "ID: (el número indicado, sin cambiarlo)",
          "MEDIO: (el indicado)",
-         "SECCIÓN:",
+         "SECCIÓN: (una de las secciones del medio)",
          "TITULAR: (claro e informativo, entre 60 y 110 caracteres, sin punto final)",
          "ENTRADILLA: (una o dos frases, máximo 250 caracteres)",
-         "TEXTO: (noticia completa para la web, 3 a 6 párrafos, con lo más importante primero)",
-         "REDES: (texto breve para Instagram y Facebook, sin hashtags)",
+         "TEXTO: (noticia completa para la web y las redes, 3 a 6 párrafos, con lo más importante primero)",
+         "---",
          "",
          "Reglas: usa solo los datos de la fuente; no inventes nombres, cifras, fechas ni declaraciones. Si falta un dato, no lo pongas. "
-         "Cuenta qué significa para los vecinos de La Línea. Cita la fuente («según…») cuando sea de otro medio. "
-         "Si dos noticias son el mismo hecho, júntalas en una sola.",
+         "Cuenta qué significa para los vecinos de La Línea. Cita la fuente («según…») cuando sea de otro medio.",
          "", "="*60]
-    for i,r in enumerate(rows,1):
+    for r in rows:
         text=re.sub(r'\n{3,}','\n\n',(r.get('raw_text') or r.get('excerpt') or '').strip())[:6000]
         extra=[l.get('url') for l in links.get(r['id'],[]) if l.get('url')]
         src=str(r.get('url') or '')
         if src.startswith('manual:'): src=src.split('#',1)[1] if '#' in src else ''
-        out+=[f"\nNOTICIA {i}",
+        out+=[f"\nID: {r['aid']}",
               f"Medio: {brands.settings(r.get('brand')).get('name')}",
-              *( [f"Cuándo publicar: {_PRIO_NAME[r['editorial_priority']]}"] if r.get('editorial_priority') in _PRIO_NAME else []),
               f"Título original: {r.get('title') or ''}",
               f"Fuente: {r.get('outlet') or r.get('source_name') or ''}"+(f" · {str(r.get('published_at') or '')[:10]}" if r.get('published_at') else ''),
               *( [f"Enlace: {src}"] if src.startswith('http') else []),
@@ -310,9 +307,73 @@ def chatgpt_export_text(brand='',scope='marked'):
               "Texto de la fuente:", text or '(sin texto: usa el título y el enlace)', "-"*60]
     return '\n'.join(out)+'\n', len(rows)
 
+_LABELS={'id':'id','medio':'brand','seccion':'section','sección':'section','titular':'headline','entradilla':'subtitle','texto':'body','redes':'social'}
+
+def parse_batch(text):
+    """Lee lo que devuelve ChatGPT: bloques con ID, MEDIO, SECCIÓN, TITULAR, ENTRADILLA y TEXTO."""
+    items,cur,key=[],None,None
+    label=re.compile(r'^\s*[*#_>\-\s]*(ID|MEDIO|SECCI[OÓ]N|TITULAR|ENTRADILLA|TEXTO|REDES)\s*[*_]*\s*[:：]\s*[*_]*\s*(.*)$',re.I)
+    for line in (text or '').splitlines():
+        m=label.match(line)
+        if m:
+            k=_LABELS[m.group(1).lower().replace('ó','o')]
+            if k=='id':
+                cur={}; items.append(cur)
+            if cur is None: continue
+            key=k; cur[key]=m.group(2).strip()
+        elif cur is not None and key in ('body','social','subtitle') and not re.match(r'^\s*(-{3,}|={3,}|NOTICIA\s+\d+)\s*$',line,re.I):
+            cur[key]=cur.get(key,'')+'\n'+line
+    out=[]
+    for it in items:
+        num=re.search(r'\d+',it.get('id',''))
+        if not num: continue
+        clean_=lambda v: re.sub(r'\n{3,}','\n\n',re.sub(r'\*\*|__','',v or '')).strip()
+        out.append({'id':int(num.group()),**{k:clean_(v) for k,v in it.items() if k!='id'}})
+    return out
+
+def _brand_by_name(name,default):
+    n=re.sub(r'\W+','',(name or '').lower())
+    for slug,b in brands.BRANDS.items():
+        if n and (n in re.sub(r'\W+','',b['name'].lower()) or re.sub(r'\W+','',b['short'].lower()) in n): return slug
+    return default
+
+class BatchIn(BaseModel): text:str
+
+@app.post('/api/import/chatgpt',dependencies=[Depends(require_auth)])
+def import_chatgpt(body:BatchIn):
+    """Sube en lote lo redactado por ChatGPT: cada noticia (por su ID) recibe medio, sección, titular, entradilla y texto."""
+    items=parse_batch(body.text)
+    if not items: raise HTTPException(400,'No encuentro noticias con «ID:». Pega el texto tal cual lo devolvió ChatGPT.')
+    done,errors=[],[]
+    for it in items:
+        a=db.row('SELECT * FROM articles WHERE id=?',(it['id'],))
+        if not a: errors.append(f"ID {it['id']}: no existe"); continue
+        if a['status']=='published': errors.append(f"ID {it['id']}: ya publicada"); continue
+        brand=_brand_by_name(it.get('brand'),a.get('brand') or brands.DEFAULT)
+        section=(brands.find_section(brand,it.get('section')) if brand!=brands.DEFAULT else layout.normalize_section(it.get('section') or a.get('section') or '',it.get('headline') or '')) or a.get('section') or ''
+        headline=re.sub(r'\s+',' ',it.get('headline') or a.get('headline') or '').strip().rstrip('.')
+        body_=(it.get('body') or a.get('body') or '').strip()
+        db.exec_("""UPDATE articles SET brand=?,section=?,headline=?,subtitle=?,body=?,social_text=?,workflow='lote',render_path=NULL,
+                    updated_at=CURRENT_TIMESTAMP WHERE id=?""",
+                 (brand,section,headline,(it.get('subtitle') or a.get('subtitle') or '').strip(),body_,it.get('social') or body_,it['id']))
+        db.exec_('UPDATE candidates SET brand=? WHERE id=?',(brand,a['candidate_id']))
+        done.append(it['id'])
+    db.log('batch',f'Lote de ChatGPT: {len(done)} noticias')
+    return {'updated':len(done),'ids':done,'errors':errors}
+
+@app.post('/api/canva/batch',dependencies=[Depends(require_auth)])
+def canva_batch(brand:str=''):
+    """Un solo diseño de Canva con todas las noticias subidas en lote (titular y entradilla, sin imagen)."""
+    rows=db.rows("""SELECT * FROM articles WHERE workflow='lote' AND status IN ('draft','review_ready','approved')
+                    AND COALESCE(hidden,0)=0 AND headline!='' AND updated_at>=datetime('now','-14 day') ORDER BY id""")
+    rows=_bf(rows,brand)[:30]
+    if not rows: raise HTTPException(400,'No hay noticias subidas en lote. Primero sube lo que redactó ChatGPT.')
+    try: return canva.batch_design(rows)
+    except ValueError as e: raise HTTPException(400,str(e))
+
 @app.get('/api/export/chatgpt',dependencies=[Depends(require_auth)])
-def export_chatgpt(brand:str='',scope:str='marked',download:int=0):
-    text,n=chatgpt_export_text(brand,scope if scope in ('marked','queue') else 'marked')
+def export_chatgpt(brand:str='',scope:str='publish',download:int=0):
+    text,n=chatgpt_export_text(brand)
     if download:
         from fastapi.responses import PlainTextResponse
         name=f"noticias-chatgpt-{datetime.now(MADRID).strftime('%Y-%m-%d-%H%M')}.txt"

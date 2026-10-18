@@ -252,21 +252,29 @@ class QuickPublishTests(unittest.TestCase):
 
 
 class ChatGPTExportTest(unittest.TestCase):
-    def test_export_marked_news(self):
+    def test_export_only_publish_queue_and_import_batch(self):
         db.init_db()
         cid = db.exec_("""INSERT INTO candidates(source_name,outlet,title,url,published_at,excerpt,raw_text,score,relevance,status,editorial_priority,brand)
                           VALUES('Ayuntamiento','Ayuntamiento','Obras en la calle Real','https://ejemplo.es/obras','2026-10-12','Resumen',
                           'El Ayuntamiento empieza las obras el lunes.',80,'high','new','today','infolinense')""")
-        db.exec_("""INSERT INTO candidates(source_name,outlet,title,url,status,editorial_priority,brand)
-                    VALUES('X','X','Noticia descartada','https://ejemplo.es/no','archived','no_interest','infolinense')""")
-        text, n = main.chatgpt_export_text('infolinense', 'marked')
-        self.assertIn('Obras en la calle Real', text)
+        aid = db.exec_("INSERT INTO articles(candidate_id,headline,body,status,brand) VALUES(?,'','','draft','infolinense')", (cid,))
+        cid2 = db.exec_("INSERT INTO candidates(source_name,title,url,status,editorial_priority,brand) VALUES('X','Ya programada','https://e.es/p','new','today','infolinense')")
+        db.exec_("INSERT INTO articles(candidate_id,headline,body,status,brand,scheduled_at) VALUES(?,'t','b','approved','infolinense','2030-01-01T10:00')", (cid2,))
+        text, n = main.chatgpt_export_text('infolinense')
+        self.assertIn('ID: %d' % aid, text)
         self.assertIn('El Ayuntamiento empieza las obras el lunes.', text)
-        self.assertIn('https://ejemplo.es/obras', text)
-        self.assertNotIn('Noticia descartada', text)
-        self.assertIn('TITULAR:', text)
-        r = main.export_chatgpt(brand='infolinense', scope='marked', download=1)
+        self.assertNotIn('Ya programada', text)
+        r = main.export_chatgpt(brand='infolinense', download=1)
         self.assertIn('attachment', r.headers['content-disposition'])
+        reply = ('**ID:** %d\n**MEDIO:** InfoLinense\nSECCIÓN: Obras\nTITULAR: El Ayuntamiento arranca el lunes las obras de la calle Real.\n'
+                 'ENTRADILLA: Los trabajos durarán tres meses.\nTEXTO: Primer párrafo.\n\nSegundo párrafo.\n---\n' % aid)
+        res = main.import_chatgpt(main.BatchIn(text=reply))
+        self.assertEqual(res['updated'], 1)
+        a = db.row('SELECT * FROM articles WHERE id=?', (aid,))
+        self.assertEqual(a['headline'], 'El Ayuntamiento arranca el lunes las obras de la calle Real')
+        self.assertEqual(a['subtitle'], 'Los trabajos durarán tres meses.')
+        self.assertEqual(a['body'], 'Primer párrafo.\n\nSegundo párrafo.')
+        self.assertEqual(a['workflow'], 'lote')
 
 
 class LauncherCarouselTest(unittest.TestCase):

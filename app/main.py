@@ -14,7 +14,7 @@ from .auth import login, require_auth
 from starlette.concurrency import run_in_threadpool
 from .config import BASE_DIR, RENDER_DIR, UPLOAD_DIR, SCAN_INTERVAL_MINUTES, AUTO_PIPELINE, OPENAI_API_KEY, ADMIN_PASSWORD, JWT_SECRET, PUBLISH_MODE, CORS_ORIGINS, PUBLIC_BASE_URL, AUTO_PUBLISH
 
-VERSION='7.3.5'
+VERSION='7.3.6'
 app=FastAPI(title='InfoLinense Desk',version=VERSION)
 app.add_middleware(CORSMiddleware,allow_origins=CORS_ORIGINS,allow_credentials=False,allow_methods=['*'],allow_headers=['Authorization','Content-Type'])
 db.init_db()
@@ -292,6 +292,7 @@ def chatgpt_export_text(brand='',scope='publish'):
          "",
          "Reglas: usa solo los datos de la fuente; no inventes nombres, cifras, fechas ni declaraciones. Si falta un dato, no lo pongas. "
          "Cuenta qué significa para los vecinos de La Línea. Cita la fuente («según…») cuando sea de otro medio.",
+         "Si una noticia trae «Enfoque», síguelo. Las nacionales (alquileres, luz, pensiones, ayudas…) se cuentan desde La Línea: titular y entradilla sobre cómo afecta a los linenses.",
          "MUY IMPORTANTE: si dos o más noticias son la misma o tratan el mismo tema, júntalas en UNA sola noticia con todos los datos. "
          "Usa el ID de una de ellas y pon los ID de las demás en UNIDAS; no las repitas por separado.",
          "", "="*60]
@@ -303,6 +304,7 @@ def chatgpt_export_text(brand='',scope='publish'):
         out+=[f"\nID: {r['aid']}",
               f"Medio: {brands.settings(r.get('brand')).get('name')}",
               f"Título original: {r.get('title') or ''}",
+              *( [f"Enfoque: {r.get('local_angle')}"] if r.get('local_angle') else []),
               f"Fuente: {r.get('outlet') or r.get('source_name') or ''}"+(f" · {str(r.get('published_at') or '')[:10]}" if r.get('published_at') else ''),
               *( [f"Enlace: {src}"] if src.startswith('http') else []),
               *( [f"Otras fuentes: {', '.join(extra[:5])}"] if extra else []),

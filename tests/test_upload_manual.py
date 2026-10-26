@@ -470,3 +470,28 @@ class SectionColorTests(unittest.TestCase):
         d.rectangle((55, 657, 400, 711), fill='#00AB4F')
         self.assertEqual(ocr.section_of(im, ''), 'DEPORTES')
         self.assertEqual(ocr.section_of(im, 'FÚTBOL\nLa Balona gana'), 'FÚTBOL')
+
+
+class AdaptableNationalTests(unittest.TestCase):
+    def test_adaptable_filter(self):
+        from app import sources
+        self.assertTrue(sources.adaptable_ok('Los alquileres suben un 11% en el último año'))
+        self.assertTrue(sources.adaptable_ok('Las pensiones subirán un 2,8% en enero'))
+        self.assertFalse(sources.adaptable_ok('El Real Madrid gana la Liga'))
+        self.assertFalse(sources.adaptable_ok('Madrid aprueba nuevas ayudas al alquiler'))
+        self.assertFalse(sources.adaptable_ok('Detenido un hombre en Valencia'))
+
+    def test_add_candidate_sets_angle(self):
+        from app import sources, db
+        from datetime import datetime, timezone
+        now = datetime.now(timezone.utc).isoformat()
+        meta = {'name': 'Nacionales adaptables · Temas · vivienda y precios', 'priority': 66, 'official': 0, 'local_scope': 0}
+        cid = sources.add_candidate('El precio de la luz sube mañana un 20%', 'https://elpais.com/x-luz-adapt-test', '',
+                                    meta['name'], None, now, meta)
+        self.assertTrue(cid)
+        self.assertIn('NACIONAL ADAPTADA', db.row('SELECT local_angle FROM candidates WHERE id=?', (cid,))['local_angle'])
+        self.assertIsNone(sources.add_candidate('Gran Hermano arrasa en audiencia', 'https://telecinco.es/gh-adapt-test', '',
+                                                meta['name'], None, now, meta))
+        nat = {'name': 'Medios nacionales', 'priority': 80, 'official': 0, 'local_scope': 0}
+        self.assertIsNone(sources.add_candidate('Ranking de playas de España', 'https://elmundo.es/playas-adapt-test',
+                                                'Lista larga... ' + 'x ' * 300 + 'La Línea de la Concepción', nat['name'], None, now, nat))

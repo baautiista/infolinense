@@ -889,10 +889,53 @@ def comarca_angle(url, text_hint=''):
     return ''
 
 
+ADAPT_PREFIX = 'Nacionales adaptables · Temas'
+# Temas nacionales que se pueden contar en clave local («suben los alquileres» → cómo afecta en La Línea).
+_ADAPT_TOPIC = re.compile(r'\b(alquiler\w*|vivienda\w*|hipotec\w*|eur[ií]bor|pensi[oó]n\w*|pensionistas|jubilaci[oó]n|ipc|inflaci[oó]n|'
+                          r'precio\w*|luz|electricidad|factura|gasolina|di[eé]sel|carburantes?|combustibles?|butano|'
+                          r'salario m[ií]nimo|smi|paro|desempleo|empleo|afiliaci[oó]n|autónomos|autonomos|seguridad social|'
+                          r'ingreso m[ií]nimo|ayudas?|bono\w*|subvenci[oó]n\w*|becas?|impuestos?|irpf|iva|hacienda|declaraci[oó]n de la renta|'
+                          r'dgt|multas?|carn[eé] de conducir|itv|radares?|aemet|alerta|ola de calor|temporal|lluvias|'
+                          r'sanidad|sanitari\w*|m[eé]dicos|listas? de espera|vacun\w*|gripe|farmacias?|medicamentos?|'
+                          r'colegios?|curso escolar|educaci[oó]n|oposiciones|huelgas?|cesta de la compra|supermercados?|alimentos|'
+                          r'okupa\w*|renfe|trenes|autob[uú]s|transporte p[uú]blico|cambio de hora|festivos?|permisos?|bajas?|'
+                          r'estafas?|consumidores|tarifas?|subida|bajada|sube|suben|baja|bajan)\b', re.I)
+# Lo que no se adapta: otras comunidades o ciudades concretas, deportes, sucesos y famosos.
+_ADAPT_NO = re.compile(r'\b(madrid|barcelona|catalu\w+|valencia\w*|pa[ií]s vasco|euskadi|galicia|asturias|murcia|arag[oó]n|zaragoza|'
+                       r'bilbao|canarias|baleares|mallorca|ibiza|navarra|castilla|extremadura|cantabria|rioja|toledo|valladolid|'
+                       r'alicante|m[aá]laga|sevilla|granada|c[oó]rdoba|almer[ií]a|huelva|ja[eé]n|'
+                       r'f[uú]tbol|liga|champions|real madrid|bar[cç]a|atl[eé]tico|tenis|f[oó]rmula 1|motogp|'
+                       r'asesin\w*|cr[ií]men|detenid\w*|juicio|famos\w*|boda|reality|gran hermano|supervivientes|'
+                       r'trump|putin|ucrania|gaza|israel|eeuu|estados unidos|francia|alemania|china|rusia)\b', re.I)
+ADAPT_ANGLE = ('ENFOQUE LA LÍNEA (NACIONAL ADAPTADA): es una noticia de ámbito nacional. No la copies: cuenta cómo afecta a los vecinos '
+               'de La Línea (a quién afecta, cuánto, desde cuándo, qué hay que hacer o dónde pedirlo). El titular se centra en La Línea '
+               '(p. ej. «Así afecta a La Línea la subida de…»). Si hay un dato local (oficina, centro, precio en la zona), úsalo; no inventes cifras locales.')
+
+
+def adaptable_source(meta):
+    return str((meta or {}).get('name') or '').startswith(ADAPT_PREFIX)
+
+
+def adaptable_ok(title):
+    """Titular nacional que se puede llevar a La Línea: tema que toca el bolsillo o el día a día, sin otra ciudad ni región."""
+    title = title or ''
+    return bool(_ADAPT_TOPIC.search(title)) and not _ADAPT_NO.search(title) and not _OTHER_TOWNS.search(title) and not foreign(title)
+
+
 def add_candidate(title, url, excerpt, source_name, source_id=None, published_at='', source_meta=None, local_angle='', outlet='', image=''):
     source_meta = source_meta or {'priority': 60, 'official': 0, 'local_scope': 0}
     title, excerpt = clean(title)[:260], clean(excerpt)[:4000]
     local_angle = clean(local_angle)[:800]
+    if adaptable_source(source_meta):
+        if not adaptable_ok(title) or not recent_enough(published_at):
+            return None
+        if source_id and (db.row("SELECT COUNT(*) n FROM candidates WHERE source_id=? AND created_at>=datetime('now','-1 day')",
+                                 (source_id,)) or {}).get('n', 0) >= 6:
+            return None  # pocas al día: lo local va primero
+        local_angle = ADAPT_ANGLE
+        source_meta = dict(source_meta, local_scope=1)  # ya filtrada: no se le pide «La Línea» en el texto
+    elif str(source_meta.get('name') or source_name or '').startswith('Medios nacionales') and not exact_locality(title + ' ' + excerpt[:300]):
+        return None  # mención de pasada a La Línea en un medio nacional
     tender = source_meta.get('kind') in ('procurement', 'bop', 'edictos') or bool(re.search(r'licitaci|adjudica|edicto|contrataci', title, re.I))
     window = WINDOW_DAYS['Licitaciones y edictos'] if tender else None
     if not title or not url or (not (tender and _open_tender_deadline(title, excerpt)) and not recent_enough(published_at, window)): return None

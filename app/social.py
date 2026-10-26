@@ -133,6 +133,8 @@ def _add(item, sid, outlet, kind=None):
         return None  # ventas, publicidad o noticias de medios compartidas
     if not sources.exact_locality(text) and 'linea' not in outlet.lower() and 'línea' not in outlet.lower():
         return None
+    if sources.foreign(text) or (sources._OTHER_TOWNS.search(item['title']) and not sources.exact_locality(item['title'])):
+        return None  # de otro sitio aunque la página sea de La Línea
     date = sources.parse_es_date(item.get('snippet', '')) or sources.parse_es_date(item.get('title', ''))
     cid = sources.add_candidate(item['title'], item['url'], item.get('snippet', ''), SOURCE_NAME, sid,
                                 date,  # fecha leída de la publicación; vacía si no se conoce

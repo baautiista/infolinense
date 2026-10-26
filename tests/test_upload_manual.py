@@ -390,3 +390,20 @@ class CanvaSinglePageTests(unittest.TestCase):
             raise ValueError('Canva (403): sin permiso')
         with patch.object(canva, '_api', side_effect=fake_api):
             self.assertFalse(canva._keep_only_page('DX', 2))
+
+
+class CanvaBatchTests(unittest.TestCase):
+    def test_batch_merges_pages_or_falls_back(self):
+        from app import canva
+        arts = [{'id': i, 'headline': 'Noticia %d' % i} for i in range(3)]
+        with patch.object(canva, 'ready', return_value=True), patch.object(canva, 'connected', return_value=True), \
+                patch.object(canva, '_autofill_text_only', side_effect=lambda a: ('D%d' % a['id'], 2)), \
+                patch.object(canva, '_api', return_value={'job': {'id': 'J', 'status': 'success', 'result': {'design': {'id': 'DALL', 'url': 'https://canva.com/x'}}}}), \
+                patch.object(canva, '_wait', side_effect=lambda path, first=None: first['job']):
+            r = canva.batch_design(arts)
+        self.assertTrue(r['merged']); self.assertEqual(r['pages'], 3)
+        def refuse(*a, **k): raise ValueError('Canva (403): preview')
+        with patch.object(canva, 'ready', return_value=True), patch.object(canva, 'connected', return_value=True), \
+                patch.object(canva, '_autofill_text_only', side_effect=lambda a: ('D%d' % a['id'], 2)), patch.object(canva, '_api', side_effect=refuse):
+            r = canva.batch_design(arts)
+        self.assertFalse(r['merged']); self.assertEqual(len(r['designs']), 3)

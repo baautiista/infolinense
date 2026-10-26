@@ -518,33 +518,49 @@ def _autofill_text_only(article):
     return design['id'], int(texts['page'] or 1)
 
 
-def batch_design(articles):
-    """Un solo diseño con una página por noticia (titular y entradilla, sin imagen) para retocarlas todas juntas."""
+def batch_design(articles, progress=None):
+    """Un solo diseño con una página por noticia (titular y entradilla, sin imagen) para retocarlas todas juntas.
+    Las páginas se crean a la vez (4 en paralelo); luego se juntan en un diseño."""
     if not ready() or not connected():
         raise ValueError('Conecta tu cuenta de Canva desde Ajustes')
+    from concurrent.futures import ThreadPoolExecutor
     from datetime import datetime
-    parts, errors = [], []
-    for a in articles:
+    progress = progress or (lambda d, ph: None)
+    parts, errors, done = [], [], [0]
+
+    def one(a):
         try:
-            parts.append((a, *_autofill_text_only(a)))
-        except (ValueError, requests.RequestException) as exc:
+            return (a, *_autofill_text_only(a))
+        except Exception as exc:
             errors.append('«%s»: %s' % ((a.get('headline') or '')[:50], str(exc)[:120]))
+            return None
+        finally:
+            done[0] += 1
+            progress(done[0], 'Creando páginas')
+
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        parts = [p for p in pool.map(one, articles) if p]
     if not parts:
         raise ValueError('Canva no pudo crear ninguna página: ' + '; '.join(errors[:3]))
+    progress(0, 'Juntando en un diseño')
     title = 'Lote de noticias · ' + datetime.now().strftime('%d/%m/%Y %H:%M')
     first, did, page = parts[0]
-    job = _api('POST', '/merges', json={'type': 'create_new_design', 'title': title, 'operations': [
-        {'type': 'insert_pages', 'source': {'type': 'design', 'design_id': did, 'page_numbers': [page]}}]})
-    design = _design_from_job(_wait('/merges/' + job['job']['id'], job))
+    links = [{'headline': a.get('headline'), 'url': 'https://www.canva.com/design/%s/edit' % d} for a, d, _ in parts]
+    try:
+        job = _api('POST', '/merges', json={'type': 'create_new_design', 'title': title, 'operations': [
+            {'type': 'insert_pages', 'source': {'type': 'design', 'design_id': did, 'page_numbers': [page]}}]})
+        design = _design_from_job(_wait('/merges/' + job['job']['id'], job))
+    except Exception as exc:  # Canva no deja juntar: se dan los diseños sueltos
+        return {'url': links[0]['url'], 'pages': len(parts), 'merged': False, 'designs': links,
+                'errors': errors + ['No se pudieron juntar en un diseño (%s): van por separado' % str(exc)[:120]]}
     target = design.get('id')
-    if not target:
-        raise ValueError('Canva no devolvió el diseño del lote')
-    for a, did, page in parts[1:]:  # una operación por llamada (lo que Canva permite)
+    for n, (a, did, page) in enumerate(parts[1:], 2):  # una operación por llamada (lo que Canva permite)
         try:
             j = _api('POST', '/merges', json={'type': 'modify_existing_design', 'design_id': target, 'operations': [
                 {'type': 'insert_pages', 'source': {'type': 'design', 'design_id': did, 'page_numbers': [page]}}]})
             _wait('/merges/' + j['job']['id'], j)
-        except (ValueError, requests.RequestException) as exc:
+        except Exception as exc:
             errors.append('«%s»: %s' % ((a.get('headline') or '')[:50], str(exc)[:120]))
+        progress(n, 'Juntando en un diseño')
     url = design.get('url') or (design.get('urls') or {}).get('edit_url') or 'https://www.canva.com/design/%s/edit' % target
-    return {'url': url, 'design_id': target, 'pages': len(parts), 'errors': errors}
+    return {'url': url, 'design_id': target, 'pages': len(parts), 'merged': True, 'designs': [], 'errors': errors}

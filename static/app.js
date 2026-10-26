@@ -207,11 +207,24 @@ function armGpt(v) {
     };
   };
   v.querySelector('#canvaBatch').onclick = async e => {
-    const b = e.target, out = v.querySelector('#canvaBatchOut'); b.disabled = true; b.textContent = 'Creando en Canva… (1-2 min)';
+    const b = e.target, out = v.querySelector('#canvaBatchOut'); b.disabled = true;
+    const show = r => {
+      if (r.error) { out.innerHTML = `<span class="error">${esc(r.error)}</span>`; return }
+      const x = r.result;
+      if (!x) return;
+      out.innerHTML = x.merged
+        ? `<a class="btn small primary" href="${safeUrl(x.url)}" target="_blank" rel="noopener">Abrir en Canva (${x.pages} páginas)</a>${x.errors.length ? ` <span class="error">${x.errors.length} no se pudieron añadir</span>` : ''}`
+        : `<span class="error small">Canva no dejó juntarlas en un solo diseño; aquí van por separado:</span><br>${x.designs.map(d => `<a href="${safeUrl(d.url)}" target="_blank" rel="noopener">${esc(d.headline)}</a>`).join('<br>')}`;
+      if (x.merged) window.open(x.url, '_blank', 'noopener');
+    };
     try {
-      const r = await api('/api/canva/batch?' + qs(), { method: 'POST' });
-      out.innerHTML = `<a class="btn small primary" href="${safeUrl(r.url)}" target="_blank" rel="noopener">Abrir en Canva (${r.pages} páginas)</a>${r.errors.length ? ` <span class="error">${r.errors.length} no se pudieron añadir</span>` : ''}`;
-      window.open(r.url, '_blank', 'noopener');
+      let r = await api('/api/canva/batch?' + qs(), { method: 'POST' });
+      while (r.busy) {
+        b.textContent = `${r.phase || 'Creando'}… ${r.done}/${r.total}`;
+        await new Promise(ok => setTimeout(ok, 3000));
+        r = await api('/api/canva/batch');
+      }
+      show(r);
     } catch (er) { toast(er.message) }
     b.disabled = false; b.textContent = 'Crear el diseño en Canva';
   };

@@ -14,7 +14,7 @@ from .auth import login, require_auth
 from starlette.concurrency import run_in_threadpool
 from .config import BASE_DIR, RENDER_DIR, UPLOAD_DIR, SCAN_INTERVAL_MINUTES, AUTO_PIPELINE, OPENAI_API_KEY, ADMIN_PASSWORD, JWT_SECRET, PUBLISH_MODE, CORS_ORIGINS, PUBLIC_BASE_URL, AUTO_PUBLISH
 
-VERSION='6.15.0'
+VERSION='6.15.1'
 app=FastAPI(title='InfoLinense Desk',version=VERSION)
 app.add_middleware(CORSMiddleware,allow_origins=CORS_ORIGINS,allow_credentials=False,allow_methods=['*'],allow_headers=['Authorization','Content-Type'])
 db.init_db()
@@ -361,15 +361,28 @@ def import_chatgpt(body:BatchIn):
     db.log('batch',f'Lote de ChatGPT: {len(done)} noticias')
     return {'updated':len(done),'ids':done,'errors':errors}
 
+_canva_job={'busy':False,'done':0,'total':0,'phase':'','result':None,'error':''}
+
 @app.post('/api/canva/batch',dependencies=[Depends(require_auth)])
 def canva_batch(brand:str=''):
-    """Un solo diseño de Canva con todas las noticias subidas en lote (titular y entradilla, sin imagen)."""
+    """Empieza en segundo plano un solo diseño de Canva con todas las noticias subidas en lote (titular y entradilla).
+    Se consulta con GET /api/canva/batch."""
+    if _canva_job['busy']: return dict(_canva_job)
     rows=db.rows("""SELECT * FROM articles WHERE workflow='lote' AND status IN ('draft','review_ready','approved')
                     AND COALESCE(hidden,0)=0 AND headline!='' AND updated_at>=datetime('now','-14 day') ORDER BY id""")
     rows=_bf(rows,brand)[:30]
     if not rows: raise HTTPException(400,'No hay noticias subidas en lote. Primero sube lo que redactó ChatGPT.')
-    try: return canva.batch_design(rows)
-    except ValueError as e: raise HTTPException(400,str(e))
+    _canva_job.update(busy=True,done=0,total=len(rows),phase='Creando páginas',result=None,error='')
+    def run():
+        try: _canva_job['result']=canva.batch_design(rows,progress=lambda d,ph: _canva_job.update(done=d,phase=ph))
+        except Exception as e: _canva_job['error']=str(e)[:300]
+        finally: _canva_job['busy']=False
+    threading.Thread(target=run,daemon=True).start()
+    return dict(_canva_job)
+
+@app.get('/api/canva/batch',dependencies=[Depends(require_auth)])
+def canva_batch_status():
+    return dict(_canva_job)
 
 @app.get('/api/export/chatgpt',dependencies=[Depends(require_auth)])
 def export_chatgpt(brand:str='',scope:str='publish',download:int=0):

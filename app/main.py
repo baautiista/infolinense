@@ -14,7 +14,7 @@ from .auth import login, require_auth
 from starlette.concurrency import run_in_threadpool
 from .config import BASE_DIR, RENDER_DIR, UPLOAD_DIR, SCAN_INTERVAL_MINUTES, AUTO_PIPELINE, OPENAI_API_KEY, ADMIN_PASSWORD, JWT_SECRET, PUBLISH_MODE, CORS_ORIGINS, PUBLIC_BASE_URL, AUTO_PUBLISH
 
-VERSION='7.1.1'
+VERSION='7.1.2'
 app=FastAPI(title='InfoLinense Desk',version=VERSION)
 app.add_middleware(CORSMiddleware,allow_origins=CORS_ORIGINS,allow_credentials=False,allow_methods=['*'],allow_headers=['Authorization','Content-Type'])
 db.init_db()
@@ -311,7 +311,7 @@ _LABELS={'id':'id','medio':'brand','seccion':'section','sección':'section','tit
 def parse_batch(text):
     """Lee lo que devuelve ChatGPT: bloques con ID, MEDIO, SECCIÓN, TITULAR, ENTRADILLA y TEXTO."""
     items,cur,key=[],None,None
-    label=re.compile(r'^\s*[*#_>\-\s]*(ID|MEDIO|SECCI[OÓ]N|TITULAR|ENTRADILLA|TEXTO|REDES)\s*[*_]*\s*[:：]\s*[*_]*\s*(.*)$',re.I)
+    label=re.compile(r'^\s*[*#_>\-\s]*(ID|MEDIO|SECCI[OÓ]N|TITULAR|ENTRADILLA|TEXTO|REDES)\s*[*_]*\s*(?:[:：.\-–]|(?<=ID)\s*(?=#?\d))\s*[*_]*\s*(.*)$',re.I)
     for line in (text or '').splitlines():
         m=label.match(line)
         if m:
@@ -372,7 +372,7 @@ def canva_batch(brand:str=''):
     if _canva_job['busy']: return dict(_canva_job)
     rows=db.rows("""SELECT * FROM articles WHERE workflow='lote' AND status IN ('draft','review_ready','approved')
                     AND COALESCE(hidden,0)=0 AND headline!='' AND updated_at>=datetime('now','-14 day') ORDER BY id""")
-    rows=_bf(rows,brand)[:30]
+    rows=_bf(rows,brand)[:100]
     if not rows: raise HTTPException(400,'No hay noticias subidas en lote. Primero sube lo que redactó ChatGPT.')
     _canva_job.update(busy=True,done=0,total=len(rows),phase='Creando páginas',result=None,error='')
     def run():

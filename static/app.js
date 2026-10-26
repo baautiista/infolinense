@@ -182,7 +182,7 @@ function armGpt(v) {
       if (!r.count) return toast('No hay noticias en Publicar sin publicar ni programar');
       try { await navigator.clipboard.writeText(r.text) }
       catch (e) { const t = document.createElement('textarea'); t.value = r.text; document.body.appendChild(t); t.select(); document.execCommand('copy'); t.remove() }
-      toast(`Copiadas ${r.count} noticias: pégalas en ChatGPT`);
+      toast(`Copiadas ${r.count} noticias sin programar` + (r.scheduled ? ` (${r.scheduled} programadas no se copian)` : '') + ': pégalas en ChatGPT');
     } catch (e) { toast(e.message) }
   };
   v.querySelector('#gptTxt').onclick = () => download('/api/export/chatgpt?download=1&t=' + Date.now() + '&' + qs(), `noticias-chatgpt-${new Date().toISOString().slice(0, 10)}.txt`);

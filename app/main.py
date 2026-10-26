@@ -14,7 +14,7 @@ from .auth import login, require_auth
 from starlette.concurrency import run_in_threadpool
 from .config import BASE_DIR, RENDER_DIR, UPLOAD_DIR, SCAN_INTERVAL_MINUTES, AUTO_PIPELINE, OPENAI_API_KEY, ADMIN_PASSWORD, JWT_SECRET, PUBLISH_MODE, CORS_ORIGINS, PUBLIC_BASE_URL, AUTO_PUBLISH
 
-VERSION='7.3.9'
+VERSION='7.4.0'
 app=FastAPI(title='InfoLinense Desk',version=VERSION)
 app.add_middleware(CORSMiddleware,allow_origins=CORS_ORIGINS,allow_credentials=False,allow_methods=['*'],allow_headers=['Authorization','Content-Type'])
 db.init_db()
@@ -264,7 +264,7 @@ def _publish_queue(brand=''):
     """Lo que está en Publicar sin publicar y sin programar (lo que hay que redactar)."""
     rows=db.rows("""SELECT a.id aid,a.brand,a.section,a.headline,c.* FROM articles a JOIN candidates c ON c.id=a.candidate_id
                     WHERE a.status IN ('draft','review_ready','approved') AND a.scheduled_at IS NULL AND COALESCE(a.hidden,0)=0
-                      AND COALESCE(a.schedule_error,'')='' AND c.status!='published'
+                      AND COALESCE(a.schedule_error,'')='' AND c.status!='published' AND COALESCE(c.plan_locked,0)=0
                     ORDER BY COALESCE(c.planned_at,'9999'),a.id""")
     for r in rows: r['brand']=r.get('brand') or 'infolinense'
     return _bf(rows,brand)
@@ -405,7 +405,10 @@ def export_chatgpt(brand:str='',scope:str='publish',download:int=0):
         from fastapi.responses import PlainTextResponse
         name=f"noticias-chatgpt-{datetime.now(MADRID).strftime('%Y-%m-%d-%H%M')}.txt"
         return PlainTextResponse(text,headers={'Content-Disposition':f'attachment; filename="{name}"'})
-    return {'text':text,'count':n}
+    skipped=len(_bf(db.rows("""SELECT a.brand,a.id FROM articles a JOIN candidates c ON c.id=a.candidate_id
+                    WHERE a.status IN ('draft','review_ready','approved') AND COALESCE(a.hidden,0)=0
+                      AND (a.scheduled_at IS NOT NULL OR COALESCE(a.schedule_error,'')!='' OR COALESCE(c.plan_locked,0)=1)"""),brand))
+    return {'text':text,'count':n,'scheduled':skipped}
 
 def _sort_queue(brand=''):
     rows=[r for r in candidates('pending',brand) if not r.get('article_id') and (r.get('editorial_priority') or 'undecided') in ('undecided','')]

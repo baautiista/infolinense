@@ -504,5 +504,10 @@ class ExportSkipsScheduledTests(unittest.TestCase):
         a1 = db.exec_("INSERT INTO articles(candidate_id,status,headline,scheduled_at) VALUES(?,?,?,?)", (cid, 'approved', 'h', '2099-01-01T10:00+01:00'))
         cid2 = db.exec_("INSERT INTO candidates(title,url,status) VALUES('Fallo al programar test','https://x.test/prog2','new')")
         a3 = db.exec_("INSERT INTO articles(candidate_id,status,headline,schedule_error) VALUES(?,?,?,?)", (cid2, 'approved', 'h3', 'Error'))
+        cid3 = db.exec_("INSERT INTO candidates(title,url,status,plan_locked,planned_at) VALUES('Hora fijada test','https://x.test/prog3','new',1,'2099-01-01T09:00+01:00')")
+        a4 = db.exec_("INSERT INTO articles(candidate_id,status,headline) VALUES(?,?,?)", (cid3, 'draft', 'h4'))
+        cid4 = db.exec_("INSERT INTO candidates(title,url,status) VALUES('Libre test','https://x.test/prog4','new')")
+        a5 = db.exec_("INSERT INTO articles(candidate_id,status,headline) VALUES(?,?,?)", (cid4, 'draft', 'h5'))
         ids = {r['aid'] for r in main._publish_queue()}
-        self.assertFalse({a1, a3} & ids)
+        self.assertFalse({a1, a3, a4} & ids)
+        self.assertIn(a5, ids)

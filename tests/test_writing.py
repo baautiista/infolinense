@@ -206,16 +206,14 @@ class TemplateLayout(unittest.TestCase):
         self.assertEqual(layout.family_for('Fútbol')[1], 6)
         self.assertEqual(layout.family_for('AGENDA')[3], '#061E5C')
 
-    def test_text_that_does_not_fit_is_not_changed_but_reported(self):
+    def test_long_texts_go_whole_to_canva(self):
         from app import canva
         too_long = 'Más de 550 toneladas de alga asiática retiradas en Poniente en lo que va de 2026 según el balance municipal'
-        with self.assertRaises(ValueError) as e:
-            canva.design_fields({'headline': too_long, 'subtitle': 'Breve.'})
-        self.assertIn('Acórtalo en Revisar', str(e.exception))
-        with self.assertRaises(ValueError):
-            canva.design_fields({'headline': 'Titular corto', 'subtitle': 'x' * 200})
-        slide = canva.design_fields({'headline': too_long, 'subtitle': 'x' * 200}, strict=False)  # carrusel
-        self.assertLessEqual(len(slide['SUMMARY']), 165)
+        f = canva.design_fields({'headline': too_long, 'subtitle': 'x' * 200})
+        self.assertEqual(f['HEADLINE'], too_long)
+        self.assertEqual(f['SUMMARY'], 'x' * 200)
+        slide = canva.design_fields({'headline': too_long, 'subtitle': 'x' * 200}, strict=False)
+        self.assertEqual(slide['SUMMARY'], 'x' * 200)
 
     def test_four_line_headline_uses_four_line_template(self):
         from app import canva

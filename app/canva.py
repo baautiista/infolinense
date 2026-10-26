@@ -201,31 +201,11 @@ def _page_for(article):
 
 
 def design_fields(article, strict=True):
-    """Textos de la plantilla: exactamente el titular y la entradilla elegidos en Revisar.
-    Si no caben, no se cambian: se avisa para que se acorten en Revisar (strict).
-    Las diapositivas del carrusel (strict=False) sí se ajustan solas."""
+    """Textos de la plantilla: exactamente el titular y la entradilla escritos, completos."""
     family = layout.family_for(article.get('section'), article.get('headline'))
     headline = re.sub(r'\s+', ' ', article.get('headline') or '').strip()
     summary = re.sub(r'\s+', ' ', article.get('subtitle') or '').strip()
-    if strict and _is_default(article):
-        lines = len(layout.headline_lines(headline))
-        if lines > layout.HEADLINE_MAX_LINES and article.get('id'):  # no cabe ni en 4 líneas: la IA lo recorta lo justo
-            from . import ai
-            new = ai.shorten_headline(dict(article, headline=headline))
-            if new and new != headline and len(layout.headline_lines(new)) <= layout.HEADLINE_MAX_LINES:
-                db.exec_('UPDATE articles SET headline=? WHERE id=?', (new, article['id']))
-                article['headline'] = headline = new
-                lines = len(layout.headline_lines(headline))
-        if lines > layout.HEADLINE_MAX_LINES:
-            raise ValueError('El titular ocupa %s líneas en la imagen y caben %s. Acórtalo en Revisar y vuelve a crear la imagen.'
-                             % (lines, layout.HEADLINE_MAX_LINES))
-        if len(summary) > layout.SUMMARY_MAX:
-            raise ValueError('La entradilla tiene %s caracteres y en la imagen caben %s. Acórtala en Revisar y vuelve a crear la imagen.'
-                             % (len(summary), layout.SUMMARY_MAX))
-    elif _is_default(article):
-        if not layout.headline_fits(headline):
-            headline = layout.fit_headline(headline)
-        summary = layout.fit_summary(summary)
+    # Titular y entradilla van ENTEROS, tal cual se han escrito: nunca se recortan ni se acortan.
     if not _is_default(article):
         from . import brands
         b = brands.settings(article.get('brand'))

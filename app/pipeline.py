@@ -109,13 +109,7 @@ def finish_article(aid):
     a = db.row('SELECT a.*,c.editorial_priority,c.planned_at FROM articles a LEFT JOIN candidates c ON c.id=a.candidate_id WHERE a.id=?', (aid,))
     if not a:
         return
-    try:
-        short = ai.shorten_headline(a)
-        if short and short != a['headline']:
-            db.exec_('UPDATE articles SET headline=? WHERE id=?', (short, aid))
-            a['headline'] = short
-    except Exception as exc:
-        db.log('headline_error', f'{aid}: {str(exc)[:200]}')
+    # el titular no se acorta nunca solo: va entero
     from zoneinfo import ZoneInfo
     today = _dt.now(ZoneInfo('Europe/Madrid')).date().isoformat()
     # En cuanto una noticia se aprueba (cualquier día), su imagen de Canva se hace sola

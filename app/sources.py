@@ -779,6 +779,8 @@ def same_story(a, b):
     shared = len(ta & tb)
     if shared >= 3 and shared / min(len(ta), len(tb)) >= 0.4:
         return True
+    if shared >= 2 and shared / min(len(ta), len(tb)) >= 0.5:  # mismo tema con titulares cortos y distintos
+        return True
     norm = lambda t: ' '.join(sorted(_story_tokens(t)))
     return difflib.SequenceMatcher(None, norm(a), norm(b)).ratio() >= 0.8
 
@@ -790,12 +792,12 @@ def story_match(a, ea, b, eb):
     ta, tb = _story_tokens(a), _story_tokens(b)
     if len(ta & tb) < 2:
         return False
-    xa, xb = _story_tokens(a + ' ' + (ea or '')[:400]), _story_tokens(b + ' ' + (eb or '')[:400])
+    xa, xb = _story_tokens(a + ' ' + (ea or '')[:600]), _story_tokens(b + ' ' + (eb or '')[:600])
     shared = len(xa & xb)
-    return shared >= 6 and shared / max(1, min(len(xa), len(xb))) >= 0.45
+    return shared >= 5 and shared / max(1, min(len(xa), len(xb))) >= 0.35  # mismo tema aunque lo cuenten distinto
 
 
-def find_story(title, exclude=None, days=4, excerpt=''):
+def find_story(title, exclude=None, days=7, excerpt=''):
     """Noticia abierta del radar (últimos días) que cuenta lo mismo."""
     if _TENDER.search(title or ''): return None  # cada edicto o licitación es un documento distinto
     since = (datetime.now(timezone.utc) - timedelta(days=days)).strftime('%Y-%m-%d %H:%M:%S')

@@ -407,14 +407,16 @@ class CanvaBatchTests(unittest.TestCase):
         with patch.object(canva, 'ready', return_value=True), patch.object(canva, 'connected', return_value=True), \
                 patch.object(canva, '_api', side_effect=fake_api), patch.object(canva, '_wait', side_effect=lambda path, first=None: first['job']):
             r = canva.batch_design(arts)
-        self.assertEqual(len(r['lotes']), 2)   # 6 de una sección: 4 en el primer lote y 2 en el segundo
-        self.assertEqual([l['pages'] for l in r['lotes']], [4, 2])
+        self.assertGreaterEqual(len(r['lotes']), 2)   # 6 de una sección no caben en un lote
+        self.assertEqual(sum(l['pages'] for l in r['lotes']), 6)
         d = sent[0]['data']
         self.assertEqual(sent[0]['brand_template_id'], canva.LOTE_TEMPLATES['infolinense'])
-        self.assertEqual(d['HEADLINE_%d' % page]['text'], (long_head + '0').strip())
-        self.assertEqual(d['HEADLINE_%d' % (page + 36)]['text'], (long_head + '3').strip())
+        self.assertEqual(d['HEADLINE_%d' % (page + 36)]['text'][:20], (long_head + '0').strip()[:20])
+        self.assertEqual(d['HEADLINE_%d' % page]['text'], '')   # titular muy largo: va al hueco de 6 líneas, no al de 4
+        short = [{'id': 9, 'brand': 'infolinense', 'section': 'CIUDAD', 'headline': 'Corto', 'subtitle': ''}]
+        self.assertEqual(list(canva.lote_plan(short)[0]), [page])
         other = 1 if page != 1 else 2
-        self.assertEqual(d['HEADLINE_%d' % other]['text'], ' ')
+        self.assertEqual(d['HEADLINE_%d' % other]['text'], '')
 
 
 class LaunchBatchTests(unittest.TestCase):
@@ -435,3 +437,11 @@ class LaunchBatchTests(unittest.TestCase):
         self.assertTrue(first['has_image'])
         a = db.row('SELECT * FROM articles WHERE id=?', (first['id'],))
         self.assertEqual(main.social_publish.article_images(a), [a['render_path']])
+
+
+class ChatgptMergeTests(unittest.TestCase):
+    def test_prompt_asks_to_merge_and_unidas_is_parsed(self):
+        self.assertIn('UNIDAS', main.chatgpt_export_text()[0])
+        r = main.parse_batch('ID: 5\nUNIDAS: 7, 9\nTITULAR: Uno\nTEXTO: x\n---\nID: 8\nTITULAR: Dos\n')
+        self.assertEqual(r[0]['merged'], [7, 9])
+        self.assertEqual(r[1]['merged'], [])

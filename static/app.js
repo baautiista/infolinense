@@ -201,7 +201,7 @@ function armGpt(v) {
       const b = e.target; b.disabled = true; b.textContent = 'Subiendo…';
       try {
         const r = await api('/api/import/chatgpt', { method: 'POST', body: JSON.stringify({ text: sheet.querySelector('#batchText').value }) });
-        sheet.querySelector('#bOut').innerHTML = `<p><b>✓ ${r.updated} noticias rellenadas.</b> Ya puedes crear el diseño en Canva o revisarlas en Publicar.</p>${r.errors.length ? `<p class="error small">${r.errors.map(esc).join('<br>')}</p>` : ''}`;
+        sheet.querySelector('#bOut').innerHTML = `<p><b>${r.updated} noticias rellenadas${r.merged && r.merged.length ? `, ${r.merged.length} unidas a otras` : ''}.</b> Ya puedes crear el diseño en Canva o revisarlas en Publicar.</p>${r.errors.length ? `<p class="error small">${r.errors.map(esc).join('<br>')}</p>` : ''}`;
         b.textContent = 'Hecho'; counts();
       } catch (er) { toast(er.message); b.disabled = false; b.textContent = 'Subir' }
     };

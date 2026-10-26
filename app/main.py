@@ -14,7 +14,7 @@ from .auth import login, require_auth
 from starlette.concurrency import run_in_threadpool
 from .config import BASE_DIR, RENDER_DIR, UPLOAD_DIR, SCAN_INTERVAL_MINUTES, AUTO_PIPELINE, OPENAI_API_KEY, ADMIN_PASSWORD, JWT_SECRET, PUBLISH_MODE, CORS_ORIGINS, PUBLIC_BASE_URL, AUTO_PUBLISH
 
-VERSION='7.3.0'
+VERSION='7.3.1'
 app=FastAPI(title='InfoLinense Desk',version=VERSION)
 app.add_middleware(CORSMiddleware,allow_origins=CORS_ORIGINS,allow_credentials=False,allow_methods=['*'],allow_headers=['Authorization','Content-Type'])
 db.init_db()
@@ -283,6 +283,7 @@ def chatgpt_export_text(brand='',scope='publish'):
          "", "Medios:", *head, "",
          "Devuelve cada noticia EXACTAMENTE con estas etiquetas, en este orden y sin negritas (respeta el ID de cada una). La sección la pone el panel:",
          "ID: (el número indicado, sin cambiarlo)",
+         "UNIDAS: (solo si has juntado varias: los ID de las otras noticias que van dentro de esta, separados por comas)",
          "MEDIO: (el indicado)",
          "TITULAR: (claro e informativo, entre 60 y 110 caracteres, sin punto final)",
          "ENTRADILLA: (una o dos frases, máximo 250 caracteres)",
@@ -291,6 +292,8 @@ def chatgpt_export_text(brand='',scope='publish'):
          "",
          "Reglas: usa solo los datos de la fuente; no inventes nombres, cifras, fechas ni declaraciones. Si falta un dato, no lo pongas. "
          "Cuenta qué significa para los vecinos de La Línea. Cita la fuente («según…») cuando sea de otro medio.",
+         "MUY IMPORTANTE: si dos o más noticias son la misma o tratan el mismo tema, júntalas en UNA sola noticia con todos los datos. "
+         "Usa el ID de una de ellas y pon los ID de las demás en UNIDAS; no las repitas por separado.",
          "", "="*60]
     for r in rows:
         text=re.sub(r'\n{3,}','\n\n',(r.get('raw_text') or r.get('excerpt') or '').strip())[:6000]
@@ -306,12 +309,12 @@ def chatgpt_export_text(brand='',scope='publish'):
               "Texto de la fuente:", text or '(sin texto: usa el título y el enlace)', "-"*60]
     return '\n'.join(out)+'\n', len(rows)
 
-_LABELS={'id':'id','medio':'brand','seccion':'section','sección':'section','titular':'headline','entradilla':'subtitle','texto':'body','redes':'social'}
+_LABELS={'id':'id','medio':'brand','seccion':'section','sección':'section','titular':'headline','entradilla':'subtitle','texto':'body','redes':'social','unidas':'merged'}
 
 def parse_batch(text):
     """Lee lo que devuelve ChatGPT: bloques con ID, MEDIO, SECCIÓN, TITULAR, ENTRADILLA y TEXTO."""
     items,cur,key=[],None,None
-    label=re.compile(r'^\s*[*#_>\-\s]*(ID|MEDIO|SECCI[OÓ]N|TITULAR|ENTRADILLA|TEXTO|REDES)\s*[*_]*\s*(?:[:：.\-–]|(?<=ID)\s*(?=#?\d))\s*[*_]*\s*(.*)$',re.I)
+    label=re.compile(r'^\s*[*#_>\-\s]*(ID|UNIDAS|MEDIO|SECCI[OÓ]N|TITULAR|ENTRADILLA|TEXTO|REDES)\s*[*_]*\s*(?:[:：.\-–]|(?<=ID)\s*(?=#?\d))\s*[*_]*\s*(.*)$',re.I)
     for line in (text or '').splitlines():
         m=label.match(line)
         if m:
@@ -327,7 +330,9 @@ def parse_batch(text):
         num=re.search(r'\d+',it.get('id',''))
         if not num: continue
         clean_=lambda v: re.sub(r'\n{3,}','\n\n',re.sub(r'\*\*|__','',v or '')).strip()
-        out.append({'id':int(num.group()),**{k:clean_(v) for k,v in it.items() if k!='id'}})
+        row={'id':int(num.group()),**{k:clean_(v) for k,v in it.items() if k not in ('id','merged')}}
+        row['merged']=[int(x) for x in re.findall(r'\d+',it.get('merged','')) if int(x)!=row['id']]
+        out.append(row)
     return out
 
 def _brand_by_name(name,default):
@@ -343,7 +348,7 @@ def import_chatgpt(body:BatchIn):
     """Sube en lote lo redactado por ChatGPT: cada noticia (por su ID) recibe medio, sección, titular, entradilla y texto."""
     items=parse_batch(body.text)
     if not items: raise HTTPException(400,'No encuentro noticias con «ID:». Pega el texto tal cual lo devolvió ChatGPT.')
-    done,errors=[],[]
+    done,errors,merged=[],[],[]
     for it in items:
         a=db.row('SELECT * FROM articles WHERE id=?',(it['id'],))
         if not a: errors.append(f"ID {it['id']}: no existe"); continue
@@ -360,8 +365,12 @@ def import_chatgpt(body:BatchIn):
                  (brand,section,headline,(it.get('subtitle') or a.get('subtitle') or '').strip(),body_,it.get('social') or body_,it['id']))
         db.exec_('UPDATE candidates SET brand=? WHERE id=?',(brand,a['candidate_id']))
         done.append(it['id'])
-    db.log('batch',f'Lote de ChatGPT: {len(done)} noticias')
-    return {'updated':len(done),'ids':done,'errors':errors}
+        for mid in it.get('merged') or []:   # noticias que ChatGPT juntó en esta: se quitan de Publicar
+            m=db.row('SELECT id,status FROM articles WHERE id=?',(mid,))
+            if m and m['status']!='published':
+                db.exec_('UPDATE articles SET hidden=1,updated_at=CURRENT_TIMESTAMP WHERE id=?',(mid,)); merged.append(mid)
+    db.log('batch',f'Lote de ChatGPT: {len(done)} noticias'+(f', {len(merged)} unidas' if merged else ''))
+    return {'updated':len(done),'ids':done,'merged':merged,'errors':errors}
 
 _canva_job={'busy':False,'done':0,'total':0,'phase':'','result':None,'error':''}
 

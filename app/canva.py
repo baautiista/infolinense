@@ -547,19 +547,31 @@ LOTE_FAMILIES = 12   # páginas por sección en la plantilla de lote: p, p+12, p
 LOTE_SLOTS = 4
 
 
+LOTE_LEVELS = (4, 5, 5, 6)   # líneas de titular para las que está colocada la sección en cada hueco (p, p+12, p+24, p+36)
+
+
+def _lote_lines(article):
+    return len(layout.headline_lines(design_fields(article, strict=False)['HEADLINE'], font=74, box=893))
+
+
 def lote_plan(articles):
-    """Reparte las noticias en huecos de la plantilla de lote según su sección.
+    """Reparte las noticias en huecos de la plantilla de lote según su sección y lo largo del titular
+    (la etiqueta de sección de cada hueco está a la altura justa para 4, 5 o 6 líneas).
     Devuelve una lista de lotes; cada lote es {número de página: noticia}."""
     lotes = []
     for a in articles:
         p = int(_page_for(a) or 1)
         p = p if 1 <= p <= LOTE_FAMILIES else 1
+        need = min(max(_lote_lines(a), LOTE_LEVELS[0]), LOTE_LEVELS[-1])
+        # primero el hueco exacto; si no, uno con la sección más arriba (queda un poco de aire, nunca se pisa)
+        order = sorted(range(LOTE_SLOTS), key=lambda k: (LOTE_LEVELS[k] < need, LOTE_LEVELS[k] != need, LOTE_LEVELS[k]))
+        order = [k for k in order if LOTE_LEVELS[k] >= need] or [LOTE_SLOTS - 1]
         for lote in lotes:
-            free = [p + LOTE_FAMILIES * k for k in range(LOTE_SLOTS) if p + LOTE_FAMILIES * k not in lote]
+            free = [p + LOTE_FAMILIES * k for k in order if p + LOTE_FAMILIES * k not in lote]
             if free:
                 lote[free[0]] = a; break
         else:
-            lotes.append({p: a})
+            lotes.append({p + LOTE_FAMILIES * order[0]: a})
     return lotes
 
 
@@ -569,10 +581,10 @@ def _lote_fields(lote, schema):
         a = lote.get(n)
         t = design_fields(a, strict=False) if a else {}
         for k in ('HEADLINE', 'SUMMARY', 'SECTION'):
-            fields['%s_%d' % (k, n)] = {'type': 'text', 'text': (t.get(k) or '').strip() or BLANK}
+            fields['%s_%d' % (k, n)] = {'type': 'text', 'text': (t.get(k) or '').strip()}   # vacío: no se ve nada
     for k in ('HEADLINE', 'SUMMARY', 'SECTION'):   # restos sin número de la plantilla original
         if schema.get(k, {}).get('type') == 'text':
-            fields[k] = {'type': 'text', 'text': BLANK}
+            fields[k] = {'type': 'text', 'text': ''}
     return {k: v for k, v in fields.items() if not schema or schema.get(k, {}).get('type') == 'text'}
 
 

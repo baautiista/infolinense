@@ -484,10 +484,10 @@ def public_image(path):
         raise SocialError('Falta la imagen final. Crea la imagen en Canva antes de publicar en redes.')
     if not PUBLIC_BASE_URL.startswith('https://'):
         raise SocialError('Falta PUBLIC_BASE_URL (https://…) en Railway: las redes necesitan descargar la imagen')
+    cleanup_expired_public_media()
     token = secrets.token_urlsafe(24)
     out = RENDER_DIR / ('public_%s.jpg' % token)
     out.write_bytes(jpeg_bytes(src))
-    cleanup_expired_public_media()
     db.exec_('INSERT INTO public_media VALUES(?,?,?)', (token, str(out), int(time.time()) + 7 * 86400))
     return PUBLIC_BASE_URL + '/p/' + token + '.jpg'
 

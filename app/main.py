@@ -14,7 +14,7 @@ from .auth import login, require_auth
 from starlette.concurrency import run_in_threadpool
 from .config import BASE_DIR, RENDER_DIR, UPLOAD_DIR, SCAN_INTERVAL_MINUTES, AUTO_PIPELINE, OPENAI_API_KEY, ADMIN_PASSWORD, JWT_SECRET, PUBLISH_MODE, CORS_ORIGINS, PUBLIC_BASE_URL, AUTO_PUBLISH
 
-VERSION='7.3.2'
+VERSION='7.3.3'
 app=FastAPI(title='InfoLinense Desk',version=VERSION)
 app.add_middleware(CORSMiddleware,allow_origins=CORS_ORIGINS,allow_credentials=False,allow_methods=['*'],allow_headers=['Authorization','Content-Type'])
 db.init_db()
@@ -558,7 +558,7 @@ def _new_launch_article(it,brand):
                        VALUES(?,?,?,?,?,?,?,?,?)''',(cid,sec,headline,sub,body_,body_,'approved',brand,'lanzadera'))
 
 @app.post('/api/launch/batch',dependencies=[Depends(require_auth)])
-async def launch_batch(text:str=Form(''),brand:str=Form('infolinense'),txt:UploadFile|None=File(None),images:UploadFile|None=File(None)):
+async def launch_batch(text:str=Form(''),brand:str=Form('infolinense'),txt:UploadFile|None=File(None),images:list[UploadFile]|None=File(None)):
     """Sube de una vez el txt redactado y un zip con las imágenes. Cada imagen se une a su noticia:
     1) por el número de ID en el nombre del archivo, 2) por el orden (1.png con la primera noticia…) si hay tantas como noticias."""
     import zipfile as _zip
@@ -584,24 +584,28 @@ async def launch_batch(text:str=Form(''),brand:str=Form('infolinense'),txt:Uploa
         else:
             aid=_new_launch_article(it,brand)
         out.append({'id':aid,'ref':it['id']})
-    # imágenes del zip
+    # imágenes: un .zip, una carpeta entera o varias imágenes sueltas
     imgs=[]
-    if images is not None and not isinstance(images,str):
-        raw=await images.read(300_000_001)
-        try: z=_zip.ZipFile(BytesIO(raw))
-        except _zip.BadZipFile: raise HTTPException(400,'El archivo de imágenes no es un .zip válido')
-        names=sorted([n for n in z.namelist() if re.search(r'\.(png|jpe?g|webp)$',n,re.I) and not n.startswith('__MACOSX')],key=lambda n:_natkey(n.rsplit('/',1)[-1]))
-        for n in names:
-            try:
-                im=Image.open(BytesIO(z.read(n))); im.load(); imgs.append((n.rsplit('/',1)[-1],im))
-            except Exception: continue
+    files=[f for f in (images if isinstance(images,list) else [images] if images is not None else []) if f is not None and not isinstance(f,str)]
+    def _add(name,data):
+        try: im=Image.open(BytesIO(data)); im.load(); imgs.append((name.replace('\\','/').rsplit('/',1)[-1],im))
+        except Exception: pass
+    for f in files:
+        raw=await f.read(300_000_001); name=f.filename or ''
+        if name.lower().endswith('.zip') or raw[:2]==b'PK':
+            try: z=_zip.ZipFile(BytesIO(raw))
+            except _zip.BadZipFile: raise HTTPException(400,'El archivo de imágenes no es un .zip válido')
+            for n in z.namelist():
+                if re.search(r'\.(png|jpe?g|webp)$',n,re.I) and '__MACOSX' not in n and not n.rsplit('/',1)[-1].startswith('.'): _add(n,z.read(n))
+        elif re.search(r'\.(png|jpe?g|webp)$',name,re.I) and not name.rsplit('/',1)[-1].startswith('.'): _add(name,raw)
+    imgs.sort(key=lambda x:_natkey(x[0]))
     used=set()
     for o in out:  # 1) ID en el nombre del archivo
         for i,(n,im) in enumerate(imgs):
             if i not in used and o['ref'] and re.search(r'(?<!\d)%d(?!\d)'%o['ref'],n):
                 _set_final_image(o['id'],im); used.add(i); o['image']=n; break
     rest=[o for o in out if 'image' not in o]; free=[i for i in range(len(imgs)) if i not in used]
-    if rest and len(free)>=len(rest):  # 2) por orden
+    if rest and free:  # 2) por orden, con las que haya
         for o,i in zip(rest,free):
             _set_final_image(o['id'],imgs[i][1]); used.add(i); o['image']=imgs[i][0]
     rows=[]

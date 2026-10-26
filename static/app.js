@@ -417,16 +417,18 @@ function whenPicker(id, at) {
 function launchBatchView(v) {
   const b0 = netBrand();
   v.innerHTML = `${modeSwitch()}<form class="up" id="lbForm">
-    <div><h2>Lanzadera en lote</h2><p class="muted small">Sube el txt que ha redactado ChatGPT y un .zip con las imágenes terminadas. Cada imagen se une a su noticia por el ID del nombre del archivo o, si no, por el orden (1.png con la primera noticia, 2.png con la segunda…).</p></div>
+    <div><h2>Lanzadera en lote</h2><p class="muted small">Sube el txt que ha redactado ChatGPT y las imágenes terminadas: la carpeta entera, un .zip o las imágenes sueltas. Cada imagen se une a su noticia por el ID del nombre del archivo o, si no, por el orden (1.png con la primera noticia, 2.png con la segunda…).</p></div>
     ${BRANDS.length > 1 ? `<div><p class="small" style="font-weight:700;margin:0 0 6px">Medio (si el txt no lo dice)</p><div class="seg" id="lbBrand">${BRANDS.map(b => `<label><input type="radio" name="brand" value="${b.slug}" ${b.slug === b0 ? 'checked' : ''}><span>${esc(b.name)}</span></label>`).join('')}</div></div>` : ''}
     <label>Texto redactado (.txt)<input type="file" name="txt" accept=".txt,text/plain"></label>
     <label>O pégalo aquí<textarea name="text" rows="5" placeholder="TITULAR: …&#10;ENTRADILLA: …&#10;TEXTO: …&#10;---"></textarea></label>
-    <label>Imágenes (.zip)<input type="file" name="images" accept=".zip,application/zip"></label>
+    <div class="row wrap"><label>Carpeta de imágenes<input type="file" id="lbDir" webkitdirectory directory multiple></label>
+      <label>O un .zip / imágenes sueltas<input type="file" id="lbFiles" multiple accept=".zip,application/zip,image/png,image/jpeg,image/webp"></label></div>
     <button class="btn primary" id="lbBtn">Cargar noticias</button></form><div id="lbList"></div>`;
   $('#lbForm').onsubmit = async e => {
     e.preventDefault();
     const fd = new FormData(e.target); fd.set('brand', (document.querySelector('#lbBrand input:checked') || {}).value || b0);
-    if (!fd.get('txt').size) fd.delete('txt'); if (!fd.get('images').size) fd.delete('images');
+    if (!fd.get('txt').size) fd.delete('txt');
+    [...$('#lbDir').files, ...$('#lbFiles').files].filter(f => /\.(png|jpe?g|webp|zip)$/i.test(f.name) && !f.name.startsWith('.')).forEach(f => fd.append('images', f, f.webkitRelativePath || f.name));
     const b = $('#lbBtn'); b.disabled = true; b.textContent = 'Cargando…';
     try { const r = await api('/api/launch/batch', { method: 'POST', body: fd }); launchItems = r.items; toast(`${r.items.length} noticias · ${r.matched} de ${r.images} imágenes unidas`); drawLaunch() }
     catch (er) { toast(er.message) }
@@ -445,7 +447,7 @@ function drawLaunch() {
     <div class="list">${launchItems.map((it, i) => `<article class="rv-card lb-item" data-id="${it.id}">
       <div class="lb-img" id="img-${it.id}">${it.has_image ? '' : '<span class="muted small">Sin imagen</span>'}</div>
       <div class="lb-body"><div class="meta">${brandBadge(it.brand)}${it.section ? secBadge(it.section, it.brand) : ''}<span class="muted small" id="st-${it.id}">${it.state || ''}</span></div>
-        <h3><a href="#editor/${it.id}">${esc(it.headline)}</a></h3>${it.subtitle ? `<p class="rv-sub">${esc(it.subtitle)}</p>` : ''}
+        <h3 class="go" data-go="#editor/${it.id}">${esc(it.headline)}</h3>${it.subtitle ? `<p class="rv-sub">${esc(it.subtitle)}</p>` : ''}
         <label class="small lb-change">Cambiar imagen<input type="file" accept="image/*" data-img="${it.id}"></label>
         <div class="row wrap">${whenPicker(it.id, nextQuarter(15 * i))}</div>
         <div class="rv-actions"><button class="btn small primary" data-now="${it.id}">Publicar ya</button><button class="btn small" data-sched="${it.id}">Programar</button></div></div></article>`).join('')}</div>`;
@@ -632,7 +634,7 @@ async function reviewView(v) {
   reviewIds = rows.map(r => r.article_id);
   const card = r => `<article class="rv-card" data-aid="${r.article_id}" style="--bc:${brandOf(r.brand).color}">
       <div class="meta">${brandBadge(r.brand)}${r.section ? secBadge(r.section, r.brand) : ''}<span class="rv-time">${esc(whenLabel(r.planned_at))}</span>${r.editorial_priority === 'urgent' ? '<span class="flag">Urgente</span>' : ''}${r.has_photo ? '' : '<span class="muted small">sin foto</span>'}</div>
-      <h3><a href="#editor/${r.article_id}">${esc(r.headline || r.title)}</a></h3>
+      <h3 class="go" data-go="#editor/${r.article_id}">${esc(r.headline || r.title)}</h3>
       ${r.subtitle ? `<p class="rv-sub">${esc(r.subtitle)}</p>` : ''}
       <div class="rv-actions"><button class="btn small primary" onclick="go('editor/${r.article_id}')">Revisar</button><button class="btn small danger icon" title="Eliminar" aria-label="Eliminar" onclick="removeArticle(${r.article_id})">Eliminar</button></div></article>`;
   v.innerHTML = rows.length ? `<div class="rv-intro"><p><b>${rows.length}</b> por revisar. Abre cada una, corrige texto, foto e imagen y pulsa «Revisada».</p><p class="muted small">El día y la hora de cada noticia se organizan en <a href="#publish">Publicar</a>.</p></div><div class="list">${rows.map(card).join('')}</div>`
@@ -736,7 +738,7 @@ async function publishView(v) {
          <div class="rv-actions"><button class="btn small primary" onclick="scheduleAt(${r.id},'${esc(r._at)}',this)">Programar${r._at ? ' ' + esc(String(r._at).slice(11, 16)) : ''}</button><button class="btn small" onclick="publishNow(${r.id},this)">Publicar ahora</button><button class="btn small" onclick="moveSheet(${r.id})">Mover</button><button class="btn small danger icon" title="Eliminar" aria-label="Eliminar" onclick="removeArticle(${r.id})">Eliminar</button></div>`;
     return `<article class="rv-card ${done ? 'done' : ''}" ${done ? '' : 'draggable="true"'} data-aid="${r.id}" style="--bc:${brandOf(r.brand).color}">
       <div class="meta">${brandBadge(r.brand)}${secBadge(r.section, r.brand)}${r._at ? `<span class="rv-time">${esc(String(r._at).slice(11, 16))}</span>` : ''}${done ? '<span class="st st-published">Publicada</span>' : r.status === 'draft' ? '<span class="flag">Sin revisar</span>' : ''}<span class="muted small">${r.canva_exported ? 'Imagen lista' : r.has_photo ? 'Sin imagen de Canva' : 'Sin foto'}</span></div>
-      <h3><a href="#editor/${r.id}">${esc(r.headline)}</a></h3>
+      <h3 class="go" data-go="#editor/${r.id}">${esc(r.headline)}</h3>
       ${!done && (r.brand || 'infolinense') !== 'infolinense' && noNets(r.brand) ? `<p class="error small">${esc(bname(r.brand))} no tiene redes conectadas. <a href="#settings">Conectar</a></p>` : ''}
       ${actions}</article>`;
   };
@@ -1120,3 +1122,5 @@ window.toggleSource = async id => { try { await api(`/api/sources/${id}/toggle`,
 window.go = go; window.download = download; window.logout = logout; window.render = render;
 
 if (token) start(); else logout();
+
+document.addEventListener('click', e => { const g = e.target.closest('[data-go]'); if (g && !window.getSelection().toString()) location.hash = g.dataset.go });

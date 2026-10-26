@@ -439,3 +439,15 @@ class ChatgptMergeTests(unittest.TestCase):
         r = main.parse_batch('ID: 5\nUNIDAS: 7, 9\nTITULAR: Uno\nTEXTO: x\n---\nID: 8\nTITULAR: Dos\n')
         self.assertEqual(r[0]['merged'], [7, 9])
         self.assertEqual(r[1]['merged'], [])
+
+
+class LaunchFolderTests(unittest.TestCase):
+    def test_loose_images_from_folder_join_by_order(self):
+        db.init_db()
+        txt = ('TITULAR: Uno de carpeta para la lanzadera\nTEXTO: a\n---\nTITULAR: Dos de carpeta para la lanzadera\nTEXTO: b\n')
+        files = []
+        for n, c in (('fotos/2.png', 'blue'), ('fotos/1.png', 'red')):
+            b = BytesIO(); Image.new('RGB', (1080, 1350), c).save(b, 'PNG'); files.append(FakeUpload(n, b.getvalue()))
+        r = asyncio.run(main.launch_batch(text=txt, brand='infolinense', txt=None, images=files))
+        self.assertEqual(r['matched'], 2)
+        self.assertEqual(r['items'][0]['image'], '1.png')

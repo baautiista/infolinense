@@ -463,6 +463,20 @@ def jpeg_bytes(path, max_width=1440, max_bytes=7_500_000):
     return buf.getvalue()
 
 
+def cleanup_expired_public_media(now=None):
+    """Remove social JPGs after their seven-day public URL has expired."""
+    now = time.time() if now is None else now
+    # Keep an extra day for delayed downloads by social networks.
+    cutoff = now - 8 * 86400
+    for image in RENDER_DIR.glob('public_*.jpg'):
+        try:
+            if image.is_file() and image.stat().st_mtime < cutoff:
+                image.unlink()
+        except OSError:
+            continue
+    db.exec_('DELETE FROM public_media WHERE expires_at<?', (int(now),))
+
+
 def public_image(path):
     """Copia en JPG la imagen y devuelve una URL pública temporal (las redes la descargan desde aquí)."""
     src = Path(path or '')
@@ -473,7 +487,7 @@ def public_image(path):
     token = secrets.token_urlsafe(24)
     out = RENDER_DIR / ('public_%s.jpg' % token)
     out.write_bytes(jpeg_bytes(src))
-    db.exec_('DELETE FROM public_media WHERE expires_at<?', (int(time.time()),))
+    cleanup_expired_public_media()
     db.exec_('INSERT INTO public_media VALUES(?,?,?)', (token, str(out), int(time.time()) + 7 * 86400))
     return PUBLIC_BASE_URL + '/p/' + token + '.jpg'
 

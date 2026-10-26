@@ -37,6 +37,26 @@ class SocialPublishTests(unittest.TestCase):
         sp._save_account('meta', {'pages': [], 'page': {'id': 'PAGE', 'name': 'InfoLinense', 'access_token': 'TOK',
                                                           'instagram_id': 'IG', 'instagram_username': 'infolinense'}})
 
+    def test_expired_public_media_is_removed_without_touching_current_images(self):
+        import time
+        old = RENDER_DIR / 'public_expired.jpg'
+        current = RENDER_DIR / 'public_current.jpg'
+        old.write_bytes(b'old')
+        current.write_bytes(b'current')
+        timestamp = time.time()
+        os.utime(old, (timestamp - 9 * 86400, timestamp - 9 * 86400))
+        try:
+            db.exec_('INSERT INTO public_media VALUES(?,?,?)', ('expired', str(old), int(timestamp - 86400)))
+            db.exec_('INSERT INTO public_media VALUES(?,?,?)', ('current', str(current), int(timestamp + 86400)))
+            sp.cleanup_expired_public_media(timestamp)
+            self.assertFalse(old.exists())
+            self.assertTrue(current.exists())
+            self.assertTrue(self.card.exists())
+            self.assertIsNone(db.row('SELECT token FROM public_media WHERE token=?', ('expired',)))
+            self.assertIsNotNone(db.row('SELECT token FROM public_media WHERE token=?', ('current',)))
+        finally:
+            current.unlink(missing_ok=True)
+
     def test_caption_respects_instagram_limit(self):
         long = dict(self.article, body='Frase larga de la noticia. ' * 200)
         text = sp.caption(long, 2200)

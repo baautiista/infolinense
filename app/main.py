@@ -1424,6 +1424,8 @@ def scheduler_loop():
         time.sleep(600 if 765<=m<=915 else max(15,SCAN_INTERVAL_MINUTES)*60)
 @app.on_event('startup')
 def startup():
+    try: social_publish.cleanup_expired_public_media()
+    except Exception as e: db.log('media_cleanup_error',str(e)[:250])
     if os.getenv('DISABLE_SCHEDULER','false').lower() not in {'1','true','yes'}:
         threading.Thread(target=scheduler_loop,daemon=True).start()
         threading.Thread(target=publish_loop,daemon=True).start()

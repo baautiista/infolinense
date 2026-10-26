@@ -393,30 +393,24 @@ class CanvaSinglePageTests(unittest.TestCase):
 
 
 class CanvaBatchTests(unittest.TestCase):
-    def test_batch_fills_lote_template_by_section_slots(self):
-        from app import canva, layout
-        long_head = 'Titular larguísimo ' * 12
-        arts = [{'id': i, 'brand': 'infolinense', 'section': 'CIUDAD', 'headline': long_head + str(i), 'subtitle': 'Entradilla %d' % i} for i in range(6)]
-        page = layout.family_for('CIUDAD', arts[0]['headline'])[1]
-        sent = []
+    def test_batch_is_one_design_pages_in_a_row_with_retry(self):
+        from app import canva
+        arts = [{'id': i, 'brand': 'infolinense', 'section': 'CIUDAD', 'headline': 'Titular largo ' * 10 + str(i), 'subtitle': 'E'} for i in range(4)]
+        calls, fails = [], [1]
         def fake_api(method, path, **kw):
-            if path.endswith('/dataset'):
-                return {'dataset': {'%s_%d' % (k, n): {'type': 'text'} for k in ('HEADLINE', 'SUMMARY', 'SECTION') for n in range(1, 49)}}
-            sent.append(kw['json'])
-            return {'job': {'id': 'J', 'status': 'success', 'result': {'design': {'id': 'D%d' % len(sent), 'url': 'https://canva.com/%d' % len(sent)}}}}
+            calls.append((path, kw.get('json')))
+            if path == '/merges' and fails[0]:
+                fails[0] -= 1
+                raise ValueError('Canva (429): too many requests')
+            return {'job': {'id': 'J', 'status': 'success', 'result': {'design': {'id': 'DALL', 'url': 'https://canva.com/x'}}}}
         with patch.object(canva, 'ready', return_value=True), patch.object(canva, 'connected', return_value=True), \
-                patch.object(canva, '_api', side_effect=fake_api), patch.object(canva, '_wait', side_effect=lambda path, first=None: first['job']):
+                patch.object(canva, '_autofill_text_only', side_effect=lambda a: ('D%d' % a['id'], 2)), \
+                patch.object(canva, '_api', side_effect=fake_api), patch.object(canva.time, 'sleep'):
             r = canva.batch_design(arts)
-        self.assertGreaterEqual(len(r['lotes']), 2)   # 6 de una sección no caben en un lote
-        self.assertEqual(sum(l['pages'] for l in r['lotes']), 6)
-        d = sent[0]['data']
-        self.assertEqual(sent[0]['brand_template_id'], canva.LOTE_TEMPLATES['infolinense'])
-        self.assertEqual(d['HEADLINE_%d' % (page + 36)]['text'][:20], (long_head + '0').strip()[:20])
-        self.assertEqual(d['HEADLINE_%d' % page]['text'], '')   # titular muy largo: va al hueco de 6 líneas, no al de 4
-        short = [{'id': 9, 'brand': 'infolinense', 'section': 'CIUDAD', 'headline': 'Corto', 'subtitle': ''}]
-        self.assertEqual(list(canva.lote_plan(short)[0]), [page])
-        other = 1 if page != 1 else 2
-        self.assertEqual(d['HEADLINE_%d' % other]['text'], '')
+        self.assertEqual((r['url'], r['pages'], r['errors']), ('https://canva.com/x', 4, []))
+        merges = [b for p, b in calls if p == '/merges']
+        self.assertEqual(len(merges), 5)   # 1 fallo + crear + 3 añadidas
+        self.assertEqual(merges[-1]['operations'][0]['source'], {'type': 'design', 'design_id': 'D3', 'page_numbers': [2]})
 
 
 class LaunchBatchTests(unittest.TestCase):

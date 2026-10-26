@@ -130,9 +130,9 @@ def _api(method, path, **kwargs):
         raise ValueError('No se pudo contactar con Canva') from exc
 
 
-def _wait(path, first=None):
+def _wait(path, first=None, tries=40):
     job = (first or {}).get('job') or {}
-    for attempt in range(40):
+    for attempt in range(tries):
         if attempt or not job.get('status'):
             job = _api('GET', path).get('job', {})
         if job.get('status') == 'success':
@@ -542,105 +542,68 @@ def _batch_pptx(articles):
     return out.getvalue()
 
 
-LOTE_TEMPLATES = {'infolinense': os.getenv('CANVA_LOTE_TEMPLATE_ID', '').strip() or 'EAHZHiNN0bA'}
-LOTE_FAMILIES = 12   # páginas por sección en la plantilla de lote: p, p+12, p+24, p+36
-LOTE_SLOTS = 4
-
-
-LOTE_LEVELS = (4, 5, 5, 6)   # líneas de titular para las que está colocada la sección en cada hueco (p, p+12, p+24, p+36)
-
-
-def _lote_lines(article):
-    return len(layout.headline_lines(design_fields(article, strict=False)['HEADLINE'], font=74, box=893))
-
-
-def lote_plan(articles):
-    """Reparte las noticias en huecos de la plantilla de lote según su sección y lo largo del titular
-    (la etiqueta de sección de cada hueco está a la altura justa para 4, 5 o 6 líneas).
-    Devuelve una lista de lotes; cada lote es {número de página: noticia}."""
-    lotes = []
-    for a in articles:
-        p = int(_page_for(a) or 1)
-        p = p if 1 <= p <= LOTE_FAMILIES else 1
-        need = min(max(_lote_lines(a), LOTE_LEVELS[0]), LOTE_LEVELS[-1])
-        # primero el hueco exacto; si no, uno con la sección más arriba (queda un poco de aire, nunca se pisa)
-        order = sorted(range(LOTE_SLOTS), key=lambda k: (LOTE_LEVELS[k] < need, LOTE_LEVELS[k] != need, LOTE_LEVELS[k]))
-        order = [k for k in order if LOTE_LEVELS[k] >= need] or [LOTE_SLOTS - 1]
-        for lote in lotes:
-            free = [p + LOTE_FAMILIES * k for k in order if p + LOTE_FAMILIES * k not in lote]
-            if free:
-                lote[free[0]] = a; break
-        else:
-            lotes.append({p + LOTE_FAMILIES * order[0]: a})
-    return lotes
-
-
-def _lote_fields(lote, schema):
-    fields = {}
-    for n in range(1, LOTE_FAMILIES * LOTE_SLOTS + 1):
-        a = lote.get(n)
-        t = design_fields(a, strict=False) if a else {}
-        for k in ('HEADLINE', 'SUMMARY', 'SECTION'):
-            fields['%s_%d' % (k, n)] = {'type': 'text', 'text': (t.get(k) or '').strip()}   # vacío: no se ve nada
-    for k in ('HEADLINE', 'SUMMARY', 'SECTION'):   # restos sin número de la plantilla original
-        if schema.get(k, {}).get('type') == 'text':
-            fields[k] = {'type': 'text', 'text': ''}
-    return {k: v for k, v in fields.items() if not schema or schema.get(k, {}).get('type') == 'text'}
-
-
-def _lote_with_template(articles, template_id, progress, start=0):
-    from datetime import datetime
-    schema = _api('GET', '/brand-templates/' + template_id + '/dataset').get('dataset', {})
-    out, done = [], start
-    lotes = lote_plan(articles)
-    stamp = datetime.now().strftime('%d/%m/%Y %H:%M')
-    for i, lote in enumerate(lotes, 1):
-        progress(done, 'Rellenando lote %d de %d' % (i, len(lotes)))
-        job = _api('POST', '/autofills', json={'type': 'create_from_brand_template', 'brand_template_id': template_id,
-                                              'title': 'Lote %d · %s' % (i, stamp), 'data': _lote_fields(lote, schema)})
-        design = _design_from_job(_wait('/autofills/' + job['job']['id'], job))
-        if not design.get('id'):
-            raise ValueError('Canva no devolvió el diseño del lote %d' % i)
-        url = design.get('url') or (design.get('urls') or {}).get('edit_url') or 'https://www.canva.com/design/%s/edit' % design['id']
-        done += len(lote)
-        out.append({'url': url, 'design_id': design['id'], 'pages': len(lote)})
-    return out
-
-
-def _lote_pptx(articles, progress, start=0):
-    from datetime import datetime
-    data = _batch_pptx(articles)
-    progress(start + len(articles), 'Abriendo en Canva')
-    title = 'Lote de noticias · ' + datetime.now().strftime('%d/%m/%Y %H:%M')
-    meta = json.dumps({'title_base64': base64.b64encode(title.encode()).decode(),
-                       'mime_type': 'application/vnd.openxmlformats-officedocument.presentationml.presentation'})
-    job = _api('POST', '/imports', data=data, headers={'Content-Type': 'application/octet-stream', 'Import-Metadata': meta})
-    done = _wait('/imports/' + job['job']['id'], job)
-    designs = (done.get('result') or {}).get('designs') or done.get('designs') or []
-    design = designs[0] if designs else {}
-    if not design.get('id'):
-        raise ValueError('Canva no devolvió el diseño importado')
-    url = design.get('url') or (design.get('urls') or {}).get('edit_url') or 'https://www.canva.com/design/%s/edit' % design['id']
-    return [{'url': url, 'design_id': design['id'], 'pages': len(articles)}]
+def _merge_call(body, tries=4):
+    """Una llamada a /merges con reintentos: Canva a veces tarda o limita (429) si hay muchas seguidas."""
+    last = None
+    for n in range(tries):
+        try:
+            job = _api('POST', '/merges', json=body)
+            return _wait('/merges/' + job['job']['id'], job, tries=120)
+        except ValueError as exc:
+            last = exc
+            time.sleep(min(30, 4 * (n + 1) * (3 if '429' in str(exc) else 1)))
+    raise last
 
 
 def batch_design(articles, progress=None):
-    """Lote para Canva con TU plantilla: la plantilla «Lote InfoLinense» tiene 4 huecos por sección
-    (48 páginas). Cada noticia va al hueco de su sección; si una sección pasa de 4, se abre otro lote.
-    Medios sin plantilla de lote: un diseño importado con todas las páginas."""
+    """UN solo diseño con una página por noticia, seguidas y sin huecos: cada noticia se rellena con su
+    plantilla (la de su sección y el largo del titular, como en una noticia suelta) y luego se juntan todas.
+    Titular y entradilla van enteros. Si Canva tarda o limita, se reintenta."""
     if not ready() or not connected():
         raise ValueError('Conecta tu cuenta de Canva desde Ajustes')
-    from . import brands
+    from concurrent.futures import ThreadPoolExecutor
+    from datetime import datetime
     progress = progress or (lambda d, ph: None)
-    groups = {}
-    for a in articles:
-        groups.setdefault(brands.valid(a.get('brand')), []).append(a)
-    lotes, done = [], 0
-    for slug, arts in groups.items():
-        tpl = LOTE_TEMPLATES.get(slug)
-        lotes += _lote_with_template(arts, tpl, progress, done) if tpl else _lote_pptx(arts, progress, done)
-        done += len(arts)
-    progress(done, 'Listo')
-    first = lotes[0] if lotes else {}
-    return {'url': first.get('url', ''), 'design_id': first.get('design_id', ''), 'pages': len(articles),
-            'merged': True, 'lotes': lotes, 'designs': [], 'errors': []}
+    errors, done = [], [0]
+
+    def one(a):
+        for n in range(3):
+            try:
+                return (a, *_autofill_text_only(a))
+            except Exception as exc:
+                if n == 2:
+                    errors.append('«%s»: %s' % ((a.get('headline') or '')[:50], str(exc)[:120]))
+                time.sleep(3 * (n + 1))
+        return None
+
+    def counted(a):
+        r = one(a)
+        done[0] += 1
+        progress(done[0], 'Creando páginas')
+        return r
+
+    with ThreadPoolExecutor(max_workers=3) as pool:
+        parts = [p for p in pool.map(counted, articles) if p]
+    if not parts:
+        raise ValueError('Canva no pudo crear ninguna página: ' + '; '.join(errors[:3]))
+    progress(0, 'Juntando en un diseño')
+    title = 'Lote de noticias · ' + datetime.now().strftime('%d/%m/%Y %H:%M')
+    first, did, page = parts[0]
+    job = _merge_call({'type': 'create_new_design', 'title': title, 'operations': [
+        {'type': 'insert_pages', 'source': {'type': 'design', 'design_id': did, 'page_numbers': [page]}}]})
+    design = _design_from_job(job)
+    target = design.get('id')
+    if not target:
+        raise ValueError('Canva no devolvió el diseño del lote')
+    pages = 1
+    for n, (a, did, page) in enumerate(parts[1:], 2):  # una operación por llamada (lo que Canva permite)
+        try:
+            _merge_call({'type': 'modify_existing_design', 'design_id': target, 'operations': [
+                {'type': 'insert_pages', 'source': {'type': 'design', 'design_id': did, 'page_numbers': [page]}}]})
+            pages += 1
+        except Exception as exc:
+            errors.append('«%s»: %s' % ((a.get('headline') or '')[:50], str(exc)[:120]))
+        progress(n, 'Juntando en un diseño')
+    url = design.get('url') or (design.get('urls') or {}).get('edit_url') or 'https://www.canva.com/design/%s/edit' % target
+    return {'url': url, 'design_id': target, 'pages': pages, 'merged': True,
+            'lotes': [{'url': url, 'design_id': target, 'pages': pages}], 'designs': [], 'errors': errors}

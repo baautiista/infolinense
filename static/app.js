@@ -168,10 +168,10 @@ function searchWidget() {
 // Para ChatGPT: las noticias de Publicar sin publicar ni programar (con su ID). Luego se sube en lote lo redactado.
 // Para Canva: un solo diseño con todas las noticias subidas en lote (titular y entradilla, sin imagen).
 function gptWidget() {
-  return `<section class="gpt-export"><div><b>🤖 Para ChatGPT</b><span class="muted small"> · las noticias de Publicar sin publicar ni programar</span></div>
-    <div class="row wrap"><button type="button" class="btn small" id="gptCopy">📋 Copiar</button><button type="button" class="btn small" id="gptTxt">⬇️ Descargar .txt</button>
-    <button type="button" class="btn small primary" id="gptUp">📥 Subir lo redactado (en lote)</button></div></section>
-    <section class="gpt-export"><div><b>🎨 Para Canva</b><span class="muted small"> · un solo diseño con todas las noticias subidas en lote (titular y entradilla, sin imagen)</span></div>
+  return `<section class="gpt-export"><div><b>Para ChatGPT</b><span class="muted small"> · las noticias de Publicar sin publicar ni programar</span></div>
+    <div class="row wrap"><button type="button" class="btn small" id="gptCopy">Copiar</button><button type="button" class="btn small" id="gptTxt">Descargar .txt</button>
+    <button type="button" class="btn small primary" id="gptUp">Subir lo redactado (en lote)</button></div></section>
+    <section class="gpt-export"><div><b>Para Canva</b><span class="muted small"> · un solo diseño con todas las noticias subidas en lote (titular y entradilla, sin imagen)</span></div>
     <div class="row wrap"><button type="button" class="btn small" id="canvaBatch">Crear el diseño en Canva</button><span class="muted small" id="canvaBatchOut"></span></div></section>`;
 }
 function armGpt(v) {
@@ -398,7 +398,7 @@ function uploadView(v) {
 }
 
 function modeSwitch() {
-  return `<div class="seg upmode" role="tablist"><label><input type="radio" name="upmode" value="ai" ${upMode === 'ai' ? 'checked' : ''}><span>✍️ Redactar con IA</span></label><label><input type="radio" name="upmode" value="quick" ${upMode === 'quick' ? 'checked' : ''}><span>🚀 Lanzadera (ya está escrita)</span></label></div>`;
+  return `<div class="seg upmode" role="tablist"><label><input type="radio" name="upmode" value="ai" ${upMode === 'ai' ? 'checked' : ''}><span>Redactar con IA</span></label><label><input type="radio" name="upmode" value="quick" ${upMode === 'quick' ? 'checked' : ''}><span>Lanzadera (ya está escrita)</span></label></div>`;
 }
 document.addEventListener('change', e => { if (e.target.name === 'upmode') { upMode = e.target.value; render() } });
 let quickReady = true;
@@ -411,8 +411,8 @@ function quickView(v) {
   v.innerHTML = `${modeSwitch()}<form class="up" id="qForm">
     <div><h2>Lanzadera</h2><p class="muted small">Pones tu titular, texto e imagen y se publica tal cual en la web y en las redes del medio. No se cambia nada.</p></div>
     <div><p class="small" style="font-weight:700;margin:0 0 6px">Imagen</p><div class="seg" id="qKind">
-      <label><input type="radio" name="qkind" value="ready" ${quickReady ? 'checked' : ''}><span>🎨 Ya la traigo hecha de Canva</span></label>
-      <label><input type="radio" name="qkind" value="photo" ${quickReady ? '' : 'checked'}><span>📷 Es una foto: haz tú la imagen</span></label></div></div>
+      <label><input type="radio" name="qkind" value="ready" ${quickReady ? 'checked' : ''}><span>Ya la traigo hecha de Canva</span></label>
+      <label><input type="radio" name="qkind" value="photo" ${quickReady ? '' : 'checked'}><span>Es una foto: haz tú la imagen</span></label></div></div>
     ${BRANDS.length > 1 ? `<div><p class="small" style="font-weight:700;margin:0 0 6px">Medio</p><div class="seg" id="qBrand">${brandOpts}</div></div>` : ''}
     <label>Sección<select name="section" id="qSec">${sectionOptions(b0, '')}</select></label>
     <label>Titular <span class="muted" id="qFit"></span><textarea name="headline" rows="2" required placeholder="Titular de la noticia"></textarea></label>
@@ -423,10 +423,10 @@ function quickView(v) {
     <details class="alts"><summary>Enlace de la fuente (opcional)</summary>
       <label>Enlace<input name="link" type="url" placeholder="https://…"></label></details>
     <div><p class="small" style="font-weight:700;margin:0 0 6px">¿Cuándo?</p><div class="seg" id="qWhen">
-      <label><input type="radio" name="qwhen" value="now" checked><span>🚀 Publicar ya</span></label>
-      <label><input type="radio" name="qwhen" value="later"><span>⏰ Programar</span></label></div></div>
+      <label><input type="radio" name="qwhen" value="now" checked><span>Publicar ya</span></label>
+      <label><input type="radio" name="qwhen" value="later"><span>Programar</span></label></div></div>
     <label id="qAtWrap" hidden>Día y hora de publicación<input name="at" type="datetime-local" min="${madridNow()}"></label>
-    <button class="btn primary" id="qBtn">🚀 Publicar ya</button>
+    <button class="btn primary" id="qBtn">Publicar ya</button>
     <div id="qOut"></div></form>`;
   // Varias imágenes = carrusel: la primera es la portada; se pueden reordenar y quitar
   let files = [];
@@ -457,7 +457,7 @@ function quickView(v) {
     $('#qDropTitle').textContent = quickReady ? 'Imágenes de Canva terminadas' : 'Fotos';
     if (!files.length) $('#qPhotoName').textContent = dropHint();
   };
-  const btnLabel = () => $('#qWhen input:checked').value === 'later' ? '⏰ Programar' : '🚀 Publicar ya';
+  const btnLabel = () => $('#qWhen input:checked').value === 'later' ? 'Programar' : 'Publicar ya';
   $('#qWhen').onchange = () => {
     const later = $('#qWhen input:checked').value === 'later';
     $('#qAtWrap').hidden = !later;
@@ -473,8 +473,8 @@ function quickView(v) {
     const b = $('#qBtn'); b.disabled = true; b.textContent = e.target.at.value ? 'Programando…' : quickReady ? 'Publicando…' : 'Creando imagen y publicando…';
     try {
       const r = await api('/api/quick', { method: 'POST', body: fd });
-      const lines_ = (r.results || []).filter(x => x.message).map(x => (x.ok ? '✓ ' : '✗ ') + esc(x.message));
-      $('#qOut').innerHTML = `<div class="${r.ok === false ? 'error' : ''}"><p><b>${r.scheduled_at ? '⏰ Programada para ' + esc(whenText(r.scheduled_at)) : r.published ? '✓ Publicada' : esc(r.message || 'No se pudo publicar')}</b></p>
+      const lines_ = (r.results || []).filter(x => x.message).map(x => (x.ok ? '✓ ' : '') + esc(x.message));
+      $('#qOut').innerHTML = `<div class="${r.ok === false ? 'error' : ''}"><p><b>${r.scheduled_at ? 'Programada para ' + esc(whenText(r.scheduled_at)) : r.published ? '✓ Publicada' : esc(r.message || 'No se pudo publicar')}</b></p>
         ${lines_.length ? `<p class="small">${lines_.join('<br>')}</p>` : ''}${r.canva ? `<p class="small error">Imagen de Canva: ${esc(r.canva)}</p>` : ''}
         <div class="row wrap"><a class="btn small" href="#editor/${r.id}">Ver la noticia</a><button type="button" class="btn small" onclick="render()">Otra noticia</button></div></div>`;
       b.textContent = 'Hecho'; counts();
@@ -492,7 +492,7 @@ async function writingView(v) {
       <h3>${esc(r.headline || r.title)}</h3>
       <div class="state">${r.state === 'ready' ? `<button class="btn small primary" onclick="go('editor/${r.article_id}')">Revisar</button>` :
         r.state === 'error' ? `<span class="error">${esc(jparse(r.work_error, {}).message || 'No se pudo redactar')}</span><button class="btn small" onclick="retry(${r.id})">Reintentar</button>` :
-        `<span class="spin"></span><span class="muted">${r.state === 'working' ? 'Redactando…' : 'En cola'}</span>`}<button class="btn small danger icon" title="Eliminar" aria-label="Eliminar" onclick="discardCandidate(${r.id},${r.article_id || 0})">🗑</button></div></article>`).join('')}</div>
+        `<span class="spin"></span><span class="muted">${r.state === 'working' ? 'Redactando…' : 'En cola'}</span>`}<button class="btn small danger icon" title="Eliminar" aria-label="Eliminar" onclick="discardCandidate(${r.id},${r.article_id || 0})">Eliminar</button></div></article>`).join('')}</div>
     ${ready ? nextPhase('Pasar a Revisar', 'review') : ''}`
     : `<p class="empty">No hay nada redactándose. Marca noticias en Ordenar.</p>${nextPhase('Ir a Ordenar', 'sort')}`;
   if (rows.some(r => r.state === 'queued' || r.state === 'working')) setTimeout(() => { if (view === 'writing') { writingView(v); counts() } }, 6000);
@@ -502,7 +502,7 @@ window.retry = async id => { try { await api(`/api/candidates/${id}/write?wait=0
 /* ---------- Fase 3: Revisar ---------- */
 // Planificación por días y franjas (mañana, tarde, noche). Se puede arrastrar, mover y eliminar.
 let reviewIds = [];
-const SLOTS = [['morning', 'Mañana', '☀️', '09:00'], ['afternoon', 'Tarde', '🌤️', '17:00'], ['night', 'Noche', '🌙', '21:00']];
+const SLOTS = [['morning', 'Mañana', '', '09:00'], ['afternoon', 'Tarde', '', '17:00'], ['night', 'Noche', '', '21:00']];
 const madridDate = (d = new Date()) => d.toLocaleDateString('sv-SE', { timeZone: 'Europe/Madrid' });
 const addDays = (iso, n) => { const d = new Date(iso + 'T12:00:00Z'); d.setUTCDate(d.getUTCDate() + n); return d.toISOString().slice(0, 10) };
 function dayTitle(iso) {
@@ -531,7 +531,7 @@ function calendarHtml(rows, place, card) {
       return `<div class="rv-slot" data-date="${d}" data-slot="${k}"><h3><span>${icon}</span> ${name} <b>${list.length || ''}</b></h3>${list.map(card).join('') || '<p class="rv-empty">Arrastra aquí o usa «Mover»</p>'}</div>`;
     }).join('');
     return `<section class="rv-day ${d === today ? 'today' : ''}"><header><h2>${esc(rel)}</h2><span>${esc(long)}</span><b>${inDay.length} ${inDay.length === 1 ? 'noticia' : 'noticias'}</b></header>
-      ${unslotted.length ? `<div class="rv-slot rv-loose" data-date="${d === 'later' ? '' : d}" data-slot=""><h3>${d === 'later' ? '🗓️ Sin día' : '⏳ Sin hora'} <b>${unslotted.length}</b></h3>${unslotted.map(card).join('')}</div>` : ''}
+      ${unslotted.length ? `<div class="rv-slot rv-loose" data-date="${d === 'later' ? '' : d}" data-slot=""><h3>${d === 'later' ? 'Sin día' : 'Sin hora'} <b>${unslotted.length}</b></h3>${unslotted.map(card).join('')}</div>` : ''}
       ${slots ? `<div class="rv-slots">${slots}</div>` : ''}</section>`;
   }).join('');
 }
@@ -564,7 +564,7 @@ async function reviewView(v) {
       <div class="meta">${brandBadge(r.brand)}${r.section ? secBadge(r.section, r.brand) : ''}<span class="rv-time">${esc(whenLabel(r.planned_at))}</span>${r.editorial_priority === 'urgent' ? '<span class="flag">Urgente</span>' : ''}${r.has_photo ? '' : '<span class="muted small">sin foto</span>'}</div>
       <h3><a href="#editor/${r.article_id}">${esc(r.headline || r.title)}</a></h3>
       ${r.subtitle ? `<p class="rv-sub">${esc(r.subtitle)}</p>` : ''}
-      <div class="rv-actions"><button class="btn small primary" onclick="go('editor/${r.article_id}')">Revisar</button><button class="btn small danger icon" title="Eliminar" aria-label="Eliminar" onclick="removeArticle(${r.article_id})">🗑</button></div></article>`;
+      <div class="rv-actions"><button class="btn small primary" onclick="go('editor/${r.article_id}')">Revisar</button><button class="btn small danger icon" title="Eliminar" aria-label="Eliminar" onclick="removeArticle(${r.article_id})">Eliminar</button></div></article>`;
   v.innerHTML = rows.length ? `<div class="rv-intro"><p><b>${rows.length}</b> por revisar. Abre cada una, corrige texto, foto e imagen y pulsa «Revisada».</p><p class="muted small">El día y la hora de cada noticia se organizan en <a href="#publish">Publicar</a>.</p></div><div class="list">${rows.map(card).join('')}</div>`
     : `<p class="empty">No queda nada por revisar.</p>${nextPhase('Ir a Publicar', 'publish')}`;
 }
@@ -631,7 +631,7 @@ function monthHtml(rows, place) {
         <span class="mc-n">${+d.slice(8, 10)}</span>${list.slice(0, 4).map(r => `<a class="mc-item rv-card ${r.status === 'published' ? 'done' : ''}" ${r.status === 'published' ? '' : 'draggable="true"'} data-aid="${r.id}" href="#editor/${r.id}" style="--bc:${brandOf(r.brand).color}" title="${esc(r.headline)}">${r._at ? `<i>${esc(String(r._at).slice(11, 16))}</i> ` : ''}${esc(r.headline)}</a>`).join('')}
         ${list.length > 4 ? `<span class="mc-more">+${list.length - 4} más</span>` : ''}</div>`;
     }).join('')}</div>
-    ${later.length ? `<p class="muted small">🗓️ Sin día fijado: ${later.length}. Arrástralas a un día del mes.</p><div class="mc-later rv-slot">${later.map(r => `<a class="mc-item rv-card" draggable="true" data-aid="${r.id}" href="#editor/${r.id}" style="--bc:${brandOf(r.brand).color}">${esc(r.headline)}</a>`).join('')}</div>` : ''}</div>`;
+    ${later.length ? `<p class="muted small">Sin día fijado: ${later.length}. Arrástralas a un día del mes.</p><div class="mc-later rv-slot">${later.map(r => `<a class="mc-item rv-card" draggable="true" data-aid="${r.id}" href="#editor/${r.id}" style="--bc:${brandOf(r.brand).color}">${esc(r.headline)}</a>`).join('')}</div>` : ''}</div>`;
 }
 async function publishView(v) {
   const rows = await api('/api/to-publish');
@@ -657,20 +657,20 @@ async function publishView(v) {
   };
   const card = r => {
     const done = r.status === 'published';
-    const del = `<button class="btn small danger icon" title="Eliminar" aria-label="Eliminar" onclick="removeArticle(${r.id})">🗑</button>`;
-    const actions = r.status === 'draft' ? `<div class="rv-actions"><button class="btn small primary" onclick="go('editor/${r.id}')">Revisar</button><button class="btn small" onclick="moveSheet(${r.id})">Mover</button><button class="btn small danger icon" title="Eliminar" aria-label="Eliminar" onclick="removeArticle(${r.id})">🗑</button></div>`
+    const del = `<button class="btn small danger icon" title="Eliminar" aria-label="Eliminar" onclick="removeArticle(${r.id})">Eliminar</button>`;
+    const actions = r.status === 'draft' ? `<div class="rv-actions"><button class="btn small primary" onclick="go('editor/${r.id}')">Revisar</button><button class="btn small" onclick="moveSheet(${r.id})">Mover</button><button class="btn small danger icon" title="Eliminar" aria-label="Eliminar" onclick="removeArticle(${r.id})">Eliminar</button></div>`
       : done ? `<div class="row wrap">${r.publish_url ? `<a class="net ok" href="${safeUrl(r.publish_url)}" target="_blank" rel="noopener">Web ✓</a>` : ''}${netStatus(r)}${del}</div>`
-      : r.scheduled_at ? `<div class="sched"><b>⏰ Se publica sola ${esc(whenText(r.scheduled_at))}</b> · ${schedNets(r)}</div>
-         <div class="rv-actions"><button class="btn small" onclick="publishNow(${r.id},this)">Publicar ahora</button><button class="btn small" onclick="moveSheet(${r.id})">Mover</button><button class="link" onclick="unschedule(${r.id})">Cancelar</button><button class="btn small danger icon" title="Eliminar" aria-label="Eliminar" onclick="removeArticle(${r.id})">🗑</button></div>`
+      : r.scheduled_at ? `<div class="sched"><b>Se publica sola ${esc(whenText(r.scheduled_at))}</b> · ${schedNets(r)}</div>
+         <div class="rv-actions"><button class="btn small" onclick="publishNow(${r.id},this)">Publicar ahora</button><button class="btn small" onclick="moveSheet(${r.id})">Mover</button><button class="link" onclick="unschedule(${r.id})">Cancelar</button><button class="btn small danger icon" title="Eliminar" aria-label="Eliminar" onclick="removeArticle(${r.id})">Eliminar</button></div>`
       : `${r.schedule_error ? `<p class="error small">No se pudo publicar a su hora: ${esc(r.schedule_error)}</p>` : ''}
-         <div class="rv-actions"><button class="btn small primary" onclick="scheduleAt(${r.id},'${esc(r._at)}',this)">Programar${r._at ? ' ' + esc(String(r._at).slice(11, 16)) : ''}</button><button class="btn small" onclick="publishNow(${r.id},this)">Publicar ahora</button><button class="btn small" onclick="moveSheet(${r.id})">Mover</button><button class="btn small danger icon" title="Eliminar" aria-label="Eliminar" onclick="removeArticle(${r.id})">🗑</button></div>`;
+         <div class="rv-actions"><button class="btn small primary" onclick="scheduleAt(${r.id},'${esc(r._at)}',this)">Programar${r._at ? ' ' + esc(String(r._at).slice(11, 16)) : ''}</button><button class="btn small" onclick="publishNow(${r.id},this)">Publicar ahora</button><button class="btn small" onclick="moveSheet(${r.id})">Mover</button><button class="btn small danger icon" title="Eliminar" aria-label="Eliminar" onclick="removeArticle(${r.id})">Eliminar</button></div>`;
     return `<article class="rv-card ${done ? 'done' : ''}" ${done ? '' : 'draggable="true"'} data-aid="${r.id}" style="--bc:${brandOf(r.brand).color}">
       <div class="meta">${brandBadge(r.brand)}${secBadge(r.section, r.brand)}${r._at ? `<span class="rv-time">${esc(String(r._at).slice(11, 16))}</span>` : ''}${done ? '<span class="st st-published">Publicada</span>' : r.status === 'draft' ? '<span class="flag">Sin revisar</span>' : ''}<span class="muted small">${r.canva_exported ? 'Imagen lista' : r.has_photo ? 'Sin imagen de Canva' : 'Sin foto'}</span></div>
       <h3><a href="#editor/${r.id}">${esc(r.headline)}</a></h3>
       ${!done && (r.brand || 'infolinense') !== 'infolinense' && noNets(r.brand) ? `<p class="error small">${esc(bname(r.brand))} no tiene redes conectadas. <a href="#settings">Conectar</a></p>` : ''}
       ${actions}</article>`;
   };
-  const viewSwitch = `<div class="seg calview" role="tablist"><label><input type="radio" name="calview" value="days" ${calView === 'days' ? 'checked' : ''}><span>📋 Por días</span></label><label><input type="radio" name="calview" value="month" ${calView === 'month' ? 'checked' : ''}><span>📅 Mes</span></label></div>`;
+  const viewSwitch = `<div class="seg calview" role="tablist"><label><input type="radio" name="calview" value="days" ${calView === 'days' ? 'checked' : ''}><span>Por días</span></label><label><input type="radio" name="calview" value="month" ${calView === 'month' ? 'checked' : ''}><span>Mes</span></label></div>`;
   v.innerHTML = rows.length ? `${picker}${viewSwitch}
     <div class="rv-intro"><p>Organiza ${calView === 'month' ? 'el mes: arrastra cada noticia a otro día o pulsa un día para verlo' : 'el día: arrastra las tarjetas (o «Mover») a otro día o franja'}. Si cambias el día, «hoy», «mañana»… se ajustan solos en el texto.</p>
       ${pending.length ? `<button class="btn primary" id="schedAll">Programar las ${pending.length} a su hora</button>` : ''}</div>
@@ -724,7 +724,7 @@ window.scheduleNow = async (id, b) => {
 window.unschedule = async id => { try { await api(`/api/articles/${id}/unschedule`, { method: 'POST' }); toast('Programación cancelada'); render() } catch (e) { toast(e.message) } };
 window.setTime = async (id, p, value) => { if (!value) return; try { await api(`/api/candidates/${id}/triage`, { method: 'POST', body: JSON.stringify({ priority: p, planned_at: value + ':00' }) }); toast('Hora fijada'); render() } catch (e) { toast(e.message) } };
 function pickedNets() { const boxes = [...document.querySelectorAll('.netpick input')]; if (!boxes.length || boxes.every(i => i.checked)) return null; return boxes.filter(i => i.checked).map(i => i.value) }
-function publishReport(r) { const lines = (r.results || []).filter(x => x.message).map(x => (x.ok ? '✓ ' : '✗ ') + x.message); toast(lines.join(' · ') || (r.published ? 'Publicada' : r.message || 'Aprobada')) }
+function publishReport(r) { const lines = (r.results || []).filter(x => x.message).map(x => (x.ok ? '✓ ' : '') + x.message); toast(lines.join(' · ') || (r.published ? 'Publicada' : r.message || 'Aprobada')) }
 window.publishNow = async (id, b) => { b.disabled = true; b.textContent = 'Publicando…'; try { const r = await api(`/api/articles/${id}/publish`, { method: 'POST', body: JSON.stringify({ networks: pickedNets() }) }); publishReport(r); render(); counts() } catch (e) { toast(e.message); b.disabled = false; b.textContent = 'Publicar' } };
 // Facebook personal: Meta no deja publicar en perfiles por programa, así que se comparte a mano.
 // 1.ª pulsación: prepara imagen y texto. 2.ª: abre el menú «Compartir» del móvil (o descarga la imagen y abre Facebook).
@@ -768,7 +768,7 @@ function offerFacebook(id) {
   bar.querySelector('.primary').onclick = e => { shareFb(id, e.target).then(() => bar.remove()) };
   bar.querySelector('.link').onclick = () => bar.remove();
 }
-window.retryNet = async (id, net, b) => { b.disabled = true; b.textContent = 'Publicando…'; try { const r = await api(`/api/articles/${id}/networks/${net}`, { method: 'POST' }); toast((r.ok ? '✓ ' : '✗ ') + r.message); render() } catch (e) { toast(e.message); b.disabled = false } };
+window.retryNet = async (id, net, b) => { b.disabled = true; b.textContent = 'Publicando…'; try { const r = await api(`/api/articles/${id}/networks/${net}`, { method: 'POST' }); toast((r.ok ? '✓ ' : '') + r.message); render() } catch (e) { toast(e.message); b.disabled = false } };
 window.saveNetPrefs = saveNetPrefs;
 
 /* ---------- Editor ---------- */
@@ -779,7 +779,7 @@ window.aiWrite = async b => {
   if (!confirm('¿Redactar esta noticia con IA? Se sustituye lo que hayas escrito.')) return;
   b.disabled = true; b.textContent = 'Redactando… (puede tardar un minuto)';
   try { const a = await api(`/api/articles/${editorId}/research-more`, { method: 'POST' }); toast('Redactada'); go('editor/' + a.id) }
-  catch (e) { toast(e.message); b.disabled = false; b.textContent = '✍️ Redactar con IA' }
+  catch (e) { toast(e.message); b.disabled = false; b.textContent = 'Redactar con IA' }
 };
 async function editor(v) {
   const [a, kit] = await Promise.all([api(`/api/articles/${editorId}`), api(`/api/articles/${editorId}/kit`)]);
@@ -805,7 +805,7 @@ async function editor(v) {
     <section class="fields">
       <div class="meta"><span class="st st-${a.status}">${STATUS[a.status] || a.status}</span>${a.source_url ? `<a href="${safeUrl(a.source_url)}" target="_blank" rel="noopener noreferrer">Fuente: ${esc(a.outlet || a.source_name || host(a.source_url))}</a>` : ''}${published && a.publish_url ? `<a href="${safeUrl(a.publish_url)}" target="_blank" rel="noopener">Ver en la web</a>` : ''}</div>
       ${a.focus ? `<p class="focus"><b>Enfoque:</b> ${esc(a.focus)}</p>` : ''}
-      ${published ? '' : `<div class="row wrap"><button class="btn small" id="aiWrite" title="Solo cuando lo necesites: usa la IA">✍️ Redactar con IA</button><span class="muted small">Opcional. Si no, rellena tú los huecos.</span></div>`}
+      ${published ? '' : `<div class="row wrap"><button class="btn small" id="aiWrite" title="Solo cuando lo necesites: usa la IA">Redactar con IA</button><span class="muted small">Opcional. Si no, rellena tú los huecos.</span></div>`}
       ${BRANDS.length > 1 ? `<label>Medio<select id="f-brand">${BRANDS.map(b => `<option value="${b.slug}" ${b.slug === (a.brand || 'infolinense') ? 'selected' : ''}>${esc(b.name)}</option>`).join('')}</select></label>` : ''}
       <label>Sección<select id="f-section">${sectionOptions(a.brand, a.section)}</select></label>
       <label id="labelBox" ${freeSection(a.brand) && a.section === freeSection(a.brand) ? '' : 'hidden'}>Título de la etiqueta en la imagen<input id="f-section_label" maxlength="40" value="${esc(a.section_label || '')}" placeholder="Ej.: Consejo de Hermandades"></label>
@@ -821,7 +821,7 @@ async function editor(v) {
     <button class="btn" onclick="save(true)">Guardar</button>
     <button class="btn" onclick="copyText()">Copiar</button>
     ${published ? '<span class="muted">Publicada</span>' : a.status === 'draft' ? `<button class="btn primary" onclick="reviewed()">Revisada</button>` : `<button class="btn primary" id="pubBtn" onclick="publish()">Publicar</button>`}
-    <button class="btn danger" onclick="removeArticle(${a.id})">🗑 ${published ? 'Quitar del panel' : 'Eliminar'}</button>
+    <button class="btn danger" onclick="removeArticle(${a.id})">${published ? 'Quitar del panel' : 'Eliminar'}</button>
   </div>`;
   const f = id => $(`#f-${id}`);
   const fit = () => {
@@ -1035,7 +1035,7 @@ async function settings(v) {
     try { await api('/api/brands/' + SB, { method: 'PUT', body: JSON.stringify(body) }); await loadBrands(); toast('Guardado'); render() } catch (er) { toast(er.message) }
   };
   if ($('#metaConn')) $('#metaConn').onclick = () => conn('meta');
-  if ($('#fbCheck')) $('#fbCheck').onclick = async () => { $('#fbCheckOut').innerHTML = '<p class="muted small">Comprobando…</p>'; try { const r = await api('/api/networks/facebook/check' + q); $('#fbCheckOut').innerHTML = `<p class="${r.ok ? '' : 'error'} small">${r.ok ? '✓ ' : '✗ '}${esc(r.message || '')}</p>${r.scopes && r.scopes.length ? `<p class="muted small">Permisos: ${esc(r.scopes.join(', '))}</p>` : ''}` } catch (e) { $('#fbCheckOut').innerHTML = `<p class="error small">${esc(e.message)}</p>` } };
+  if ($('#fbCheck')) $('#fbCheck').onclick = async () => { $('#fbCheckOut').innerHTML = '<p class="muted small">Comprobando…</p>'; try { const r = await api('/api/networks/facebook/check' + q); $('#fbCheckOut').innerHTML = `<p class="${r.ok ? '' : 'error'} small">${r.ok ? '✓ ' : ''}${esc(r.message || '')}</p>${r.scopes && r.scopes.length ? `<p class="muted small">Permisos: ${esc(r.scopes.join(', '))}</p>` : ''}` } catch (e) { $('#fbCheckOut').innerHTML = `<p class="error small">${esc(e.message)}</p>` } };
   if ($('#metaTok')) $('#metaTok').onsubmit = async e => { e.preventDefault(); const b = e.target.querySelector('button'); b.disabled = true; b.textContent = 'Conectando…'; try { const r = await api('/api/networks/meta/token' + q, { method: 'POST', body: JSON.stringify({ token: e.target.token.value }) }); toast('Conectado: ' + r.name + (r.instagram ? ' · @' + r.instagram : '')); render() } catch (er) { toast(er.message); b.disabled = false; b.textContent = 'Conectar con este token' } };
   if ($('#ttConn')) $('#ttConn').onclick = () => conn('tiktok');
   if ($('#igConn')) $('#igConn').onclick = () => conn('instagram');

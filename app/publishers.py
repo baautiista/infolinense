@@ -31,10 +31,19 @@ def _b64_image(path, fmt, width, limit=2_500_000):
     return base64.b64encode(raw).decode()
 
 
+def clean_cover(article):
+    """Foto para la portada de la web: nunca la imagen terminada de Canva (con logo, sección, titular y
+    entradilla). Si la noticia solo tiene la imagen terminada, la web sale sin foto."""
+    if (article.get('image_kind') or '') == 'final_image':
+        return None
+    photo = Path(article.get('image_local') or '')
+    return photo if photo.is_file() else None
+
+
 def web_payload(article):
     """Noticia lista para la web de InfoLinense (Lovable)."""
     family = layout.family_for(article.get('section'), article.get('headline'))
-    photo = Path(article.get('image_local') or '')
+    photo = clean_cover(article)
     card = Path(article.get('render_path') or '')
     try: sources = json.loads(article.get('sources_json') or '[]')
     except Exception: sources = []
@@ -52,7 +61,7 @@ def web_payload(article):
         'source_url': article.get('source_url') or '',
         'source_name': article.get('outlet') or article.get('source_name') or '',
         'sources': [x for x in sources if isinstance(x, dict) and x.get('url')],
-        'image_base64': _b64_image(photo, 'JPEG', 1600),
+        'image_base64': _b64_image(photo, 'JPEG', 1600) if photo else None,
         'image_content_type': 'image/jpeg',
         'social_image_base64': _b64_image(card, 'PNG', 1080),
         'published_at': __import__('datetime').datetime.now(__import__('datetime').timezone.utc).isoformat(timespec='seconds'),
@@ -71,9 +80,7 @@ def publish(article):
     if mode == 'wordpress':
         if not (cfg['wp_url'].startswith('https://') and cfg['wp_user'] and cfg['wp_password']):
             raise RuntimeError('Configura %sWORDPRESS_URL, %sWORDPRESS_USERNAME y %sWORDPRESS_APP_PASSWORD en Railway' % (pre, pre, pre))
-        artwork = Path(article.get('render_path') or '')
-        if not artwork.is_file():
-            raise RuntimeError('No existe la imagen final exportada de Canva')
+        cover = clean_cover(article)  # portada limpia: la foto, sin los gráficos de Canva
         endpoint = cfg['wp_url'] + '/wp-json/wp/v2'
         credentials = (cfg['wp_user'], cfg['wp_password'])
         identifier = str(article['id'])
@@ -82,16 +89,19 @@ def publish(article):
         existing.raise_for_status()
         posts = existing.json()
         if posts: return posts[0]['link']
-        photo = requests.post(endpoint + '/media', data=artwork.read_bytes(), auth=credentials,
-                              headers={'Content-Disposition': 'attachment; filename="%s-%s.png"' % (slugify(name), identifier),
-                                       'Content-Type': 'image/png'}, timeout=45)
-        photo.raise_for_status()
-        media_id = photo.json()['id']
+        media_id = None
+        if cover:
+            photo = requests.post(endpoint + '/media', data=cover.read_bytes(), auth=credentials,
+                                  headers={'Content-Disposition': 'attachment; filename="%s-%s.jpg"' % (slugify(name), identifier),
+                                           'Content-Type': 'image/jpeg'}, timeout=45)
+            photo.raise_for_status()
+            media_id = photo.json()['id']
         paragraphs = ''.join('<p>' + html.escape(p.strip()) + '</p>' for p in (article.get('body') or '').split('\n') if p.strip())
         post = requests.post(endpoint + '/posts', auth=credentials, json={
             'title': article.get('headline') or name,
             'excerpt': article.get('subtitle') or article.get('graphic_summary') or '',
-            'content': paragraphs, 'slug': slug_wp, 'featured_media': media_id, 'status': 'publish'
+            'content': paragraphs, 'slug': slug_wp, 'status': 'publish',
+            **({'featured_media': media_id} if media_id else {})
         }, timeout=45)
         post.raise_for_status()
         return post.json()['link']

@@ -421,3 +421,109 @@ label{font-weight:600;font-size:13px;color:#344054}
 .seg span{border:0;background:transparent;border-radius:9px;padding:7px 12px;font-weight:600;color:var(--muted)}
 .seg input:checked+span{background:#fff;color:var(--ink);border:0}
 .seg input:focus-visible+span{outline:2px solid var(--cyan)}
+
+/* =====================================================================
+   Tema 8 «Estudio»: papel cálido, marco carbón, azul eléctrico y lima.
+   Montserrat en mayúsculas para títulos, píldoras con borde lima,
+   botones redondos con flecha, tarjetas con borde azul y líneas finas.
+   ===================================================================== */
+:root{
+  --ink:#2A2C29; --navy:#2A2C29; --navy-2:#363834; --blue:#3A33E6; --blue-soft:#E7E6FD;
+  --cyan:#C9F25B; --lime:#C9F25B; --grad:#3A33E6;
+  --mist:#E9E7E1; --bg:#EFEDE8; --card:#F8F7F3; --line:#D3D0C8; --muted:#6B6A64;
+  --red:#E5484D; --green:#2F9E55; --sand:#F6F2E2;
+  --r-lg:26px; --r-md:20px; --r-sm:14px;
+  --lift:none; --glow:none;
+  --f-ui:Montserrat,system-ui,-apple-system,"Segoe UI",sans-serif;
+  --f-head:Montserrat,system-ui,sans-serif;
+  --f-mono:Montserrat,system-ui,sans-serif;
+}
+body{font:500 15px/1.55 var(--f-ui);background:var(--bg);background-image:
+  radial-gradient(60% 40% at 0% 30%,rgba(255,255,255,.55),transparent 70%),
+  radial-gradient(50% 35% at 100% 70%,rgba(255,255,255,.45),transparent 70%);letter-spacing:0}
+h1,h2,h3,.swipe h2,.login-card h1,.top h1,.swipe .band b,.mc-head h2{font-family:var(--f-head)!important;font-weight:800!important;letter-spacing:-.01em}
+h2,.mc-head h2,.top h1,.login-card h1{text-transform:uppercase}
+:focus-visible{outline:2px solid var(--blue);outline-offset:2px}
+
+/* acceso */
+.login{background:var(--ink)}
+.login-card{background:var(--bg);border:0;border-radius:var(--r-lg);box-shadow:none;position:relative}
+.login-card::before{content:"*";position:absolute;top:10px;right:22px;font:800 56px Montserrat,sans-serif;color:var(--blue);line-height:1}
+.logo,.mark{background:var(--blue);border-radius:16px;box-shadow:none;font-family:var(--f-head);font-weight:800}
+
+/* cabecera: papel con línea fina */
+.top{background:var(--bg);color:var(--ink);backdrop-filter:none;border-bottom:1px solid var(--line)}
+.top h1{font-size:18px;letter-spacing:.02em}
+.top .btn.primary{background:transparent;color:var(--ink);border:1.5px solid var(--lime);border-radius:999px;box-shadow:none;padding-right:44px;position:relative}
+.top .btn.primary::after{content:"↗";position:absolute;right:4px;top:50%;transform:translateY(-50%);width:30px;height:30px;border-radius:50%;background:var(--lime);display:grid;place-items:center;font-weight:800;color:var(--ink)}
+.back,.gear{background:transparent;color:var(--ink);border:1.5px solid var(--line);border-radius:50%}
+.brandbar{background:var(--bg);backdrop-filter:none;border-bottom:1px solid var(--line);padding-top:10px}
+.bchip{background:transparent;border:1.5px solid var(--line);color:var(--ink);font-weight:600;text-transform:uppercase;font-size:12px;letter-spacing:.04em}
+.bchip.on{background:var(--blue);border-color:var(--blue);color:#fff}
+
+/* fases móvil: barra carbón redondeada */
+.tabs{background:var(--ink);border:0;border-radius:24px;box-shadow:none}
+.tabs button{color:#B9B8B2;text-transform:uppercase;font-size:10.5px;letter-spacing:.04em;font-weight:700}
+.tabs button.on{background:transparent;color:#fff}
+.tabs button.on .num{background:var(--lime);color:var(--ink);box-shadow:none;border-radius:50%}
+.tabs .n{background:var(--lime);color:var(--ink)}
+
+/* botones: píldoras */
+.btn{border-radius:999px;border:1.5px solid var(--ink);background:transparent;color:var(--ink);font-weight:700;box-shadow:none}
+.btn:hover{background:rgba(42,44,41,.05);border-color:var(--ink)}
+.btn.primary{background:var(--blue);border:1.5px solid var(--blue);color:#fff;box-shadow:none}
+.btn.primary:hover{background:#2C25D0;filter:none;box-shadow:none}
+.btn.danger{color:var(--red);border-color:#EBB8BA}
+.btn.small{font-size:13px}
+.link{color:var(--blue);text-decoration:underline;text-underline-offset:3px}
+input,select,textarea{background:#fff;border:1.5px solid var(--line);border-radius:var(--r-sm)}
+input:focus,select:focus,textarea:focus{border-color:var(--blue);box-shadow:0 0 0 3px rgba(58,51,230,.12)}
+label{color:var(--ink);font-weight:700;font-size:12px;text-transform:uppercase;letter-spacing:.04em}
+.chip{border:1.5px solid var(--line);background:transparent;border-radius:999px}
+.chip.on{background:var(--ink);border-color:var(--ink);color:#fff}.chip.on b{color:var(--lime)}
+.chip b{color:var(--blue)}
+.flag{background:var(--lime);color:var(--ink)}
+.toast{background:var(--ink);border:0;border-radius:999px;padding:12px 20px}
+.bar span{background:var(--blue)}
+
+/* tarjetas: papel claro, borde fino, esquinas grandes */
+.panel,.rv-day,.mcal,.gpt-export,.sort-search,.up,.sheet{background:var(--card);border:1.5px solid var(--line);box-shadow:none;border-radius:var(--r-lg)}
+.gpt-export::before{display:none}
+.gpt-export{border-color:var(--blue)}
+.gpt-export b,.sort-search label,.rv-day h2,.panel h2{text-transform:uppercase;letter-spacing:.02em}
+.rv-card{background:#fff;border:1.5px solid var(--blue);border-radius:var(--r-md);box-shadow:none}
+.rv-card.done{border-color:var(--line)}
+.rv-day header h2{color:var(--ink)}
+.swipe{border:1.5px solid var(--ink);border-radius:var(--r-lg);box-shadow:none;background:#fff}
+.swipe .band{background:var(--blue)}
+.swipe .band::after{border-color:rgba(201,242,91,.35)}
+.round{border-radius:50%;border:1.5px solid var(--ink);background:transparent}
+.round.yes{background:var(--lime);border-color:var(--lime);color:var(--ink)}
+.round.no{background:var(--ink);border-color:var(--ink);color:#fff}
+.sheet-bg{background:rgba(42,44,41,.55);backdrop-filter:blur(2px)}
+.seg{background:transparent;border:1.5px solid var(--line);border-radius:999px;padding:3px}
+.seg span{border-radius:999px;text-transform:uppercase;font-size:12px;letter-spacing:.03em;font-weight:700}
+.seg input:checked+span{background:var(--blue);color:#fff;box-shadow:none}
+.drop{border:1.5px dashed var(--blue);background:var(--blue-soft);border-radius:var(--r-md)}
+.drop.over{box-shadow:0 0 0 3px var(--lime)}
+.mc-day{background:#fff;border:1.5px solid var(--line);border-radius:14px}
+.mc-day.today{border-color:var(--blue);box-shadow:none}
+.mc-item{background:var(--blue-soft);border-left-color:var(--bc,#3A33E6)}
+.empty{font-weight:600}
+.empty::before{content:"*";display:block;color:var(--blue);font:800 60px Montserrat,sans-serif;height:36px;line-height:1;margin-bottom:10px}
+
+/* ordenador: barra lateral carbón como el marco */
+@media(min-width:1024px){
+  body{padding-left:var(--side-w)}
+  .tabs{background:var(--ink);border-radius:0;border:0}
+  .tabs::before{content:"INFOLINENSE DESK";background:var(--blue);background-size:32px 32px;background-repeat:no-repeat;font:800 15px var(--f-head);letter-spacing:.02em;color:#fff;
+        background:linear-gradient(var(--lime),var(--lime)) no-repeat 0 0/32px 32px;border-radius:0}
+  .tabs::after{color:#8C8B85;font-family:var(--f-ui);font-weight:700}
+  .tabs button{text-transform:uppercase;font-size:12.5px;letter-spacing:.05em;color:#C8C7C1;border-radius:999px}
+  .tabs button:hover{background:rgba(255,255,255,.06)}
+  .tabs button.on{background:var(--bg);color:var(--ink);box-shadow:none}
+  .tabs button.on .num{background:var(--blue);color:#fff}
+  .tabs .num{border-radius:50%;background:rgba(255,255,255,.08)}
+  .top{padding-left:28px}
+  main{max-width:1180px}
+}

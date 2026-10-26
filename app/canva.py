@@ -498,49 +498,68 @@ def _autofill_text_only(article):
     return design['id'], int(texts['page'] or 1)
 
 
+def _batch_pptx(articles):
+    """Presentación 1080×1350 con una página por noticia: etiqueta de sección, titular y entradilla ENTEROS
+    y un hueco para la foto. Se importa en Canva como UN solo diseño editable."""
+    from io import BytesIO
+    from pptx import Presentation
+    from pptx.util import Emu, Pt
+    from pptx.dml.color import RGBColor
+    from pptx.enum.shapes import MSO_SHAPE
+    from pptx.enum.text import MSO_ANCHOR
+    from . import brands
+    px = lambda v: Emu(int(v * 9525))
+    rgb = lambda h: RGBColor.from_string(h.lstrip('#').upper())
+    prs = Presentation(); prs.slide_width, prs.slide_height = px(1080), px(1350)
+    blank = prs.slide_layouts[6]
+    for a in articles:
+        brand = brands.settings(a.get('brand'))
+        fam = layout.family_for(a.get('section'), a.get('headline'))
+        if _is_default(a):
+            label, bg, fg = layout.normalize_section(a.get('section'), a.get('headline') or ''), fam[2], fam[3]
+        else:
+            label, bg, fg = (a.get('section') or brand['name']), brand.get('color') or '#2A2C29', '#FFFFFF'
+        sl = prs.slides.add_slide(blank)
+        photo = sl.shapes.add_shape(MSO_SHAPE.RECTANGLE, 0, 0, px(1080), px(760))
+        photo.fill.solid(); photo.fill.fore_color.rgb = rgb('#D9D7D0'); photo.line.fill.background()
+        tf = photo.text_frame; tf.text = 'FOTO'; tf.paragraphs[0].runs[0].font.size = Pt(28); tf.paragraphs[0].runs[0].font.color.rgb = rgb('#9A988F')
+        band = sl.shapes.add_shape(MSO_SHAPE.RECTANGLE, 0, px(760), px(1080), px(590))
+        band.fill.solid(); band.fill.fore_color.rgb = rgb('#FFFFFF'); band.line.fill.background()
+        pill = sl.shapes.add_shape(MSO_SHAPE.ROUNDED_RECTANGLE, px(60), px(700), px(max(180, 22 * len(label) + 60)), px(64))
+        pill.fill.solid(); pill.fill.fore_color.rgb = rgb(bg); pill.line.fill.background()
+        ptf = pill.text_frame; ptf.text = label.upper()
+        r = ptf.paragraphs[0].runs[0]; r.font.bold = True; r.font.size = Pt(20); r.font.color.rgb = rgb(fg); r.font.name = 'Montserrat'
+        head = (a.get('headline') or '').strip(); sub = (a.get('subtitle') or '').strip()
+        size = 44 if len(head) <= 70 else 38 if len(head) <= 110 else 32 if len(head) <= 160 else 26  # todo entra, sin recortar
+        hb = sl.shapes.add_textbox(px(60), px(790), px(960), px(360)); htf = hb.text_frame; htf.word_wrap = True; htf.vertical_anchor = MSO_ANCHOR.TOP
+        htf.text = head; hr = htf.paragraphs[0].runs[0]; hr.font.bold = True; hr.font.size = Pt(size); hr.font.name = 'Montserrat'; hr.font.color.rgb = rgb('#1B1D1A')
+        if sub:
+            sb = sl.shapes.add_textbox(px(60), px(1160), px(960), px(150)); stf = sb.text_frame; stf.word_wrap = True
+            stf.text = sub; sr = stf.paragraphs[0].runs[0]; sr.font.size = Pt(20 if len(sub) <= 180 else 16); sr.font.name = 'Montserrat'; sr.font.color.rgb = rgb('#4A4A45')
+        brand_box = sl.shapes.add_textbox(px(60), px(1300), px(960), px(40))
+        brand_box.text_frame.text = brand['name']; br = brand_box.text_frame.paragraphs[0].runs[0]; br.font.size = Pt(14); br.font.bold = True; br.font.color.rgb = rgb(brand.get('color') or '#3A33E6')
+    out = BytesIO(); prs.save(out)
+    return out.getvalue()
+
+
 def batch_design(articles, progress=None):
-    """Un solo diseño con una página por noticia (titular y entradilla, sin imagen) para retocarlas todas juntas.
-    Las páginas se crean a la vez (4 en paralelo); luego se juntan en un diseño."""
+    """UN solo diseño de Canva con una página por noticia (titular y entradilla enteros, sin imagen).
+    Se hace una presentación con todas y se importa en Canva de una vez (no hace falta juntar diseños)."""
     if not ready() or not connected():
         raise ValueError('Conecta tu cuenta de Canva desde Ajustes')
-    from concurrent.futures import ThreadPoolExecutor
     from datetime import datetime
     progress = progress or (lambda d, ph: None)
-    parts, errors, done = [], [], [0]
-
-    def one(a):
-        try:
-            return (a, *_autofill_text_only(a))
-        except Exception as exc:
-            errors.append('«%s»: %s' % ((a.get('headline') or '')[:50], str(exc)[:120]))
-            return None
-        finally:
-            done[0] += 1
-            progress(done[0], 'Creando páginas')
-
-    with ThreadPoolExecutor(max_workers=4) as pool:
-        parts = [p for p in pool.map(one, articles) if p]
-    if not parts:
-        raise ValueError('Canva no pudo crear ninguna página: ' + '; '.join(errors[:3]))
-    progress(0, 'Juntando en un diseño')
+    progress(0, 'Preparando las páginas')
+    data = _batch_pptx(articles)
+    progress(len(articles), 'Abriendo en Canva')
     title = 'Lote de noticias · ' + datetime.now().strftime('%d/%m/%Y %H:%M')
-    first, did, page = parts[0]
-    links = [{'headline': a.get('headline'), 'url': 'https://www.canva.com/design/%s/edit' % d} for a, d, _ in parts]
-    try:
-        job = _api('POST', '/merges', json={'type': 'create_new_design', 'title': title, 'operations': [
-            {'type': 'insert_pages', 'source': {'type': 'design', 'design_id': did, 'page_numbers': [page]}}]})
-        design = _design_from_job(_wait('/merges/' + job['job']['id'], job))
-    except Exception as exc:  # Canva no deja juntar: se dan los diseños sueltos
-        return {'url': links[0]['url'], 'pages': len(parts), 'merged': False, 'designs': links,
-                'errors': errors + ['No se pudieron juntar en un diseño (%s): van por separado' % str(exc)[:120]]}
-    target = design.get('id')
-    for n, (a, did, page) in enumerate(parts[1:], 2):  # una operación por llamada (lo que Canva permite)
-        try:
-            j = _api('POST', '/merges', json={'type': 'modify_existing_design', 'design_id': target, 'operations': [
-                {'type': 'insert_pages', 'source': {'type': 'design', 'design_id': did, 'page_numbers': [page]}}]})
-            _wait('/merges/' + j['job']['id'], j)
-        except Exception as exc:
-            errors.append('«%s»: %s' % ((a.get('headline') or '')[:50], str(exc)[:120]))
-        progress(n, 'Juntando en un diseño')
-    url = design.get('url') or (design.get('urls') or {}).get('edit_url') or 'https://www.canva.com/design/%s/edit' % target
-    return {'url': url, 'design_id': target, 'pages': len(parts), 'merged': True, 'designs': [], 'errors': errors}
+    meta = json.dumps({'title_base64': base64.b64encode(title.encode()).decode(),
+                       'mime_type': 'application/vnd.openxmlformats-officedocument.presentationml.presentation'})
+    job = _api('POST', '/imports', data=data, headers={'Content-Type': 'application/octet-stream', 'Import-Metadata': meta})
+    done = _wait('/imports/' + job['job']['id'], job)
+    designs = (done.get('result') or {}).get('designs') or done.get('designs') or []
+    design = designs[0] if designs else {}
+    if not design.get('id'):
+        raise ValueError('Canva no devolvió el diseño importado')
+    url = design.get('url') or (design.get('urls') or {}).get('edit_url') or 'https://www.canva.com/design/%s/edit' % design['id']
+    return {'url': url, 'design_id': design['id'], 'pages': len(articles), 'merged': True, 'designs': [], 'errors': []}

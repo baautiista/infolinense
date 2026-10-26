@@ -430,7 +430,7 @@ function launchBatchView(v) {
     if (!fd.get('txt').size) fd.delete('txt');
     [...$('#lbDir').files, ...$('#lbFiles').files].filter(f => /\.(png|jpe?g|webp|zip)$/i.test(f.name) && !f.name.startsWith('.')).forEach(f => fd.append('images', f, f.webkitRelativePath || f.name));
     const b = $('#lbBtn'); b.disabled = true; b.textContent = 'Cargando…';
-    try { const r = await api('/api/launch/batch', { method: 'POST', body: fd }); launchItems = r.items; toast(`${r.items.length} noticias · ${r.matched} de ${r.images} imágenes unidas`); drawLaunch() }
+    try { const r = await api('/api/launch/batch', { method: 'POST', body: fd }); launchItems = r.items; toast(`${r.items.length} noticias · ${r.matched} de ${r.images} imágenes unidas${r.ocr ? '' : ' (el servidor aún no sabe leer el texto de las imágenes: unidas por orden)'}`); drawLaunch() }
     catch (er) { toast(er.message) }
     b.disabled = false; b.textContent = 'Cargar noticias';
   };

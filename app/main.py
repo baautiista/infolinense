@@ -14,7 +14,7 @@ from .auth import login, require_auth
 from starlette.concurrency import run_in_threadpool
 from .config import BASE_DIR, RENDER_DIR, UPLOAD_DIR, SCAN_INTERVAL_MINUTES, AUTO_PIPELINE, OPENAI_API_KEY, ADMIN_PASSWORD, JWT_SECRET, PUBLISH_MODE, CORS_ORIGINS, PUBLIC_BASE_URL, AUTO_PUBLISH
 
-VERSION='7.3.4'
+VERSION='7.3.5'
 app=FastAPI(title='InfoLinense Desk',version=VERSION)
 app.add_middleware(CORSMiddleware,allow_origins=CORS_ORIGINS,allow_credentials=False,allow_methods=['*'],allow_headers=['Authorization','Content-Type'])
 db.init_db()
@@ -69,7 +69,7 @@ async def ai_error_handler(request,exc):
 def auth_login(body:LoginIn): return {'token':login(body.password)}
 @app.get('/api/health')
 def health():
-    return {'ok':True,'version':VERSION,'auth_configured':bool(ADMIN_PASSWORD and JWT_SECRET),'openai_configured':bool(OPENAI_API_KEY),'claude_configured':bool(ai.ANTHROPIC_API_KEY),'ai_configured':ai.AI_ENABLED,'ai_provider':ai.ACTIVE_PROVIDER or None,'ai_fallback':[p for p in ai.provider_chain()[1:]],'draft_provider':ai.ACTIVE_PROVIDER or 'source_draft','draft_mode':'ai' if ai.AI_ENABLED else 'source_draft','web_search':{p:ai.web_enabled(p) for p in ai.provider_chain()},'publish_mode':PUBLISH_MODE,'auto_publish':bool(AUTO_PUBLISH and PUBLISH_MODE!='none'),'paid_ai_allowed':ai.AI_ALLOW_PAID}
+    return {'ok':True,'version':VERSION,'auth_configured':bool(ADMIN_PASSWORD and JWT_SECRET),'openai_configured':bool(OPENAI_API_KEY),'claude_configured':bool(ai.ANTHROPIC_API_KEY),'ai_configured':ai.AI_ENABLED,'ai_provider':ai.ACTIVE_PROVIDER or None,'ai_fallback':[p for p in ai.provider_chain()[1:]],'draft_provider':ai.ACTIVE_PROVIDER or 'source_draft','draft_mode':'ai' if ai.AI_ENABLED else 'source_draft','web_search':{p:ai.web_enabled(p) for p in ai.provider_chain()},'publish_mode':PUBLISH_MODE,'auto_publish':bool(AUTO_PUBLISH and PUBLISH_MODE!='none'),'paid_ai_allowed':ai.AI_ALLOW_PAID,'ocr':ocr.available()}
 
 @app.get('/api/ai/check',dependencies=[Depends(require_auth)])
 def ai_check():
@@ -602,26 +602,32 @@ async def launch_batch(text:str=Form(''),brand:str=Form('infolinense'),txt:Uploa
     used=set()
     for o in out:  # 1) ID en el nombre del archivo
         for i,(n,im) in enumerate(imgs):
-            if i not in used and o['ref'] and re.search(r'(?<!\d)%d(?!\d)'%o['ref'],n):
+            if i not in used and o['ref'] and re.fullmatch(r'(?:id[\s_-]*)?%d'%o['ref'],n.rsplit('.',1)[0].strip(),re.I):
                 _set_final_image(o['id'],im); used.add(i); o['image']=n; break
     rest=[o for o in out if 'image' not in o]; free=[i for i in range(len(imgs)) if i not in used]
-    if rest and free and ocr.available():  # 2) leyendo el titular escrito en cada imagen
+    can_read=ocr.available(); by_text=0
+    if rest and free and can_read:  # 2) leyendo el titular escrito en cada imagen
         from concurrent.futures import ThreadPoolExecutor
-        with ThreadPoolExecutor(max_workers=4) as pool:
-            texts=await run_in_threadpool(lambda: list(pool.map(lambda i: ocr.read_text(imgs[i][1]),free)))
+        def _read_all():
+            with ThreadPoolExecutor(max_workers=4) as pool: return list(pool.map(lambda i: ocr.read_text(imgs[i][1]),free))
+        texts=await run_in_threadpool(_read_all)
         heads=[(db.row('SELECT headline FROM articles WHERE id=?',(o['id'],)) or {}).get('headline') or '' for o in rest]
         for hi,ti in ocr.match(heads,texts).items():
-            i=free[ti]; _set_final_image(rest[hi]['id'],imgs[i][1]); used.add(i); rest[hi]['image']=imgs[i][0]
+            i=free[ti]; o=rest[hi]; _set_final_image(o['id'],imgs[i][1]); used.add(i); o['image']=imgs[i][0]; o['how']='texto'; by_text+=1
+            sec=ocr.section_of(imgs[i][1],texts[ti])  # la sección que pone la imagen (color de la etiqueta)
+            a=db.row('SELECT brand FROM articles WHERE id=?',(o['id'],))
+            if sec and a and brands.valid(a.get('brand'))==brands.DEFAULT:
+                db.exec_('UPDATE articles SET section=? WHERE id=?',(layout.normalize_section(sec),o['id']))
     rest=[o for o in out if 'image' not in o]; free=[i for i in range(len(imgs)) if i not in used]
-    if rest and free:  # 3) por orden, con las que queden
+    if rest and free and not by_text:  # 3) si no se ha podido leer ninguna: por orden
         for o,i in zip(rest,free):
-            _set_final_image(o['id'],imgs[i][1]); used.add(i); o['image']=imgs[i][0]
+            _set_final_image(o['id'],imgs[i][1]); used.add(i); o['image']=imgs[i][0]; o['how']='orden'
     rows=[]
     for o in out:
         a=db.row('SELECT id,brand,section,headline,subtitle,render_path FROM articles WHERE id=?',(o['id'],))
         rows.append({**a,'image':o.get('image') or '','has_image':bool(a.get('render_path'))})
     db.log('launch_batch',f'Lanzadera en lote: {len(rows)} noticias, {len(used)} imágenes')
-    return {'items':rows,'images':len(imgs),'matched':len(used)}
+    return {'items':rows,'images':len(imgs),'matched':len(used),'ocr':can_read}
 
 @app.post('/api/articles/{aid}/final-image',dependencies=[Depends(require_auth)])
 async def article_final_image(aid:int,photo:UploadFile=File(...)):

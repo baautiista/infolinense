@@ -460,3 +460,13 @@ class OcrMatchTests(unittest.TestCase):
         texts = ['CULTURA\nLa Feria del Libro\nllega al Mercado', 'CIUDAD El Ayuntamiento arregla\nla plaza de la Iglesia']
         self.assertEqual(ocr.match(heads, texts), {0: 1, 1: 0})
         self.assertEqual(ocr.match(heads, ['nada que ver aqui']), {})
+
+
+class SectionColorTests(unittest.TestCase):
+    def test_section_from_label_color(self):
+        from app import ocr
+        from PIL import ImageDraw
+        im = Image.new('RGB', (1080, 1350), (200, 225, 245)); d = ImageDraw.Draw(im)
+        d.rectangle((55, 657, 400, 711), fill='#00AB4F')
+        self.assertEqual(ocr.section_of(im, ''), 'DEPORTES')
+        self.assertEqual(ocr.section_of(im, 'FÚTBOL\nLa Balona gana'), 'FÚTBOL')

@@ -542,7 +542,7 @@ def _batch_pptx(articles):
     return out.getvalue()
 
 
-def _merge_call(body, tries=4):
+def _merge_call(body, tries=6):
     """Una llamada a /merges con reintentos: Canva a veces tarda o limita (429) si hay muchas seguidas."""
     last = None
     for n in range(tries):
@@ -552,7 +552,15 @@ def _merge_call(body, tries=4):
             last = exc
             time.sleep(min(30, 4 * (n + 1) * (3 if '429' in str(exc) else 1)))
             continue
-        return _wait('/merges/' + job['job']['id'], job, tries=180)
+        try:
+            return _wait('/merges/' + job['job']['id'], job, tries=180)
+        except ValueError as exc:
+            # «version conflicted»: el diseño aún guardaba la página anterior. El trabajo falló sin insertar nada,
+            # así que se puede repetir sin duplicar.
+            if 'conflict' not in str(exc).lower():
+                raise
+            last = exc
+            time.sleep(3 * (n + 1))
     raise last
 
 
@@ -601,6 +609,7 @@ def batch_design(articles, progress=None):
     pages = 1
     for n, (a, did, page) in enumerate(parts[1:], 2):  # una operación por llamada (lo que Canva permite)
         try:
+            time.sleep(1.5)  # deja que Canva guarde la página anterior antes de añadir otra
             _merge_call({'type': 'modify_existing_design', 'design_id': target, 'operations': [
                 {'type': 'insert_pages', 'source': {'type': 'design', 'design_id': did, 'page_numbers': [page]}}]})
             pages += 1

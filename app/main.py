@@ -14,7 +14,7 @@ from .auth import login, require_auth
 from starlette.concurrency import run_in_threadpool
 from .config import BASE_DIR, RENDER_DIR, UPLOAD_DIR, SCAN_INTERVAL_MINUTES, AUTO_PIPELINE, OPENAI_API_KEY, ADMIN_PASSWORD, JWT_SECRET, PUBLISH_MODE, CORS_ORIGINS, PUBLIC_BASE_URL, AUTO_PUBLISH
 
-VERSION='7.4.2'
+VERSION='7.4.3'
 app=FastAPI(title='InfoLinense Desk',version=VERSION)
 app.add_middleware(CORSMiddleware,allow_origins=CORS_ORIGINS,allow_credentials=False,allow_methods=['*'],allow_headers=['Authorization','Content-Type'])
 db.init_db()
@@ -559,7 +559,7 @@ def _keeps_clean_photo(a):
     kind=(a or {}).get('image_kind') or ''
     if kind=='final_image' or not (a or {}).get('image_local') or not Path(a['image_local']).is_file(): return False
     if kind=='web_photo': return True
-    # Anterior a la 7.4.2: la imagen terminada se guardaba como 'user_upload' de la Redacción con un diseño 'upload'
+    # Anterior a la 7.4.3: la imagen terminada se guardaba como 'user_upload' de la Redacción con un diseño 'upload'
     legacy=db.row("SELECT 1 FROM canva_designs WHERE article_id=? AND design_id='upload'",(a['id'],))
     return not legacy
 
@@ -1638,7 +1638,7 @@ def restore_final_covers():
         except Exception: continue
 
 def mark_final_images():
-    """Noticias sin publicar subidas antes de la 7.4.2 cuya «foto» es la imagen terminada de Canva:
+    """Noticias sin publicar subidas antes de la 7.4.3 cuya «foto» es la imagen terminada de Canva:
     se marcan para que la web no la use de portada."""
     db.exec_("""UPDATE articles SET image_kind='final_image'
                 WHERE status!='published' AND image_kind='user_upload' AND image_source='Redacción'

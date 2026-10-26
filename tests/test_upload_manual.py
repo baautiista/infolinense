@@ -585,3 +585,20 @@ class CanvaNoDuplicateTests(unittest.TestCase):
         db.exec_('UPDATE articles SET lote_hash=? WHERE id=?', (main._lote_hash(a), aid))
         a = db.row('SELECT * FROM articles WHERE id=?', (aid,))
         self.assertEqual(a['lote_hash'], main._lote_hash(a))
+
+
+class CanvaConflictRetryTests(unittest.TestCase):
+    def test_conflict_is_retried(self):
+        from unittest import mock
+        from app import canva
+        posts = []
+        def api(method, path, **kw):
+            if method == 'POST':
+                posts.append(path); return {'job': {'id': 'j%d' % len(posts), 'status': 'in_progress'}}
+            if path.endswith('j1'):
+                return {'job': {'status': 'failed', 'error': {'message': 'inline commit version conflicted on global version'}}}
+            return {'job': {'status': 'success', 'result': {'design': {'id': 'D1'}}}}
+        with mock.patch.object(canva, '_api', side_effect=api), mock.patch.object(canva.time, 'sleep'):
+            job = canva._merge_call({'type': 'modify_existing_design'})
+        self.assertEqual(len(posts), 2)
+        self.assertEqual(job['status'], 'success')

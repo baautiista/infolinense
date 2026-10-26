@@ -417,7 +417,8 @@ function whenPicker(id, at) {
 function launchBatchView(v) {
   const b0 = netBrand();
   v.innerHTML = `${modeSwitch()}<form class="up" id="lbForm">
-    <div><h2>Lanzadera en lote</h2><p class="muted small">Sube el txt que ha redactado ChatGPT y las imágenes terminadas: la carpeta entera, un .zip o las imágenes sueltas. Cada imagen se une a su noticia por el ID del nombre del archivo o, si no, por el orden (1.png con la primera noticia, 2.png con la segunda…).</p></div>
+    <div><h2>Lanzadera en lote</h2><p class="muted small">Sube el txt que ha redactado ChatGPT y las imágenes terminadas: la carpeta entera, un .zip o las imágenes sueltas. Cada imagen se une a su noticia por el ID del nombre del archivo o, si no, por el orden (1.png con la primera noticia, 2.png con la segunda…).</p>
+      <p class="small"><b>Portada de la web:</b> la imagen de Canva solo va a las redes. Para que la noticia lleve foto en la web, añade también la foto sin textos con el mismo número y la palabra «foto» en el nombre (por ejemplo <b>12-foto.jpg</b>). Si no la añades, en la web sale sin foto.</p></div>
     ${BRANDS.length > 1 ? `<div><p class="small" style="font-weight:700;margin:0 0 6px">Medio (si el txt no lo dice)</p><div class="seg" id="lbBrand">${BRANDS.map(b => `<label><input type="radio" name="brand" value="${b.slug}" ${b.slug === b0 ? 'checked' : ''}><span>${esc(b.name)}</span></label>`).join('')}</div></div>` : ''}
     <label>Texto redactado (.txt)<input type="file" name="txt" accept=".txt,text/plain"></label>
     <label>O pégalo aquí<textarea name="text" rows="5" placeholder="TITULAR: …&#10;ENTRADILLA: …&#10;TEXTO: …&#10;---"></textarea></label>
@@ -430,7 +431,7 @@ function launchBatchView(v) {
     if (!fd.get('txt').size) fd.delete('txt');
     [...$('#lbDir').files, ...$('#lbFiles').files].filter(f => /\.(png|jpe?g|webp|zip)$/i.test(f.name) && !f.name.startsWith('.')).forEach(f => fd.append('images', f, f.webkitRelativePath || f.name));
     const b = $('#lbBtn'); b.disabled = true; b.textContent = 'Cargando…';
-    try { const r = await api('/api/launch/batch', { method: 'POST', body: fd }); launchItems = r.items; toast(`${r.items.length} noticias · ${r.matched} de ${r.images} imágenes unidas${r.ocr ? '' : ' (el servidor aún no sabe leer el texto de las imágenes: unidas por orden)'}`); drawLaunch() }
+    try { const r = await api('/api/launch/batch', { method: 'POST', body: fd }); launchItems = r.items; toast(`${r.items.length} noticias · ${r.matched} de ${r.images} imágenes unidas${r.web_photos ? ` · ${r.web_matched} de ${r.web_photos} fotos para la web` : ''}${r.ocr ? '' : ' (el servidor aún no sabe leer el texto de las imágenes: unidas por orden)'}`); drawLaunch() }
     catch (er) { toast(er.message) }
     b.disabled = false; b.textContent = 'Cargar noticias';
   };
@@ -449,6 +450,8 @@ function drawLaunch() {
       <div class="lb-body"><div class="meta">${brandBadge(it.brand)}${it.section ? secBadge(it.section, it.brand) : ''}<span class="muted small" id="st-${it.id}">${it.state || ''}</span></div>
         <h3 class="go" data-go="#editor/${it.id}">${esc(it.headline)}</h3>${it.subtitle ? `<p class="rv-sub">${esc(it.subtitle)}</p>` : ''}
         <label class="small lb-change">Cambiar imagen<input type="file" accept="image/*" data-img="${it.id}"></label>
+        <p class="small ${it.has_web_photo ? '' : 'muted'}">${it.has_web_photo ? '✓ Foto para la web' : 'Sin foto para la web (sale sin portada)'}
+          <label class="lb-change">${it.has_web_photo ? 'Cambiar' : 'Añadir'} foto web<input type="file" accept="image/*" data-web="${it.id}"></label></p>
         <div class="row wrap">${whenPicker(it.id, nextQuarter(15 * i))}</div>
         <div class="rv-actions"><button class="btn small primary" data-now="${it.id}">Publicar ya</button><button class="btn small" data-sched="${it.id}">Programar</button></div></div></article>`).join('')}</div>`;
   launchItems.forEach(async it => { if (it.has_image) { try { const u = await blobUrl(`/media/render/${it.id}.png?t=${Date.now()}`); $('#img-' + it.id).innerHTML = `<img src="${u}" alt="">` } catch (e) { } } });
@@ -460,7 +463,11 @@ function drawLaunch() {
   box.querySelectorAll('[data-sched]').forEach(b => b.onclick = () => { const at = atOf(b.dataset.sched); if (at <= madridNow()) return toast('Elige una hora futura'); sched(+b.dataset.sched, at) });
   box.querySelectorAll('[data-img]').forEach(inp => inp.onchange = async () => {
     const f = inp.files[0]; if (!f) return; const fd = new FormData(); fd.append('photo', f);
-    try { await api(`/api/articles/${inp.dataset.img}/final-image`, { method: 'POST', body: fd }); const it = launchItems.find(x => x.id === +inp.dataset.img); it.has_image = true; drawLaunch(); toast('Imagen cambiada') } catch (e) { toast(e.message) }
+    try { const r = await api(`/api/articles/${inp.dataset.img}/final-image`, { method: 'POST', body: fd }); const it = launchItems.find(x => x.id === +inp.dataset.img); it.has_image = true; it.has_web_photo = !!r.has_web_photo; drawLaunch(); toast('Imagen cambiada') } catch (e) { toast(e.message) }
+  });
+  box.querySelectorAll('[data-web]').forEach(inp => inp.onchange = async () => {
+    const f = inp.files[0]; if (!f) return; const fd = new FormData(); fd.append('photo', f);
+    try { await api(`/api/articles/${inp.dataset.web}/web-photo`, { method: 'POST', body: fd }); const it = launchItems.find(x => x.id === +inp.dataset.web); it.has_web_photo = true; drawLaunch(); toast('Foto para la web añadida') } catch (e) { toast(e.message) }
   });
   $('#lbAllNow').onclick = async e => { e.target.disabled = true; for (const it of launchItems) await pubNow(it.id); e.target.disabled = false; toast('Hecho') };
   $('#lbAllSched').onclick = async e => {
@@ -492,6 +499,9 @@ function quickView(v) {
     <label>Texto de la noticia<textarea name="body" rows="8" placeholder="Para la web y el pie de la publicación en redes"></textarea></label>
     <div class="drop" id="qDrop" tabindex="0" role="button" aria-label="Elegir imagen"><b id="qDropTitle">${quickReady ? 'Imágenes de Canva terminadas' : 'Fotos'}</b><span class="muted small" id="qPhotoName">${dropHint()}</span><input type="file" id="qPhoto" accept="image/jpeg,image/png,image/webp" multiple></div>
     <div class="qthumbs" id="qThumbs"></div>
+    <label id="qWebWrap" ${quickReady ? '' : 'hidden'}>Foto para la portada de la web (sin textos ni gráficos)
+      <input type="file" id="qWeb" accept="image/jpeg,image/png,image/webp">
+      <span class="muted small">La imagen de Canva solo va a las redes. Sin esta foto, la noticia sale en la web sin portada.</span></label>
     <details class="alts"><summary>Enlace de la fuente (opcional)</summary>
       <label>Enlace<input name="link" type="url" placeholder="https://…"></label></details>
     <div><p class="small" style="font-weight:700;margin:0 0 6px">¿Cuándo?</p><div class="seg" id="qWhen">
@@ -527,6 +537,7 @@ function quickView(v) {
   $('#qKind').onchange = e => {
     quickReady = e.target.value === 'ready'; ta.oninput();
     $('#qDropTitle').textContent = quickReady ? 'Imágenes de Canva terminadas' : 'Fotos';
+    $('#qWebWrap').hidden = !quickReady;
     if (!files.length) $('#qPhotoName').textContent = dropHint();
   };
   const btnLabel = () => $('#qWhen input:checked').value === 'later' ? 'Programar' : 'Publicar ya';
@@ -541,7 +552,7 @@ function quickView(v) {
     e.preventDefault();
     if (!files.length) return toast(quickReady ? 'Falta la imagen' : 'Falta la foto');
     if ($('#qWhen input:checked').value === 'later' && !(e.target.at.value > madridNow())) return toast('Elige un día y una hora futuros');
-    const fd = new FormData(e.target); fd.set('brand', brandSel()); fd.append('photo', files[0].f); files.slice(1).forEach(x => fd.append('extra', x.f)); fd.delete('qkind'); fd.delete('qwhen'); if (quickReady) fd.set('ready', '1');
+    const fd = new FormData(e.target); fd.set('brand', brandSel()); fd.append('photo', files[0].f); files.slice(1).forEach(x => fd.append('extra', x.f)); fd.delete('qkind'); fd.delete('qwhen'); if (quickReady) { fd.set('ready', '1'); if ($('#qWeb').files[0]) fd.append('web_photo', $('#qWeb').files[0]) }
     const b = $('#qBtn'); b.disabled = true; b.textContent = e.target.at.value ? 'Programando…' : quickReady ? 'Publicando…' : 'Creando imagen y publicando…';
     try {
       const r = await api('/api/quick', { method: 'POST', body: fd });

@@ -511,3 +511,55 @@ class ExportSkipsScheduledTests(unittest.TestCase):
         ids = {r['aid'] for r in main._publish_queue()}
         self.assertFalse({a1, a3, a4} & ids)
         self.assertIn(a5, ids)
+
+
+class WebCoverTests(unittest.TestCase):
+    """La portada de la web nunca es la imagen terminada de Canva (logo, sección, titular y entradilla)."""
+
+    def setUp(self):
+        db.init_db()
+        cid = db.exec_("INSERT INTO candidates(title,url,status) VALUES('t','manual:web-cover-%s','new')" % id(self))
+        self.aid = db.exec_("INSERT INTO articles(candidate_id,status,headline,body) VALUES(?,?,?,?)", (cid, 'approved', 'Titular', 'Texto'))
+
+    def _row(self):
+        return db.row('SELECT * FROM articles WHERE id=?', (self.aid,))
+
+    def test_final_image_alone_gives_no_web_cover(self):
+        from app import publishers
+        main._set_final_image(self.aid, Image.new('RGB', (1080, 1350), (10, 20, 30)))
+        a = self._row()
+        self.assertEqual(a['image_kind'], 'final_image')
+        self.assertTrue(Path(a['render_path']).is_file())
+        self.assertIsNone(publishers.web_payload(a)['image_base64'])
+
+    def test_web_photo_is_the_cover_and_survives_final_image(self):
+        from app import publishers
+        main._set_web_photo(self.aid, Image.new('RGB', (1600, 900), (200, 100, 50)))
+        main._set_final_image(self.aid, Image.new('RGB', (1080, 1350), (10, 20, 30)))
+        a = self._row()
+        self.assertEqual(a['image_kind'], 'web_photo')
+        self.assertTrue(Path(a['render_path']).is_file())
+        self.assertTrue(publishers.web_payload(a)['image_base64'])
+
+    def test_legacy_final_upload_is_marked(self):
+        main._set_final_image(self.aid, Image.new('RGB', (1080, 1350)))
+        db.exec_("UPDATE articles SET image_kind='user_upload',image_source='Redacción' WHERE id=?", (self.aid,))
+        main.mark_final_images()
+        self.assertEqual(self._row()['image_kind'], 'final_image')
+
+    def test_batch_joins_clean_photo_by_number(self):
+        def png(color, size=(1080, 1350)):
+            b = BytesIO(); Image.new('RGB', size, color).save(b, 'PNG'); return b.getvalue()
+        text = 'TITULAR: Primera noticia de prueba\nTEXTO: Uno.\n---\nTITULAR: Segunda noticia de prueba\nTEXTO: Dos.'
+        files = [FakeUpload('1.png', png((1, 1, 1))), FakeUpload('2.png', png((2, 2, 2))),
+                 FakeUpload('2-foto.jpg', png((200, 100, 50), (1600, 900)))]
+        with patch.object(main.ocr, 'available', return_value=False):
+            r = asyncio.run(main.launch_batch(text=text, brand='infolinense', txt=None, images=files))
+        self.assertEqual((r['matched'], r['web_photos'], r['web_matched']), (2, 1, 1))
+        first, second = r['items']
+        self.assertFalse(first['has_web_photo'])
+        self.assertTrue(second['has_web_photo'])
+        a = db.row('SELECT * FROM articles WHERE id=?', (second['id'],))
+        self.assertEqual(a['image_kind'], 'web_photo')
+        with Image.open(a['image_local']) as im:
+            self.assertEqual(im.getpixel((5, 5)), (200, 100, 50))

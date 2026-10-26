@@ -14,7 +14,7 @@ from .auth import login, require_auth
 from starlette.concurrency import run_in_threadpool
 from .config import BASE_DIR, RENDER_DIR, UPLOAD_DIR, SCAN_INTERVAL_MINUTES, AUTO_PIPELINE, OPENAI_API_KEY, ADMIN_PASSWORD, JWT_SECRET, PUBLISH_MODE, CORS_ORIGINS, PUBLIC_BASE_URL, AUTO_PUBLISH
 
-VERSION='7.4.0'
+VERSION='7.4.1'
 app=FastAPI(title='InfoLinense Desk',version=VERSION)
 app.add_middleware(CORSMiddleware,allow_origins=CORS_ORIGINS,allow_credentials=False,allow_methods=['*'],allow_headers=['Authorization','Content-Type'])
 db.init_db()
@@ -538,16 +538,48 @@ def _fit_width(im,width):
 def _natkey(name):
     return [int(t) if t.isdigit() else t.lower() for t in re.split(r'(\d+)', name)]
 
+# Portada de la web: nunca lleva los gráficos de Canva (logo, sección, titular ni entradilla).
+# image_kind='final_image' → la foto de la noticia ES la imagen terminada: va a las redes, pero no a la web.
+# image_kind='web_photo'   → foto limpia subida por la redacción para la portada de la web.
+WEB_PHOTO_RE=re.compile(r'(foto|limpia|portada|web|original)',re.I)
+
+def _keeps_clean_photo(a):
+    """¿La foto actual de la noticia es una foto limpia (no la imagen terminada)?"""
+    kind=(a or {}).get('image_kind') or ''
+    if kind=='final_image' or not (a or {}).get('image_local') or not Path(a['image_local']).is_file(): return False
+    if kind=='web_photo': return True
+    # Anterior a la 7.4.1: la imagen terminada se guardaba como 'user_upload' de la Redacción con un diseño 'upload'
+    legacy=db.row("SELECT 1 FROM canva_designs WHERE article_id=? AND design_id='upload'",(a['id'],))
+    return not legacy
+
 def _set_final_image(aid, im):
-    """La imagen terminada (de Canva) pasa a ser la de la noticia: web y redes la usan tal cual."""
+    """La imagen terminada (de Canva) es la de las redes. Si la noticia ya tiene una foto limpia, esa sigue
+    siendo la portada de la web; si no, la web sale sin foto (nunca con los gráficos)."""
     from uuid import uuid4
     RENDER_DIR.mkdir(parents=True,exist_ok=True); UPLOAD_DIR.mkdir(parents=True,exist_ok=True)
     im=im.convert('RGB')
-    photo=UPLOAD_DIR/(uuid4().hex+'.jpg'); _fit_width(im,1600).save(photo,'JPEG',quality=90)
+    a=db.row('SELECT id,image_local,image_kind FROM articles WHERE id=?',(aid,))
+    keep=_keeps_clean_photo(a)
     final=RENDER_DIR/f'article_{aid}.png'; _fit_width(im,1080).save(final,'PNG',optimize=True)
-    db.exec_("UPDATE articles SET image_local=?,image_kind='user_upload',image_source='Redacción',render_path=?,updated_at=CURRENT_TIMESTAMP WHERE id=?",
-             (str(photo),str(final),aid))
+    if keep:
+        db.exec_("UPDATE articles SET render_path=?,updated_at=CURRENT_TIMESTAMP WHERE id=?",(str(final),aid))
+    else:
+        photo=UPLOAD_DIR/(uuid4().hex+'.jpg'); _fit_width(im,1600).save(photo,'JPEG',quality=90)
+        db.exec_("UPDATE articles SET image_local=?,image_kind='final_image',image_source='Redacción',render_path=?,updated_at=CURRENT_TIMESTAMP WHERE id=?",
+                 (str(photo),str(final),aid))
     db.exec_("INSERT OR REPLACE INTO canva_designs(article_id,design_id,url,exported,content_hash) VALUES(?,'upload','',1,'upload')",(aid,))
+
+def _set_web_photo(aid, im):
+    """Foto limpia (sin textos ni gráficos) para la portada de la web. No toca la imagen de las redes."""
+    from uuid import uuid4
+    UPLOAD_DIR.mkdir(parents=True,exist_ok=True)
+    photo=UPLOAD_DIR/(uuid4().hex+'.jpg'); _fit_width(im.convert('RGB'),1600).save(photo,'JPEG',quality=90)
+    db.exec_("UPDATE articles SET image_local=?,image_kind='web_photo',image_source='Redacción',updated_at=CURRENT_TIMESTAMP WHERE id=?",
+             (str(photo),aid))
+
+def _has_web_photo(aid):
+    a=db.row('SELECT id,image_local,image_kind FROM articles WHERE id=?',(aid,))
+    return _keeps_clean_photo(a)
 
 def _new_launch_article(it,brand):
     """Noticia nueva desde el txt (sin ID): se crea lista para publicar."""
@@ -605,6 +637,9 @@ async def launch_batch(text:str=Form(''),brand:str=Form('infolinense'),txt:Uploa
                 if re.search(r'\.(png|jpe?g|webp)$',n,re.I) and '__MACOSX' not in n and not n.rsplit('/',1)[-1].startswith('.'): _add(n,z.read(n))
         elif re.search(r'\.(png|jpe?g|webp)$',name,re.I) and not name.rsplit('/',1)[-1].startswith('.'): _add(name,raw)
     imgs.sort(key=lambda x:_natkey(x[0]))
+    # Fotos limpias para la portada de la web: llevan «foto», «portada», «web»… en el nombre (p. ej. 12-foto.jpg)
+    clean=[(n,im) for n,im in imgs if WEB_PHOTO_RE.search(n.rsplit('.',1)[0])]
+    imgs=[(n,im) for n,im in imgs if not WEB_PHOTO_RE.search(n.rsplit('.',1)[0])]
     used=set()
     for o in out:  # 1) ID en el nombre del archivo
         for i,(n,im) in enumerate(imgs):
@@ -628,12 +663,23 @@ async def launch_batch(text:str=Form(''),brand:str=Form('infolinense'),txt:Uploa
     if rest and free and not by_text:  # 3) si no se ha podido leer ninguna: por orden
         for o,i in zip(rest,free):
             _set_final_image(o['id'],imgs[i][1]); used.add(i); o['image']=imgs[i][0]; o['how']='orden'
+    web_used=0
+    for n,im in clean:  # la foto limpia se une por el ID del nombre; si solo hay una noticia, va con ella
+        m=re.search(r'\d+',n.rsplit('.',1)[0]); num=int(m.group()) if m else None
+        def _num(name):
+            k=re.search(r'\d+',(name or '').rsplit('.',1)[0]); return int(k.group()) if k else None
+        o=(next((o for o in out if num is not None and o.get('image') and _num(o['image'])==num),None)  # mismo número que su imagen de Canva
+           or next((o for o in out if num is not None and o['ref']==num),None)                          # ID de la noticia
+           or (out[num-1] if num is not None and 1<=num<=len(out) and not any(o['ref'] for o in out) else None)  # orden en el txt
+           or (out[0] if len(out)==1 else None))
+        if o and 'web_photo' not in o:
+            _set_web_photo(o['id'],im); o['web_photo']=n; web_used+=1
     rows=[]
     for o in out:
         a=db.row('SELECT id,brand,section,headline,subtitle,render_path FROM articles WHERE id=?',(o['id'],))
-        rows.append({**a,'image':o.get('image') or '','has_image':bool(a.get('render_path'))})
-    db.log('launch_batch',f'Lanzadera en lote: {len(rows)} noticias, {len(used)} imágenes')
-    return {'items':rows,'images':len(imgs),'matched':len(used),'ocr':can_read}
+        rows.append({**a,'image':o.get('image') or '','has_image':bool(a.get('render_path')),'has_web_photo':_has_web_photo(o['id'])})
+    db.log('launch_batch',f'Lanzadera en lote: {len(rows)} noticias, {len(used)} imágenes, {web_used} fotos para la web')
+    return {'items':rows,'images':len(imgs),'matched':len(used),'ocr':can_read,'web_photos':len(clean),'web_matched':web_used}
 
 @app.post('/api/articles/{aid}/final-image',dependencies=[Depends(require_auth)])
 async def article_final_image(aid:int,photo:UploadFile=File(...)):
@@ -643,16 +689,27 @@ async def article_final_image(aid:int,photo:UploadFile=File(...)):
     try: im=Image.open(BytesIO(await photo.read(25_000_001))); im.load()
     except Exception: raise HTTPException(400,'La imagen no es válida')
     _set_final_image(aid,im)
-    return {'ok':True}
+    return {'ok':True,'has_web_photo':_has_web_photo(aid)}
+
+@app.post('/api/articles/{aid}/web-photo',dependencies=[Depends(require_auth)])
+async def article_web_photo(aid:int,photo:UploadFile=File(...)):
+    """Foto limpia para la portada de la web (sin logo, sección, titular ni entradilla)."""
+    from PIL import Image
+    if not db.row('SELECT id FROM articles WHERE id=?',(aid,)): raise HTTPException(404)
+    try: im=Image.open(BytesIO(await photo.read(25_000_001))); im.load()
+    except Exception: raise HTTPException(400,'La foto no es válida')
+    _set_web_photo(aid,im)
+    return {'ok':True,'has_web_photo':True}
 
 @app.post('/api/quick',dependencies=[Depends(require_auth)])
 async def quick_publish(headline:str=Form(...),subtitle:str=Form(''),body:str=Form(''),section:str=Form(''),brand:str=Form('infolinense'),
                         link:str=Form(''),at:str=Form(''),networks:str=Form(''),ready:str=Form(''),photo:UploadFile=File(...),
-                        extra:list[UploadFile]=File(default=[])):
+                        extra:list[UploadFile]=File(default=[]),web_photo:UploadFile|None=File(None)):
     """Lanzadera: la redacción trae su noticia ya escrita (titular, entradilla, texto y foto). No se reescribe nada:
     se hace la imagen de Canva y se publica al momento (o a la hora indicada) en la web y en las redes del medio.
     Con ready=1 la imagen subida ya es la definitiva (hecha en Canva por la redacción) y se publica tal cual.
-    «extra»: más imágenes (hasta 9) que van detrás de la primera como carrusel en Instagram y Facebook."""
+    «extra»: más imágenes (hasta 9) que van detrás de la primera como carrusel en Instagram y Facebook.
+    «web_photo»: con ready=1, la foto limpia para la portada de la web (la imagen de Canva nunca va a la web)."""
     from uuid import uuid4
     headline=re.sub(r'\s+',' ',headline).strip(); subtitle=re.sub(r'\s+',' ',subtitle).strip(); body=(body or '').strip()
     if len(headline)<8: raise HTTPException(400,'Escribe el titular')
@@ -689,8 +746,14 @@ async def quick_publish(headline:str=Form(...),subtitle:str=Form(''),body:str=Fo
         RENDER_DIR.mkdir(parents=True,exist_ok=True)
         final=RENDER_DIR/f'article_{aid}.png'
         _fit_width(im,1080).save(final,'PNG',optimize=True)
-        db.exec_('UPDATE articles SET render_path=?,updated_at=CURRENT_TIMESTAMP WHERE id=?',(str(final),aid))
+        db.exec_("UPDATE articles SET render_path=?,image_kind='final_image',updated_at=CURRENT_TIMESTAMP WHERE id=?",(str(final),aid))
         db.exec_("INSERT OR REPLACE INTO canva_designs(article_id,design_id,url,exported,content_hash) VALUES(?,'upload','',1,'upload')",(aid,))
+        if web_photo is not None and getattr(web_photo,'filename',None):
+            raw=await web_photo.read(25_000_001)
+            if len(raw)>25_000_000: raise HTTPException(400,'La foto para la web pesa más de 25 MB')
+            try: wim=Image.open(BytesIO(raw)); wim.load()
+            except Exception: raise HTTPException(400,'La foto para la web no es válida')
+            _set_web_photo(aid,wim)
     elif canva.ready() and canva.connected():
         try:
             r=await run_in_threadpool(canva.create_design,a)
@@ -980,7 +1043,7 @@ def kit(aid:int):
 
 def photo_credit(a):
     """De dónde salió la foto (solo informativo)."""
-    if (a.get('image_kind') or '')=='user_upload' or str(a.get('image_url') or '').startswith('upload:'): return 'Foto subida por ti'
+    if (a.get('image_kind') or '') in ('user_upload','final_image','web_photo') or str(a.get('image_url') or '').startswith('upload:'): return 'Foto subida por ti'
     host=urlparse(a.get('image_source') or a.get('image_url') or '').hostname or ''
     return host.replace('www.','')
 
@@ -1560,12 +1623,22 @@ def restore_final_covers():
             UPLOAD_DIR.mkdir(parents=True,exist_ok=True)
             photo=UPLOAD_DIR/(uuid4().hex+'.jpg')
             with Image.open(p) as im: _fit_width(im.convert('RGB'),1600).save(photo,'JPEG',quality=90)
-            db.exec_("UPDATE articles SET image_local=?,image_kind='user_upload' WHERE id=?",(str(photo),a['id']))
+            db.exec_("UPDATE articles SET image_local=?,image_kind='final_image' WHERE id=?",(str(photo),a['id']))
         except Exception: continue
+
+def mark_final_images():
+    """Noticias sin publicar subidas antes de la 7.4.1 cuya «foto» es la imagen terminada de Canva:
+    se marcan para que la web no la use de portada."""
+    db.exec_("""UPDATE articles SET image_kind='final_image'
+                WHERE status!='published' AND image_kind='user_upload' AND image_source='Redacción'
+                  AND COALESCE(render_path,'')!=''
+                  AND id IN (SELECT article_id FROM canva_designs WHERE design_id='upload')""")
 
 @app.on_event('startup')
 def startup():
     try: restore_final_covers()
+    except Exception as e: db.log('cover_fix_error',str(e)[:250])
+    try: mark_final_images()
     except Exception as e: db.log('cover_fix_error',str(e)[:250])
     try: social_publish.cleanup_expired_public_media()
     except Exception as e: db.log('media_cleanup_error',str(e)[:250])

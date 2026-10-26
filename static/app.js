@@ -178,14 +178,14 @@ function armGpt(v) {
   const qs = () => `brand=${encodeURIComponent(BRAND)}`;
   v.querySelector('#gptCopy').onclick = async () => {
     try {
-      const r = await api('/api/export/chatgpt?' + qs());
+      const r = await api('/api/export/chatgpt?' + qs() + '&t=' + Date.now());
       if (!r.count) return toast('No hay noticias en Publicar sin publicar ni programar');
       try { await navigator.clipboard.writeText(r.text) }
       catch (e) { const t = document.createElement('textarea'); t.value = r.text; document.body.appendChild(t); t.select(); document.execCommand('copy'); t.remove() }
       toast(`Copiadas ${r.count} noticias: pégalas en ChatGPT`);
     } catch (e) { toast(e.message) }
   };
-  v.querySelector('#gptTxt').onclick = () => download('/api/export/chatgpt?download=1&' + qs(), `noticias-chatgpt-${new Date().toISOString().slice(0, 10)}.txt`);
+  v.querySelector('#gptTxt').onclick = () => download('/api/export/chatgpt?download=1&t=' + Date.now() + '&' + qs(), `noticias-chatgpt-${new Date().toISOString().slice(0, 10)}.txt`);
   v.querySelector('#gptUp').onclick = () => {
     const sheet = document.createElement('div'); sheet.className = 'sheet-bg';
     sheet.innerHTML = `<div class="sheet" role="dialog" aria-label="Subir en lote"><h2>Subir lo que ha redactado ChatGPT</h2>

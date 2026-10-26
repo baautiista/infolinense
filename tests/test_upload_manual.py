@@ -495,3 +495,14 @@ class AdaptableNationalTests(unittest.TestCase):
         nat = {'name': 'Medios nacionales', 'priority': 80, 'official': 0, 'local_scope': 0}
         self.assertIsNone(sources.add_candidate('Ranking de playas de España', 'https://elmundo.es/playas-adapt-test',
                                                 'Lista larga... ' + 'x ' * 300 + 'La Línea de la Concepción', nat['name'], None, now, nat))
+
+
+class ExportSkipsScheduledTests(unittest.TestCase):
+    def test_scheduled_not_exported(self):
+        from app import db, main
+        cid = db.exec_("INSERT INTO candidates(title,url,status) VALUES('Noticia programada test','https://x.test/prog','new')")
+        a1 = db.exec_("INSERT INTO articles(candidate_id,status,headline,scheduled_at) VALUES(?,?,?,?)", (cid, 'approved', 'h', '2099-01-01T10:00+01:00'))
+        cid2 = db.exec_("INSERT INTO candidates(title,url,status) VALUES('Fallo al programar test','https://x.test/prog2','new')")
+        a3 = db.exec_("INSERT INTO articles(candidate_id,status,headline,schedule_error) VALUES(?,?,?,?)", (cid2, 'approved', 'h3', 'Error'))
+        ids = {r['aid'] for r in main._publish_queue()}
+        self.assertFalse({a1, a3} & ids)

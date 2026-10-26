@@ -14,7 +14,7 @@ from .auth import login, require_auth
 from starlette.concurrency import run_in_threadpool
 from .config import BASE_DIR, RENDER_DIR, UPLOAD_DIR, SCAN_INTERVAL_MINUTES, AUTO_PIPELINE, OPENAI_API_KEY, ADMIN_PASSWORD, JWT_SECRET, PUBLISH_MODE, CORS_ORIGINS, PUBLIC_BASE_URL, AUTO_PUBLISH
 
-VERSION='6.15.1'
+VERSION='7.0.0'
 app=FastAPI(title='InfoLinense Desk',version=VERSION)
 app.add_middleware(CORSMiddleware,allow_origins=CORS_ORIGINS,allow_credentials=False,allow_methods=['*'],allow_headers=['Authorization','Content-Type'])
 db.init_db()
@@ -281,10 +281,9 @@ def chatgpt_export_text(brand='',scope='publish'):
         head.append(f"- {st['name']}: {st['about']}."+(f" Secciones: {secs}." if secs else ''))
     out=["Eres redactor de un medio local de La Línea de la Concepción (Cádiz). Redacta TODAS las noticias de abajo, una por una, en español de España.",
          "", "Medios:", *head, "",
-         "Devuelve cada noticia EXACTAMENTE con estas etiquetas, en este orden y sin negritas (respeta el ID de cada una):",
+         "Devuelve cada noticia EXACTAMENTE con estas etiquetas, en este orden y sin negritas (respeta el ID de cada una). La sección la pone el panel:",
          "ID: (el número indicado, sin cambiarlo)",
          "MEDIO: (el indicado)",
-         "SECCIÓN: (una de las secciones del medio)",
          "TITULAR: (claro e informativo, entre 60 y 110 caracteres, sin punto final)",
          "ENTRADILLA: (una o dos frases, máximo 250 caracteres)",
          "TEXTO: (noticia completa para la web y las redes, 3 a 6 párrafos, con lo más importante primero)",
@@ -350,7 +349,10 @@ def import_chatgpt(body:BatchIn):
         if not a: errors.append(f"ID {it['id']}: no existe"); continue
         if a['status']=='published': errors.append(f"ID {it['id']}: ya publicada"); continue
         brand=_brand_by_name(it.get('brand'),a.get('brand') or brands.DEFAULT)
-        section=(brands.find_section(brand,it.get('section')) if brand!=brands.DEFAULT else layout.normalize_section(it.get('section') or a.get('section') or '',it.get('headline') or '')) or a.get('section') or ''
+        # la sección la decide el panel por el contenido (titular, entradilla y texto)
+        content=' '.join([it.get('headline') or '',it.get('subtitle') or '',(it.get('body') or '')[:1500]])
+        if brand==brands.DEFAULT: section=layout.normalize_section('',content)
+        else: section=brands.detect_section(brand,content) or brands.find_section(brand,it.get('section')) or a.get('section') or brands.settings(brand).get('free_title_section') or ''
         headline=re.sub(r'\s+',' ',it.get('headline') or a.get('headline') or '').strip().rstrip('.')
         body_=(it.get('body') or a.get('body') or '').strip()
         db.exec_("""UPDATE articles SET brand=?,section=?,headline=?,subtitle=?,body=?,social_text=?,workflow='lote',render_path=NULL,

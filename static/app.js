@@ -253,7 +253,7 @@ function drawSort(v = $('#view')) {
         <span class="deck-count">${items.length} ${items.length === 1 ? 'queda' : 'quedan'}</span>
         <button class="round yes" id="yesBtn" aria-label="Sirve" title="Sirve (→)">✓</button></div>
       <p class="deck-hint">Desliza a la derecha si sirve y a la izquierda si no.</p>`
-    : queue.length ? '' : `<p class="empty">Todo ordenado. Pulsa «Buscar» para traer noticias nuevas.</p>${nextPhase('Ir a Redacción', 'writing', 'Las noticias marcadas se están redactando solas.')}`}`;
+    : queue.length ? '' : `<p class="empty">Todo ordenado. Pulsa «Buscar» para traer noticias nuevas.</p>${nextPhase('Ir a Redacción', 'writing', 'Las marcadas te esperan en Redacción para que las rellenes.')}`}`;
   v.insertAdjacentHTML('afterbegin', searchWidget() + gptWidget());
   armGpt(v);
   const input = v.querySelector('#newsQuery');
@@ -1005,8 +1005,7 @@ async function settings(v) {
           : `<span class="muted small">${s.items_added ?? 0} nuevas</span>`}${officialContract ? `<span class="muted small">${s.items_seen ?? 0} leídos · ${s.items_added ?? 0} nuevas</span>` : ''}</div>
         ${s.last_error ? `<p class="srcerr small"><span class="error">${esc(s.last_error.slice(0, 220))}</span><br><span class="muted">${esc(s.url.slice(0, 90))}</span></p>` : ''}`;
       }).join('') || '<p class="muted small">Ninguna todavía.</p>'}</div>
-      <form id="addSrc" class="stack"><input name="name" placeholder="Nombre del medio o página" required><input name="url" type="url" placeholder="https://… (RSS, portada, Facebook o Instagram)" required>
-      <select name="kind"><option value="rss">RSS</option><option value="html">Portada web</option><option value="social">Facebook / Instagram</option></select><button class="btn small">Añadir fuente</button></form></section>
+</section>
     <section class="panel"><h2>Páginas y grupos de Facebook vigilados</h2><p class="muted small">Solo lo público. Se buscan quejas, propuestas y asociaciones.</p>
       <div class="sources" id="fbList"></div>
       <form id="addFb" class="stack"><input name="name" placeholder="Nombre (p. ej. AVV La Atunara)" required><input name="url" type="url" placeholder="https://www.facebook.com/groups/…" required><button class="btn small">Vigilar</button></form></section>
@@ -1045,7 +1044,6 @@ async function settings(v) {
   if ($('#ttOff')) $('#ttOff').onclick = () => off('tiktok');
   if ($('#pagePick')) $('#pagePick').onchange = async e => { try { const r = await api('/api/networks/meta/page' + q, { method: 'POST', body: JSON.stringify({ page_id: e.target.value }) }); toast('Página: ' + r.name); render() } catch (er) { toast(er.message) } };
   const cc = $('#canvaConn'); if (cc) cc.onclick = async () => { try { location.href = (await api('/api/canva/connect')).url } catch (e) { toast(e.message) } };
-  $('#addSrc').onsubmit = async e => { e.preventDefault(); const d = Object.fromEntries(new FormData(e.target)); try { await api('/api/sources', { method: 'POST', body: JSON.stringify({ ...d, priority: 60, brand: SB }) }); toast('Fuente añadida'); render() } catch (er) { toast(er.message) } };
 }
 window.checkSource = async (id, b) => { b.disabled = true; b.textContent = 'Comprobando…'; try { const r = await api(`/api/sources/${id}/check`, { method: 'POST' }); if (!r.ok) toast('Sigue fallando: ' + r.error); else { const labels = { archived: 'archivadas', rejected: 'descartadas', merged: 'unidas', new: 'en el radar', researched: 'en redacción', draft: 'en revisión', review_ready: 'listas para revisar', published: 'publicadas' }; const known = Object.entries(r.existing_statuses || {}).map(([k,v]) => `${v} ${labels[k] || k}`).join(' · '); const recoverable = r.recoverable_archived ? ` · ${r.recoverable_archived} se recuperarán al buscar` : ''; const reasonLabels = { descartado_explicito: 'descartes explícitos', fuera_de_ventana: 'fuera de fecha', otro_municipio: 'otro municipio', fuente_no_municipal: 'fuente no municipal', registro_incompleto: 'registro incompleto' }; const blocked = Object.entries(r.recovery_reasons || {}).filter(([k]) => k !== 'recuperable' && k !== 'sin_archivo_coincidente').map(([k,v]) => `${v} ${reasonLabels[k] || k}`).join(' · '); toast(`Leídas ${r.items_seen} · ya registradas: ${known || 'ninguna'}${recoverable}${blocked ? ` · bloqueadas: ${blocked}` : ''}`) } render() } catch (e) { toast(e.message); b.disabled = false } };
 window.toggleSource = async id => { try { await api(`/api/sources/${id}/toggle`, { method: 'POST' }) } catch (e) { toast(e.message) } };

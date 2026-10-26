@@ -451,3 +451,12 @@ class LaunchFolderTests(unittest.TestCase):
         r = asyncio.run(main.launch_batch(text=txt, brand='infolinense', txt=None, images=files))
         self.assertEqual(r['matched'], 2)
         self.assertEqual(r['items'][0]['image'], '1.png')
+
+
+class OcrMatchTests(unittest.TestCase):
+    def test_match_by_text_read_in_image(self):
+        from app import ocr
+        heads = ['El Ayuntamiento arregla la plaza de la Iglesia', 'La Feria del Libro llega al Mercado']
+        texts = ['CULTURA\nLa Feria del Libro\nllega al Mercado', 'CIUDAD El Ayuntamiento arregla\nla plaza de la Iglesia']
+        self.assertEqual(ocr.match(heads, texts), {0: 1, 1: 0})
+        self.assertEqual(ocr.match(heads, ['nada que ver aqui']), {})

@@ -9,12 +9,12 @@ from fastapi.responses import FileResponse, RedirectResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from . import db, sources, pipeline, publishers, photos, canva, ai, planner, layout, social, social_publish, brands
+from . import db, sources, pipeline, publishers, photos, canva, ai, planner, layout, social, social_publish, brands, ocr
 from .auth import login, require_auth
 from starlette.concurrency import run_in_threadpool
 from .config import BASE_DIR, RENDER_DIR, UPLOAD_DIR, SCAN_INTERVAL_MINUTES, AUTO_PIPELINE, OPENAI_API_KEY, ADMIN_PASSWORD, JWT_SECRET, PUBLISH_MODE, CORS_ORIGINS, PUBLIC_BASE_URL, AUTO_PUBLISH
 
-VERSION='7.3.3'
+VERSION='7.3.4'
 app=FastAPI(title='InfoLinense Desk',version=VERSION)
 app.add_middleware(CORSMiddleware,allow_origins=CORS_ORIGINS,allow_credentials=False,allow_methods=['*'],allow_headers=['Authorization','Content-Type'])
 db.init_db()
@@ -560,7 +560,7 @@ def _new_launch_article(it,brand):
 @app.post('/api/launch/batch',dependencies=[Depends(require_auth)])
 async def launch_batch(text:str=Form(''),brand:str=Form('infolinense'),txt:UploadFile|None=File(None),images:list[UploadFile]|None=File(None)):
     """Sube de una vez el txt redactado y un zip con las imágenes. Cada imagen se une a su noticia:
-    1) por el número de ID en el nombre del archivo, 2) por el orden (1.png con la primera noticia…) si hay tantas como noticias."""
+    1) por el número de ID en el nombre del archivo, 2) leyendo el titular escrito en la imagen, 3) por el orden."""
     import zipfile as _zip
     from PIL import Image
     if txt is not None and not isinstance(txt,str): text=(await txt.read(5_000_000)).decode('utf-8','replace')
@@ -605,7 +605,15 @@ async def launch_batch(text:str=Form(''),brand:str=Form('infolinense'),txt:Uploa
             if i not in used and o['ref'] and re.search(r'(?<!\d)%d(?!\d)'%o['ref'],n):
                 _set_final_image(o['id'],im); used.add(i); o['image']=n; break
     rest=[o for o in out if 'image' not in o]; free=[i for i in range(len(imgs)) if i not in used]
-    if rest and free:  # 2) por orden, con las que haya
+    if rest and free and ocr.available():  # 2) leyendo el titular escrito en cada imagen
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            texts=await run_in_threadpool(lambda: list(pool.map(lambda i: ocr.read_text(imgs[i][1]),free)))
+        heads=[(db.row('SELECT headline FROM articles WHERE id=?',(o['id'],)) or {}).get('headline') or '' for o in rest]
+        for hi,ti in ocr.match(heads,texts).items():
+            i=free[ti]; _set_final_image(rest[hi]['id'],imgs[i][1]); used.add(i); rest[hi]['image']=imgs[i][0]
+    rest=[o for o in out if 'image' not in o]; free=[i for i in range(len(imgs)) if i not in used]
+    if rest and free:  # 3) por orden, con las que queden
         for o,i in zip(rest,free):
             _set_final_image(o['id'],imgs[i][1]); used.add(i); o['image']=imgs[i][0]
     rows=[]

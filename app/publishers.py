@@ -82,11 +82,9 @@ def publish(article):
         existing.raise_for_status()
         posts = existing.json()
         if posts: return posts[0]['link']
-        clean = Path(article.get('image_local') or '')  # portada limpia: la foto, sin los gráficos de Canva
-        cover, ctype, ext = (clean, 'image/jpeg', 'jpg') if clean.is_file() else (artwork, 'image/png', 'png')
-        photo = requests.post(endpoint + '/media', data=cover.read_bytes(), auth=credentials,
-                              headers={'Content-Disposition': 'attachment; filename="%s-%s.%s"' % (slugify(name), identifier, ext),
-                                       'Content-Type': ctype}, timeout=45)
+        photo = requests.post(endpoint + '/media', data=artwork.read_bytes(), auth=credentials,
+                              headers={'Content-Disposition': 'attachment; filename="%s-%s.png"' % (slugify(name), identifier),
+                                       'Content-Type': 'image/png'}, timeout=45)
         photo.raise_for_status()
         media_id = photo.json()['id']
         paragraphs = ''.join('<p>' + html.escape(p.strip()) + '</p>' for p in (article.get('body') or '').split('\n') if p.strip())

@@ -492,7 +492,7 @@ def _autofill_text_only(article):
     fields.update(size_variants(schema, texts, 'auto'))
     job = _api('POST', '/autofills', json={'type': 'create_from_brand_template', 'brand_template_id': template_id,
                                           'title': 'Lote · ' + (article.get('headline') or '')[:80], 'data': fields})
-    design = _design_from_job(_wait('/autofills/' + job['job']['id'], job))
+    design = _design_from_job(_wait('/autofills/' + job['job']['id'], job, tries=120))
     if not design.get('id'):
         raise ValueError('Canva no devolvió el diseño')
     return design['id'], int(texts['page'] or 1)
@@ -548,10 +548,11 @@ def _merge_call(body, tries=4):
     for n in range(tries):
         try:
             job = _api('POST', '/merges', json=body)
-            return _wait('/merges/' + job['job']['id'], job, tries=120)
-        except ValueError as exc:
+        except ValueError as exc:  # solo se repite si Canva no aceptó el trabajo (así no se crean diseños de más)
             last = exc
             time.sleep(min(30, 4 * (n + 1) * (3 if '429' in str(exc) else 1)))
+            continue
+        return _wait('/merges/' + job['job']['id'], job, tries=180)
     raise last
 
 
@@ -571,9 +572,11 @@ def batch_design(articles, progress=None):
             try:
                 return (a, *_autofill_text_only(a))
             except Exception as exc:
-                if n == 2:
+                # se repite solo si Canva rechazó la petición (p. ej. 429); si ya la aceptó y tarda, no: crearía otro diseño
+                if n == 2 or 'aún procesa' in str(exc) or 'no pudo completar' in str(exc):
                     errors.append('«%s»: %s' % ((a.get('headline') or '')[:50], str(exc)[:120]))
-                time.sleep(3 * (n + 1))
+                    return None
+                time.sleep(3 * (n + 1) * (3 if '429' in str(exc) else 1))
         return None
 
     def counted(a):
@@ -605,5 +608,5 @@ def batch_design(articles, progress=None):
             errors.append('«%s»: %s' % ((a.get('headline') or '')[:50], str(exc)[:120]))
         progress(n, 'Juntando en un diseño')
     url = design.get('url') or (design.get('urls') or {}).get('edit_url') or 'https://www.canva.com/design/%s/edit' % target
-    return {'url': url, 'design_id': target, 'pages': pages, 'merged': True,
+    return {'url': url, 'design_id': target, 'pages': pages, 'merged': True, 'done_ids': [a['id'] for a, _, _ in parts],
             'lotes': [{'url': url, 'design_id': target, 'pages': pages}], 'designs': [], 'errors': errors}

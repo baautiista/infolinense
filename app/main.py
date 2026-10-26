@@ -14,7 +14,7 @@ from .auth import login, require_auth
 from starlette.concurrency import run_in_threadpool
 from .config import BASE_DIR, RENDER_DIR, UPLOAD_DIR, SCAN_INTERVAL_MINUTES, AUTO_PIPELINE, OPENAI_API_KEY, ADMIN_PASSWORD, JWT_SECRET, PUBLISH_MODE, CORS_ORIGINS, PUBLIC_BASE_URL, AUTO_PUBLISH
 
-VERSION='7.4.1'
+VERSION='7.4.2'
 app=FastAPI(title='InfoLinense Desk',version=VERSION)
 app.add_middleware(CORSMiddleware,allow_origins=CORS_ORIGINS,allow_credentials=False,allow_methods=['*'],allow_headers=['Authorization','Content-Type'])
 db.init_db()
@@ -377,18 +377,29 @@ def import_chatgpt(body:BatchIn):
 
 _canva_job={'busy':False,'done':0,'total':0,'phase':'','result':None,'error':''}
 
+def _lote_hash(a):
+    import hashlib
+    return hashlib.sha1('|'.join(str(a.get(k) or '') for k in ('headline','subtitle','section','brand')).encode()).hexdigest()[:16]
+
 @app.post('/api/canva/batch',dependencies=[Depends(require_auth)])
 def canva_batch(brand:str=''):
     """Empieza en segundo plano un solo diseño de Canva con todas las noticias subidas en lote (titular y entradilla).
     Se consulta con GET /api/canva/batch."""
     if _canva_job['busy']: return dict(_canva_job)
-    rows=db.rows("""SELECT * FROM articles WHERE workflow='lote' AND status IN ('draft','review_ready','approved')
-                    AND COALESCE(hidden,0)=0 AND headline!='' AND updated_at>=datetime('now','-14 day') ORDER BY id""")
-    rows=_bf(rows,brand)[:100]
-    if not rows: raise HTTPException(400,'No hay noticias subidas en lote. Primero sube lo que redactó ChatGPT.')
+    # Solo lo nuevo: ni lo que ya tiene imagen final, ni lo programado, ni lo que ya fue a un diseño de lote con el mismo texto
+    rows=db.rows("""SELECT a.* FROM articles a WHERE a.workflow='lote' AND a.status IN ('draft','review_ready','approved')
+                    AND COALESCE(a.hidden,0)=0 AND a.headline!='' AND a.updated_at>=datetime('now','-14 day') AND a.scheduled_at IS NULL
+                    AND NOT EXISTS (SELECT 1 FROM canva_designs d WHERE d.article_id=a.id AND d.exported=1) ORDER BY a.id""")
+    rows=[r for r in _bf(rows,brand) if r.get('lote_hash')!=_lote_hash(r)][:100]
+    if not rows: raise HTTPException(400,'No hay noticias nuevas para Canva: las del lote ya están en un diseño (o ya tienen su imagen).')
     _canva_job.update(busy=True,done=0,total=len(rows),phase='Creando páginas',result=None,error='')
     def run():
-        try: _canva_job['result']=canva.batch_design(rows,progress=lambda d,ph: _canva_job.update(done=d,phase=ph))
+        try:
+            res=canva.batch_design(rows,progress=lambda d,ph: _canva_job.update(done=d,phase=ph))
+            by_id={r['id']:r for r in rows}
+            for aid in res.pop('done_ids',[]):
+                db.exec_('UPDATE articles SET lote_hash=? WHERE id=?',(_lote_hash(by_id[aid]),aid))
+            _canva_job['result']=res
         except Exception as e: _canva_job['error']=str(e)[:300]
         finally: _canva_job['busy']=False
     threading.Thread(target=run,daemon=True).start()
@@ -548,7 +559,7 @@ def _keeps_clean_photo(a):
     kind=(a or {}).get('image_kind') or ''
     if kind=='final_image' or not (a or {}).get('image_local') or not Path(a['image_local']).is_file(): return False
     if kind=='web_photo': return True
-    # Anterior a la 7.4.1: la imagen terminada se guardaba como 'user_upload' de la Redacción con un diseño 'upload'
+    # Anterior a la 7.4.2: la imagen terminada se guardaba como 'user_upload' de la Redacción con un diseño 'upload'
     legacy=db.row("SELECT 1 FROM canva_designs WHERE article_id=? AND design_id='upload'",(a['id'],))
     return not legacy
 
@@ -1627,7 +1638,7 @@ def restore_final_covers():
         except Exception: continue
 
 def mark_final_images():
-    """Noticias sin publicar subidas antes de la 7.4.1 cuya «foto» es la imagen terminada de Canva:
+    """Noticias sin publicar subidas antes de la 7.4.2 cuya «foto» es la imagen terminada de Canva:
     se marcan para que la web no la use de portada."""
     db.exec_("""UPDATE articles SET image_kind='final_image'
                 WHERE status!='published' AND image_kind='user_upload' AND image_source='Redacción'

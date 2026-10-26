@@ -104,6 +104,7 @@ def init_db():
     existing_articles={r[1] for r in c.execute('PRAGMA table_info(articles)')}
     for name,ddl in {
         'carousel_suitable':'INTEGER NOT NULL DEFAULT 0',
+        'lote_hash':'TEXT',
         'scheduled_at':'TEXT',
         'section_label':'TEXT',
         'time_ref':'TEXT',

@@ -563,3 +563,25 @@ class WebCoverTests(unittest.TestCase):
         self.assertEqual(a['image_kind'], 'web_photo')
         with Image.open(a['image_local']) as im:
             self.assertEqual(im.getpixel((5, 5)), (200, 100, 50))
+class CanvaNoDuplicateTests(unittest.TestCase):
+    def test_merge_not_reposted_after_accept(self):
+        from unittest import mock
+        from app import canva
+        posts = []
+        def api(method, path, **kw):
+            if method == 'POST': posts.append(path); return {'job': {'id': 'j1', 'status': 'in_progress'}}
+            return {'job': {'status': 'in_progress'}}
+        with mock.patch.object(canva, '_api', side_effect=api), mock.patch.object(canva.time, 'sleep'):
+            with self.assertRaises(ValueError):
+                canva._merge_call({'type': 'create_new_design'})
+        self.assertEqual(posts, ['/merges'])
+
+    def test_batch_skips_already_designed(self):
+        from app import db, main
+        cid = db.exec_("INSERT INTO candidates(title,url,status) VALUES('Lote hash test','https://x.test/lote-hash','new')")
+        aid = db.exec_("INSERT INTO articles(candidate_id,status,headline,subtitle,workflow) VALUES(?,?,?,?,?)",
+                       (cid, 'approved', 'Titular de lote ya diseñado', 'e', 'lote'))
+        a = db.row('SELECT * FROM articles WHERE id=?', (aid,))
+        db.exec_('UPDATE articles SET lote_hash=? WHERE id=?', (main._lote_hash(a), aid))
+        a = db.row('SELECT * FROM articles WHERE id=?', (aid,))
+        self.assertEqual(a['lote_hash'], main._lote_hash(a))

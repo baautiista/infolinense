@@ -212,10 +212,9 @@ function armGpt(v) {
       if (r.error) { out.innerHTML = `<span class="error">${esc(r.error)}</span>`; return }
       const x = r.result;
       if (!x) return;
-      out.innerHTML = x.merged
-        ? `<a class="btn small primary" href="${safeUrl(x.url)}" target="_blank" rel="noopener">Abrir en Canva (${x.pages} páginas)</a>${x.errors.length ? ` <span class="error">${x.errors.length} no se pudieron añadir</span>` : ''}`
-        : `<span class="error small">Canva no dejó juntarlas en un solo diseño; aquí van por separado:</span><br>${x.designs.map(d => `<a href="${safeUrl(d.url)}" target="_blank" rel="noopener">${esc(d.headline)}</a>`).join('<br>')}`;
-      if (x.merged) window.open(x.url, '_blank', 'noopener');
+      const lotes = x.lotes && x.lotes.length ? x.lotes : [{ url: x.url, pages: x.pages }];
+      out.innerHTML = lotes.map((l, i) => `<a class="btn small primary" href="${safeUrl(l.url)}" target="_blank" rel="noopener">Abrir lote ${i + 1} (${l.pages} noticias)</a>`).join(' ');
+      window.open(lotes[0].url, '_blank', 'noopener');
     };
     try {
       let r = await api('/api/canva/batch?' + qs(), { method: 'POST' });

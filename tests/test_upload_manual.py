@@ -393,24 +393,28 @@ class CanvaSinglePageTests(unittest.TestCase):
 
 
 class CanvaBatchTests(unittest.TestCase):
-    def test_batch_is_one_imported_design_with_whole_texts(self):
-        from app import canva
-        from pptx import Presentation
+    def test_batch_fills_lote_template_by_section_slots(self):
+        from app import canva, layout
         long_head = 'Titular larguísimo ' * 12
-        arts = [{'id': i, 'brand': 'infolinense', 'section': 'CIUDAD', 'headline': long_head + str(i), 'subtitle': 'Entradilla %d' % i} for i in range(3)]
-        sent = {}
+        arts = [{'id': i, 'brand': 'infolinense', 'section': 'CIUDAD', 'headline': long_head + str(i), 'subtitle': 'Entradilla %d' % i} for i in range(6)]
+        page = layout.family_for('CIUDAD', arts[0]['headline'])[1]
+        sent = []
         def fake_api(method, path, **kw):
-            sent['path'], sent['data'] = path, kw.get('data')
-            return {'job': {'id': 'J', 'status': 'success', 'result': {'designs': [{'id': 'DALL', 'url': 'https://canva.com/x'}]}}}
+            if path.endswith('/dataset'):
+                return {'dataset': {'%s_%d' % (k, n): {'type': 'text'} for k in ('HEADLINE', 'SUMMARY', 'SECTION') for n in range(1, 49)}}
+            sent.append(kw['json'])
+            return {'job': {'id': 'J', 'status': 'success', 'result': {'design': {'id': 'D%d' % len(sent), 'url': 'https://canva.com/%d' % len(sent)}}}}
         with patch.object(canva, 'ready', return_value=True), patch.object(canva, 'connected', return_value=True), \
                 patch.object(canva, '_api', side_effect=fake_api), patch.object(canva, '_wait', side_effect=lambda path, first=None: first['job']):
             r = canva.batch_design(arts)
-        self.assertEqual((r['url'], r['pages']), ('https://canva.com/x', 3))
-        self.assertEqual(sent['path'], '/imports')
-        prs = Presentation(BytesIO(sent['data']))
-        self.assertEqual(len(prs.slides), 3)
-        texts = [sh.text_frame.text for sh in prs.slides[0].shapes if sh.has_text_frame]
-        self.assertIn(long_head + '0', texts)
+        self.assertEqual(len(r['lotes']), 2)   # 6 de una sección: 4 en el primer lote y 2 en el segundo
+        self.assertEqual([l['pages'] for l in r['lotes']], [4, 2])
+        d = sent[0]['data']
+        self.assertEqual(sent[0]['brand_template_id'], canva.LOTE_TEMPLATES['infolinense'])
+        self.assertEqual(d['HEADLINE_%d' % page]['text'], (long_head + '0').strip())
+        self.assertEqual(d['HEADLINE_%d' % (page + 36)]['text'], (long_head + '3').strip())
+        other = 1 if page != 1 else 2
+        self.assertEqual(d['HEADLINE_%d' % other]['text'], ' ')
 
 
 class LaunchBatchTests(unittest.TestCase):

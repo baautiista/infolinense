@@ -542,16 +542,63 @@ def _batch_pptx(articles):
     return out.getvalue()
 
 
-def batch_design(articles, progress=None):
-    """UN solo diseño de Canva con una página por noticia (titular y entradilla enteros, sin imagen).
-    Se hace una presentación con todas y se importa en Canva de una vez (no hace falta juntar diseños)."""
-    if not ready() or not connected():
-        raise ValueError('Conecta tu cuenta de Canva desde Ajustes')
+LOTE_TEMPLATES = {'infolinense': os.getenv('CANVA_LOTE_TEMPLATE_ID', '').strip() or 'EAHZHiNN0bA'}
+LOTE_FAMILIES = 12   # páginas por sección en la plantilla de lote: p, p+12, p+24, p+36
+LOTE_SLOTS = 4
+
+
+def lote_plan(articles):
+    """Reparte las noticias en huecos de la plantilla de lote según su sección.
+    Devuelve una lista de lotes; cada lote es {número de página: noticia}."""
+    lotes = []
+    for a in articles:
+        p = int(_page_for(a) or 1)
+        p = p if 1 <= p <= LOTE_FAMILIES else 1
+        for lote in lotes:
+            free = [p + LOTE_FAMILIES * k for k in range(LOTE_SLOTS) if p + LOTE_FAMILIES * k not in lote]
+            if free:
+                lote[free[0]] = a; break
+        else:
+            lotes.append({p: a})
+    return lotes
+
+
+def _lote_fields(lote, schema):
+    fields = {}
+    for n in range(1, LOTE_FAMILIES * LOTE_SLOTS + 1):
+        a = lote.get(n)
+        t = design_fields(a, strict=False) if a else {}
+        for k in ('HEADLINE', 'SUMMARY', 'SECTION'):
+            fields['%s_%d' % (k, n)] = {'type': 'text', 'text': (t.get(k) or '').strip() or BLANK}
+    for k in ('HEADLINE', 'SUMMARY', 'SECTION'):   # restos sin número de la plantilla original
+        if schema.get(k, {}).get('type') == 'text':
+            fields[k] = {'type': 'text', 'text': BLANK}
+    return {k: v for k, v in fields.items() if not schema or schema.get(k, {}).get('type') == 'text'}
+
+
+def _lote_with_template(articles, template_id, progress, start=0):
     from datetime import datetime
-    progress = progress or (lambda d, ph: None)
-    progress(0, 'Preparando las páginas')
+    schema = _api('GET', '/brand-templates/' + template_id + '/dataset').get('dataset', {})
+    out, done = [], start
+    lotes = lote_plan(articles)
+    stamp = datetime.now().strftime('%d/%m/%Y %H:%M')
+    for i, lote in enumerate(lotes, 1):
+        progress(done, 'Rellenando lote %d de %d' % (i, len(lotes)))
+        job = _api('POST', '/autofills', json={'type': 'create_from_brand_template', 'brand_template_id': template_id,
+                                              'title': 'Lote %d · %s' % (i, stamp), 'data': _lote_fields(lote, schema)})
+        design = _design_from_job(_wait('/autofills/' + job['job']['id'], job))
+        if not design.get('id'):
+            raise ValueError('Canva no devolvió el diseño del lote %d' % i)
+        url = design.get('url') or (design.get('urls') or {}).get('edit_url') or 'https://www.canva.com/design/%s/edit' % design['id']
+        done += len(lote)
+        out.append({'url': url, 'design_id': design['id'], 'pages': len(lote)})
+    return out
+
+
+def _lote_pptx(articles, progress, start=0):
+    from datetime import datetime
     data = _batch_pptx(articles)
-    progress(len(articles), 'Abriendo en Canva')
+    progress(start + len(articles), 'Abriendo en Canva')
     title = 'Lote de noticias · ' + datetime.now().strftime('%d/%m/%Y %H:%M')
     meta = json.dumps({'title_base64': base64.b64encode(title.encode()).decode(),
                        'mime_type': 'application/vnd.openxmlformats-officedocument.presentationml.presentation'})
@@ -562,4 +609,26 @@ def batch_design(articles, progress=None):
     if not design.get('id'):
         raise ValueError('Canva no devolvió el diseño importado')
     url = design.get('url') or (design.get('urls') or {}).get('edit_url') or 'https://www.canva.com/design/%s/edit' % design['id']
-    return {'url': url, 'design_id': design['id'], 'pages': len(articles), 'merged': True, 'designs': [], 'errors': []}
+    return [{'url': url, 'design_id': design['id'], 'pages': len(articles)}]
+
+
+def batch_design(articles, progress=None):
+    """Lote para Canva con TU plantilla: la plantilla «Lote InfoLinense» tiene 4 huecos por sección
+    (48 páginas). Cada noticia va al hueco de su sección; si una sección pasa de 4, se abre otro lote.
+    Medios sin plantilla de lote: un diseño importado con todas las páginas."""
+    if not ready() or not connected():
+        raise ValueError('Conecta tu cuenta de Canva desde Ajustes')
+    from . import brands
+    progress = progress or (lambda d, ph: None)
+    groups = {}
+    for a in articles:
+        groups.setdefault(brands.valid(a.get('brand')), []).append(a)
+    lotes, done = [], 0
+    for slug, arts in groups.items():
+        tpl = LOTE_TEMPLATES.get(slug)
+        lotes += _lote_with_template(arts, tpl, progress, done) if tpl else _lote_pptx(arts, progress, done)
+        done += len(arts)
+    progress(done, 'Listo')
+    first = lotes[0] if lotes else {}
+    return {'url': first.get('url', ''), 'design_id': first.get('design_id', ''), 'pages': len(articles),
+            'merged': True, 'lotes': lotes, 'designs': [], 'errors': []}

@@ -14,7 +14,7 @@ from .auth import login, require_auth
 from starlette.concurrency import run_in_threadpool
 from .config import BASE_DIR, RENDER_DIR, UPLOAD_DIR, SCAN_INTERVAL_MINUTES, AUTO_PIPELINE, OPENAI_API_KEY, ADMIN_PASSWORD, JWT_SECRET, PUBLISH_MODE, CORS_ORIGINS, PUBLIC_BASE_URL, AUTO_PUBLISH
 
-VERSION='7.3.7'
+VERSION='7.3.8'
 app=FastAPI(title='InfoLinense Desk',version=VERSION)
 app.add_middleware(CORSMiddleware,allow_origins=CORS_ORIGINS,allow_credentials=False,allow_methods=['*'],allow_headers=['Authorization','Content-Type'])
 db.init_db()
@@ -535,16 +535,45 @@ def _fit_width(im,width):
 def _natkey(name):
     return [int(t) if t.isdigit() else t.lower() for t in re.split(r'(\d+)', name)]
 
+def _clean_cover(im):
+    """Portada de la web sacada de la imagen terminada: solo la zona de la foto, sin logo, web, sección,
+    titular ni entradilla. Plantilla 1080x1350: logo y «infolinense.com» hasta y=190; desde y≈600 empiezan
+    el degradado, la etiqueta y el titular (que crece hacia arriba)."""
+    from PIL import Image as _I
+    from . import layout
+    im=im.convert('RGB')
+    if im.width<200 or not 0.7<=im.width/im.height<=0.9:
+        return None  # no es una imagen de plantilla 4:5: no se sabe dónde está el texto
+    w=1080; h=round(im.height*w/im.width); base=im.resize((w,h),_I.LANCZOS) if im.width!=w else im
+    top=round(h*200/1350); bottom=round(h*600/1350)
+    cols=[tuple(int(f[2][k:k+2],16) for k in (1,3,5)) for f in layout.FAMILIES]
+    px=base.load()
+    for y in range(top+40,bottom,2):  # etiqueta de sección más arriba de lo normal (titulares muy largos)
+        run=best=0
+        for x in range(0,w//2):
+            c=px[x,y]
+            if any(abs(c[0]-t[0])+abs(c[1]-t[1])+abs(c[2]-t[2])<40 for t in cols): run+=1; best=max(best,run)
+            else: run=0
+        if best>=120: bottom=y-12; break
+    if bottom-top<150: return None
+    return base.crop((0,top,w,bottom))
+
 def _set_final_image(aid, im):
-    """La imagen terminada (de Canva) pasa a ser la de la noticia: web y redes la usan tal cual."""
+    """La imagen terminada (de Canva) es la de las redes. La portada de la web es limpia: la foto original si
+    la noticia ya tenía una, o la zona de la foto recortada de la imagen terminada."""
     from uuid import uuid4
     RENDER_DIR.mkdir(parents=True,exist_ok=True); UPLOAD_DIR.mkdir(parents=True,exist_ok=True)
     im=im.convert('RGB')
-    photo=UPLOAD_DIR/(uuid4().hex+'.jpg'); _fit_width(im,1600).save(photo,'JPEG',quality=90)
+    a=db.row('SELECT image_local,image_kind FROM articles WHERE id=?',(aid,)) or {}
+    was_final=bool(db.row("SELECT 1 FROM canva_designs WHERE article_id=? AND design_id='upload'",(aid,)))  # foto = imagen terminada anterior
     final=RENDER_DIR/f'article_{aid}.png'; _fit_width(im,1080).save(final,'PNG',optimize=True)
-    db.exec_("UPDATE articles SET image_local=?,image_kind='user_upload',image_source='Redacción',render_path=?,updated_at=CURRENT_TIMESTAMP WHERE id=?",
-             (str(photo),str(final),aid))
     db.exec_("INSERT OR REPLACE INTO canva_designs(article_id,design_id,url,exported,content_hash) VALUES(?,'upload','',1,'upload')",(aid,))
+    if a.get('image_local') and a.get('image_kind')!='final_crop' and not was_final and Path(a['image_local']).is_file():
+        db.exec_("UPDATE articles SET render_path=?,updated_at=CURRENT_TIMESTAMP WHERE id=?",(str(final),aid)); return
+    cover=_clean_cover(im)
+    photo=UPLOAD_DIR/(uuid4().hex+'.jpg'); _fit_width(cover or im,1600).save(photo,'JPEG',quality=90)
+    db.exec_("UPDATE articles SET image_local=?,image_kind=?,image_source='Redacción',render_path=?,updated_at=CURRENT_TIMESTAMP WHERE id=?",
+             (str(photo),'final_crop' if cover else 'user_upload',str(final),aid))
 
 def _new_launch_article(it,brand):
     """Noticia nueva desde el txt (sin ID): se crea lista para publicar."""
@@ -687,6 +716,10 @@ async def quick_publish(headline:str=Form(...),subtitle:str=Form(''),body:str=Fo
         final=RENDER_DIR/f'article_{aid}.png'
         _fit_width(im,1080).save(final,'PNG',optimize=True)
         db.exec_('UPDATE articles SET render_path=?,updated_at=CURRENT_TIMESTAMP WHERE id=?',(str(final),aid))
+        cover=_clean_cover(im)
+        if cover:  # la portada de la web, sin logo, sección, titular ni entradilla
+            _fit_width(cover,1600).save(dest,'JPEG',quality=90)
+            db.exec_("UPDATE articles SET image_kind='final_crop' WHERE id=?",(aid,))
         db.exec_("INSERT OR REPLACE INTO canva_designs(article_id,design_id,url,exported,content_hash) VALUES(?,'upload','',1,'upload')",(aid,))
     elif canva.ready() and canva.connected():
         try:
@@ -977,7 +1010,7 @@ def kit(aid:int):
 
 def photo_credit(a):
     """De dónde salió la foto (solo informativo)."""
-    if (a.get('image_kind') or '')=='user_upload' or str(a.get('image_url') or '').startswith('upload:'): return 'Foto subida por ti'
+    if (a.get('image_kind') or '') in ('user_upload','final_crop') or str(a.get('image_url') or '').startswith('upload:'): return 'Foto subida por ti'
     host=urlparse(a.get('image_source') or a.get('image_url') or '').hostname or ''
     return host.replace('www.','')
 
@@ -1546,8 +1579,27 @@ def scheduler_loop():
         # De 12:45 a 15:15 el Ayuntamiento publica lo del día: se busca cada 10 minutos
         t=datetime.now(MADRID); m=t.hour*60+t.minute
         time.sleep(600 if 765<=m<=915 else max(15,SCAN_INTERVAL_MINUTES)*60)
+def fix_pending_covers():
+    """Noticias sin publicar subidas por la Lanzadera antes de la 7.3.8: su portada era la imagen con los gráficos."""
+    from PIL import Image
+    from uuid import uuid4
+    n=0
+    for a in db.rows("""SELECT a.id,a.render_path FROM articles a JOIN canva_designs d ON d.article_id=a.id AND d.design_id='upload'
+                        WHERE a.status NOT IN ('published','rejected') AND a.image_kind='user_upload' AND a.image_source='Redacción'
+                          AND COALESCE(a.render_path,'')!=''"""):
+        try:
+            with Image.open(a['render_path']) as im: cover=_clean_cover(im)
+            if not cover: continue
+            UPLOAD_DIR.mkdir(parents=True,exist_ok=True)
+            photo=UPLOAD_DIR/(uuid4().hex+'.jpg'); _fit_width(cover,1600).save(photo,'JPEG',quality=90)
+            db.exec_("UPDATE articles SET image_local=?,image_kind='final_crop' WHERE id=?",(str(photo),a['id'])); n+=1
+        except Exception: continue
+    return n
+
 @app.on_event('startup')
 def startup():
+    try: fix_pending_covers()
+    except Exception as e: db.log('cover_fix_error',str(e)[:250])
     try: social_publish.cleanup_expired_public_media()
     except Exception as e: db.log('media_cleanup_error',str(e)[:250])
     if os.getenv('DISABLE_SCHEDULER','false').lower() not in {'1','true','yes'}:

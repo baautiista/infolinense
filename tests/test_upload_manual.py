@@ -506,3 +506,26 @@ class ExportSkipsScheduledTests(unittest.TestCase):
         a3 = db.exec_("INSERT INTO articles(candidate_id,status,headline,schedule_error) VALUES(?,?,?,?)", (cid2, 'approved', 'h3', 'Error'))
         ids = {r['aid'] for r in main._publish_queue()}
         self.assertFalse({a1, a3} & ids)
+
+
+class CleanCoverTests(unittest.TestCase):
+    def test_cover_has_no_graphics(self):
+        from PIL import Image, ImageDraw
+        from app import main, layout
+        im = Image.new('RGB', (1080, 1350), (90, 140, 200))
+        d = ImageDraw.Draw(im)
+        d.rectangle((34, 38, 182, 186), fill=(1, 65, 239))          # logo
+        col = layout.FAMILIES[0][2]
+        d.rectangle((55, 560, 400, 615), fill=col)                   # etiqueta alta (titular largo)
+        d.rectangle((55, 620, 1000, 1109), fill=(255, 255, 255))     # titular
+        cover = main._clean_cover(im)
+        self.assertIsNotNone(cover)
+        self.assertEqual(cover.width, 1080)
+        self.assertLess(cover.height, 360)                           # corta antes de la etiqueta
+        colors = {c for _, c in cover.getcolors(1 << 20)}
+        self.assertEqual(colors, {(90, 140, 200)})                   # solo foto: ni logo, ni etiqueta, ni titular
+
+    def test_not_template_ratio(self):
+        from PIL import Image
+        from app import main
+        self.assertIsNone(main._clean_cover(Image.new('RGB', (1600, 900))))

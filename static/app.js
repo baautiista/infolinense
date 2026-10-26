@@ -364,6 +364,7 @@ let upFiles = [];
 let upMode = 'ai';
 function uploadView(v) {
   if (upMode === 'quick') return quickView(v);
+  if (upMode === 'batch') return launchBatchView(v);
   upFiles = [];
   const brandOpts = BRANDS.map(b => `<label><input type="radio" name="brand" value="${b.slug}" ${b.slug === netBrand() ? 'checked' : ''}><span>${esc(b.name)}</span></label>`).join('');
   const when = [['urgent', 'Urgente'], ['today', 'Hoy'], ['tomorrow', 'Mañana'], ['this_week', 'Esta semana'], ['future', 'Más adelante']]
@@ -398,9 +399,80 @@ function uploadView(v) {
 }
 
 function modeSwitch() {
-  return `<div class="seg upmode" role="tablist"><label><input type="radio" name="upmode" value="ai" ${upMode === 'ai' ? 'checked' : ''}><span>Redactar con IA</span></label><label><input type="radio" name="upmode" value="quick" ${upMode === 'quick' ? 'checked' : ''}><span>Lanzadera (ya está escrita)</span></label></div>`;
+  return `<div class="seg upmode" role="tablist"><label><input type="radio" name="upmode" value="ai" ${upMode === 'ai' ? 'checked' : ''}><span>Redactar con IA</span></label><label><input type="radio" name="upmode" value="quick" ${upMode === 'quick' ? 'checked' : ''}><span>Lanzadera (ya está escrita)</span></label><label><input type="radio" name="upmode" value="batch" ${upMode === 'batch' ? 'checked' : ''}><span>Lanzadera en lote (txt + imágenes)</span></label></div>`;
 }
 document.addEventListener('change', e => { if (e.target.name === 'upmode') { upMode = e.target.value; render() } });
+
+// Lanzadera en lote: txt de ChatGPT + zip de imágenes de Canva. Cada noticia con su imagen y botones sencillos.
+let launchItems = [];
+const QUARTERS = Array.from({ length: 96 }, (_, i) => String(Math.floor(i / 4)).padStart(2, '0') + ':' + String((i % 4) * 15).padStart(2, '0'));
+function nextQuarter(addMin = 0) {  // siguiente hora en punto, y cuarto, y media o menos cuarto
+  const d = new Date(madridNow() + ':00Z'); d.setUTCMinutes(d.getUTCMinutes() + addMin);
+  const m = d.getUTCMinutes(); d.setUTCMinutes(m - (m % 15) + 15); return d.toISOString().slice(0, 16);
+}
+function whenPicker(id, at) {
+  const day = at.slice(0, 10), time = at.slice(11, 16), today = madridDate();
+  const days = Array.from({ length: 8 }, (_, i) => addDays(today, i));
+  return `<select class="lb-day" id="d-${id}">${days.map((d, i) => `<option value="${d}" ${d === day ? 'selected' : ''}>${i === 0 ? 'Hoy' : i === 1 ? 'Mañana' : dayTitle(d)[0] + ' ' + +d.slice(8, 10)}</option>`).join('')}</select>
+    <select class="lb-time" id="t-${id}">${QUARTERS.map(t => `<option ${t === time ? 'selected' : ''}>${t}</option>`).join('')}</select>`;
+}
+function launchBatchView(v) {
+  const b0 = netBrand();
+  v.innerHTML = `${modeSwitch()}<form class="up" id="lbForm">
+    <div><h2>Lanzadera en lote</h2><p class="muted small">Sube el txt que ha redactado ChatGPT y un .zip con las imágenes terminadas. Cada imagen se une a su noticia por el ID del nombre del archivo o, si no, por el orden (1.png con la primera noticia, 2.png con la segunda…).</p></div>
+    ${BRANDS.length > 1 ? `<div><p class="small" style="font-weight:700;margin:0 0 6px">Medio (si el txt no lo dice)</p><div class="seg" id="lbBrand">${BRANDS.map(b => `<label><input type="radio" name="brand" value="${b.slug}" ${b.slug === b0 ? 'checked' : ''}><span>${esc(b.name)}</span></label>`).join('')}</div></div>` : ''}
+    <label>Texto redactado (.txt)<input type="file" name="txt" accept=".txt,text/plain"></label>
+    <label>O pégalo aquí<textarea name="text" rows="5" placeholder="TITULAR: …&#10;ENTRADILLA: …&#10;TEXTO: …&#10;---"></textarea></label>
+    <label>Imágenes (.zip)<input type="file" name="images" accept=".zip,application/zip"></label>
+    <button class="btn primary" id="lbBtn">Cargar noticias</button></form><div id="lbList"></div>`;
+  $('#lbForm').onsubmit = async e => {
+    e.preventDefault();
+    const fd = new FormData(e.target); fd.set('brand', (document.querySelector('#lbBrand input:checked') || {}).value || b0);
+    if (!fd.get('txt').size) fd.delete('txt'); if (!fd.get('images').size) fd.delete('images');
+    const b = $('#lbBtn'); b.disabled = true; b.textContent = 'Cargando…';
+    try { const r = await api('/api/launch/batch', { method: 'POST', body: fd }); launchItems = r.items; toast(`${r.items.length} noticias · ${r.matched} de ${r.images} imágenes unidas`); drawLaunch() }
+    catch (er) { toast(er.message) }
+    b.disabled = false; b.textContent = 'Cargar noticias';
+  };
+  if (launchItems.length) drawLaunch();
+}
+function drawLaunch() {
+  const box = $('#lbList'); if (!box) return;
+  const start = nextQuarter();
+  box.innerHTML = `<section class="panel lb-bar"><h2>${launchItems.length} noticias listas</h2>
+      <div class="row wrap"><button class="btn primary" id="lbAllNow">Publicar todas ya</button></div>
+      <div class="row wrap"><span class="small" style="font-weight:700">Programar todas desde</span>${whenPicker('all', start)}
+        <span class="small">cada</span><select id="lbStep"><option value="15">15 min</option><option value="30">30 min</option><option value="60">1 hora</option></select>
+        <button class="btn" id="lbAllSched">Programar todas</button></div></section>
+    <div class="list">${launchItems.map((it, i) => `<article class="rv-card lb-item" data-id="${it.id}">
+      <div class="lb-img" id="img-${it.id}">${it.has_image ? '' : '<span class="muted small">Sin imagen</span>'}</div>
+      <div class="lb-body"><div class="meta">${brandBadge(it.brand)}${it.section ? secBadge(it.section, it.brand) : ''}<span class="muted small" id="st-${it.id}">${it.state || ''}</span></div>
+        <h3><a href="#editor/${it.id}">${esc(it.headline)}</a></h3>${it.subtitle ? `<p class="rv-sub">${esc(it.subtitle)}</p>` : ''}
+        <label class="small lb-change">Cambiar imagen<input type="file" accept="image/*" data-img="${it.id}"></label>
+        <div class="row wrap">${whenPicker(it.id, nextQuarter(15 * i))}</div>
+        <div class="rv-actions"><button class="btn small primary" data-now="${it.id}">Publicar ya</button><button class="btn small" data-sched="${it.id}">Programar</button></div></div></article>`).join('')}</div>`;
+  launchItems.forEach(async it => { if (it.has_image) { try { const u = await blobUrl(`/media/render/${it.id}.png?t=${Date.now()}`); $('#img-' + it.id).innerHTML = `<img src="${u}" alt="">` } catch (e) { } } });
+  const mark = (id, t) => { const it = launchItems.find(x => x.id === id); if (it) it.state = t; const el = $('#st-' + id); if (el) el.textContent = t };
+  const pubNow = async id => { mark(id, 'Publicando…'); try { const r = await api(`/api/articles/${id}/publish`, { method: 'POST', body: '{}' }); const bad = (r.results || []).filter(x => !x.ok && !x.skipped); mark(id, bad.length ? 'Error: ' + bad.map(x => x.message).join(' · ').slice(0, 120) : 'Publicada') } catch (e) { mark(id, 'Error: ' + e.message) } };
+  const sched = async (id, at) => { try { const r = await api(`/api/articles/${id}/schedule`, { method: 'POST', body: JSON.stringify({ at }) }); mark(id, 'Programada ' + whenText(r.scheduled_at)) } catch (e) { mark(id, 'Error: ' + e.message) } };
+  const atOf = id => $('#d-' + id).value + 'T' + $('#t-' + id).value;
+  box.querySelectorAll('[data-now]').forEach(b => b.onclick = () => pubNow(+b.dataset.now));
+  box.querySelectorAll('[data-sched]').forEach(b => b.onclick = () => { const at = atOf(b.dataset.sched); if (at <= madridNow()) return toast('Elige una hora futura'); sched(+b.dataset.sched, at) });
+  box.querySelectorAll('[data-img]').forEach(inp => inp.onchange = async () => {
+    const f = inp.files[0]; if (!f) return; const fd = new FormData(); fd.append('photo', f);
+    try { await api(`/api/articles/${inp.dataset.img}/final-image`, { method: 'POST', body: fd }); const it = launchItems.find(x => x.id === +inp.dataset.img); it.has_image = true; drawLaunch(); toast('Imagen cambiada') } catch (e) { toast(e.message) }
+  });
+  $('#lbAllNow').onclick = async e => { e.target.disabled = true; for (const it of launchItems) await pubNow(it.id); e.target.disabled = false; toast('Hecho') };
+  $('#lbAllSched').onclick = async e => {
+    let at = atOf('all'); if (at <= madridNow()) return toast('Elige una hora futura');
+    const step = +$('#lbStep').value; e.target.disabled = true;
+    for (const it of launchItems) {
+      await sched(it.id, at);
+      const d = new Date(at + ':00Z'); d.setUTCMinutes(d.getUTCMinutes() + step); at = d.toISOString().slice(0, 16);
+    }
+    e.target.disabled = false; toast('Programadas'); counts();
+  };
+}
 let quickReady = true;
 const dropHint = () => quickReady ? 'Pulsa o arrastra las imágenes de Canva. Si subes varias, se publica como carrusel (la primera es la portada)'
   : 'Pulsa o arrastra la foto. La primera lleva el titular; si añades más, van detrás como carrusel';

@@ -407,3 +407,23 @@ class CanvaBatchTests(unittest.TestCase):
                 patch.object(canva, '_autofill_text_only', side_effect=lambda a: ('D%d' % a['id'], 2)), patch.object(canva, '_api', side_effect=refuse):
             r = canva.batch_design(arts)
         self.assertFalse(r['merged']); self.assertEqual(len(r['designs']), 3)
+
+
+class LaunchBatchTests(unittest.TestCase):
+    def test_txt_and_zip_are_joined_by_order(self):
+        import zipfile
+        db.init_db()
+        txt = ('TITULAR: Primera noticia de la lanzadera en lote\nENTRADILLA: Uno\nTEXTO: Texto uno.\n---\n'
+               'TITULAR: Segunda noticia de la lanzadera en lote\nENTRADILLA: Dos\nTEXTO: Texto dos.\n')
+        zb = BytesIO()
+        with zipfile.ZipFile(zb, 'w') as z:
+            for n, c in (('2.png', 'blue'), ('1.png', 'red')):
+                b = BytesIO(); Image.new('RGB', (1080, 1350), c).save(b, 'PNG'); z.writestr(n, b.getvalue())
+        r = asyncio.run(main.launch_batch(text=txt, brand='infolinense', txt=None, images=FakeUpload('imgs.zip', zb.getvalue())))
+        self.assertEqual(len(r['items']), 2)
+        self.assertEqual(r['matched'], 2)
+        first = r['items'][0]
+        self.assertEqual(first['image'], '1.png')
+        self.assertTrue(first['has_image'])
+        a = db.row('SELECT * FROM articles WHERE id=?', (first['id'],))
+        self.assertEqual(main.social_publish.article_images(a), [a['render_path']])

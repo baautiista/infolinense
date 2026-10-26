@@ -14,7 +14,7 @@ from .auth import login, require_auth
 from starlette.concurrency import run_in_threadpool
 from .config import BASE_DIR, RENDER_DIR, UPLOAD_DIR, SCAN_INTERVAL_MINUTES, AUTO_PIPELINE, OPENAI_API_KEY, ADMIN_PASSWORD, JWT_SECRET, PUBLISH_MODE, CORS_ORIGINS, PUBLIC_BASE_URL, AUTO_PUBLISH
 
-VERSION='7.1.2'
+VERSION='7.2.0'
 app=FastAPI(title='InfoLinense Desk',version=VERSION)
 app.add_middleware(CORSMiddleware,allow_origins=CORS_ORIGINS,allow_credentials=False,allow_methods=['*'],allow_headers=['Authorization','Content-Type'])
 db.init_db()
@@ -517,6 +517,100 @@ def _fit_width(im,width):
     """Reduce la imagen a ese ancho como mucho (las redes publican a 1080 px)."""
     from PIL import Image as _I
     return im.resize((width,round(im.height*width/im.width)),_I.LANCZOS) if im.width>width else im
+
+
+# ---------- Lanzadera en lote: txt de ChatGPT + zip de imágenes ----------
+def _natkey(name):
+    return [int(t) if t.isdigit() else t.lower() for t in re.split(r'(\d+)', name)]
+
+def _set_final_image(aid, im):
+    """La imagen terminada (de Canva) pasa a ser la de la noticia: web y redes la usan tal cual."""
+    from uuid import uuid4
+    RENDER_DIR.mkdir(parents=True,exist_ok=True); UPLOAD_DIR.mkdir(parents=True,exist_ok=True)
+    im=im.convert('RGB')
+    photo=UPLOAD_DIR/(uuid4().hex+'.jpg'); _fit_width(im,1600).save(photo,'JPEG',quality=90)
+    final=RENDER_DIR/f'article_{aid}.png'; _fit_width(im,1080).save(final,'PNG',optimize=True)
+    db.exec_("UPDATE articles SET image_local=?,image_kind='user_upload',image_source='Redacción',render_path=?,updated_at=CURRENT_TIMESTAMP WHERE id=?",
+             (str(photo),str(final),aid))
+    db.exec_("INSERT OR REPLACE INTO canva_designs(article_id,design_id,url,exported,content_hash) VALUES(?,'upload','',1,'upload')",(aid,))
+
+def _new_launch_article(it,brand):
+    """Noticia nueva desde el txt (sin ID): se crea lista para publicar."""
+    from uuid import uuid4
+    headline=re.sub(r'\s+',' ',it.get('headline') or '').strip().rstrip('.')
+    body_=(it.get('body') or '').strip(); sub=(it.get('subtitle') or '').strip()
+    brand=_brand_by_name(it.get('brand'),brand)
+    content=' '.join([headline,sub,body_[:1500]])
+    sec=layout.normalize_section('',content) if brand==brands.DEFAULT else (brands.detect_section(brand,content) or brands.settings(brand).get('free_title_section') or '')
+    cid=db.exec_('''INSERT INTO candidates(source_name,outlet,title,url,published_at,excerpt,raw_text,score,relevance,status,editorial_priority,brand,section)
+                    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)''',('Redacción','Redacción',headline,'manual:'+uuid4().hex,datetime.now(timezone.utc).isoformat(),
+                                               sub,body_,90,'high','review_ready','today',brand,sec))
+    return db.exec_('''INSERT INTO articles(candidate_id,section,headline,subtitle,body,social_text,status,brand,workflow)
+                       VALUES(?,?,?,?,?,?,?,?,?)''',(cid,sec,headline,sub,body_,body_,'approved',brand,'lanzadera'))
+
+@app.post('/api/launch/batch',dependencies=[Depends(require_auth)])
+async def launch_batch(text:str=Form(''),brand:str=Form('infolinense'),txt:UploadFile|None=File(None),images:UploadFile|None=File(None)):
+    """Sube de una vez el txt redactado y un zip con las imágenes. Cada imagen se une a su noticia:
+    1) por el número de ID en el nombre del archivo, 2) por el orden (1.png con la primera noticia…) si hay tantas como noticias."""
+    import zipfile as _zip
+    from PIL import Image
+    if txt is not None and not isinstance(txt,str): text=(await txt.read(5_000_000)).decode('utf-8','replace')
+    items=parse_batch(text) or []
+    if not items:  # txt sin ID: bloques separados por «---» con TITULAR/TEXTO
+        blocks=[b for b in re.split(r'\n\s*-{3,}\s*\n',text or '') if re.search(r'TITULAR',b,re.I)]
+        items=[dict(parse_batch('ID: 0\n'+b)[0],id=0) for b in blocks if parse_batch('ID: 0\n'+b)]
+    if not items: raise HTTPException(400,'No encuentro noticias en el txt (cada una con TITULAR y TEXTO).')
+    brand=brand if brand in brands.BRANDS else brands.DEFAULT
+    out=[]
+    for it in items:
+        a=db.row('SELECT * FROM articles WHERE id=?',(it['id'],)) if it['id'] else None
+        if a and a['status']!='published':
+            content=' '.join([it.get('headline') or '',it.get('subtitle') or '',(it.get('body') or '')[:1500]])
+            b2=_brand_by_name(it.get('brand'),a.get('brand') or brand)
+            sec=layout.normalize_section('',content) if b2==brands.DEFAULT else (brands.detect_section(b2,content) or a.get('section') or '')
+            db.exec_("UPDATE articles SET brand=?,section=?,headline=?,subtitle=?,body=?,social_text=?,status='approved',updated_at=CURRENT_TIMESTAMP WHERE id=?",
+                     (b2,sec,(it.get('headline') or a['headline'] or '').strip().rstrip('.'),it.get('subtitle') or a.get('subtitle') or '',
+                      it.get('body') or a.get('body') or '',it.get('body') or a.get('body') or '',a['id']))
+            aid=a['id']
+        else:
+            aid=_new_launch_article(it,brand)
+        out.append({'id':aid,'ref':it['id']})
+    # imágenes del zip
+    imgs=[]
+    if images is not None and not isinstance(images,str):
+        raw=await images.read(300_000_001)
+        try: z=_zip.ZipFile(BytesIO(raw))
+        except _zip.BadZipFile: raise HTTPException(400,'El archivo de imágenes no es un .zip válido')
+        names=sorted([n for n in z.namelist() if re.search(r'\.(png|jpe?g|webp)$',n,re.I) and not n.startswith('__MACOSX')],key=lambda n:_natkey(n.rsplit('/',1)[-1]))
+        for n in names:
+            try:
+                im=Image.open(BytesIO(z.read(n))); im.load(); imgs.append((n.rsplit('/',1)[-1],im))
+            except Exception: continue
+    used=set()
+    for o in out:  # 1) ID en el nombre del archivo
+        for i,(n,im) in enumerate(imgs):
+            if i not in used and o['ref'] and re.search(r'(?<!\d)%d(?!\d)'%o['ref'],n):
+                _set_final_image(o['id'],im); used.add(i); o['image']=n; break
+    rest=[o for o in out if 'image' not in o]; free=[i for i in range(len(imgs)) if i not in used]
+    if rest and len(free)>=len(rest):  # 2) por orden
+        for o,i in zip(rest,free):
+            _set_final_image(o['id'],imgs[i][1]); used.add(i); o['image']=imgs[i][0]
+    rows=[]
+    for o in out:
+        a=db.row('SELECT id,brand,section,headline,subtitle,render_path FROM articles WHERE id=?',(o['id'],))
+        rows.append({**a,'image':o.get('image') or '','has_image':bool(a.get('render_path'))})
+    db.log('launch_batch',f'Lanzadera en lote: {len(rows)} noticias, {len(used)} imágenes')
+    return {'items':rows,'images':len(imgs),'matched':len(used)}
+
+@app.post('/api/articles/{aid}/final-image',dependencies=[Depends(require_auth)])
+async def article_final_image(aid:int,photo:UploadFile=File(...)):
+    """Cambiar a mano la imagen terminada de una noticia (desde la Lanzadera en lote)."""
+    from PIL import Image
+    if not db.row('SELECT id FROM articles WHERE id=?',(aid,)): raise HTTPException(404)
+    try: im=Image.open(BytesIO(await photo.read(25_000_001))); im.load()
+    except Exception: raise HTTPException(400,'La imagen no es válida')
+    _set_final_image(aid,im)
+    return {'ok':True}
 
 @app.post('/api/quick',dependencies=[Depends(require_auth)])
 async def quick_publish(headline:str=Form(...),subtitle:str=Form(''),body:str=Form(''),section:str=Form(''),brand:str=Form('infolinense'),

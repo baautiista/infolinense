@@ -638,3 +638,21 @@ class AdaptableTopicsAndSocialTests(unittest.TestCase):
         self.assertFalse(social.local_post('El Ayuntamiento de Nerja abre plazo de reclamaciones', True))
         self.assertTrue(social.local_post('Vecinos de la Atunara piden arreglar los baches'))
         self.assertTrue(social.local_post('Vecinos de La Línea (Cádiz) denuncian falta de limpieza en Santa Margarita'))
+
+
+class StorageCleanupTests(unittest.TestCase):
+    def test_keeps_pending_and_drops_orphans(self):
+        import os, time
+        from app import db, storage
+        from app.config import UPLOAD_DIR
+        UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+        keep = UPLOAD_DIR / 'keep_storage_test.jpg'; orphan = UPLOAD_DIR / 'orphan_storage_test.jpg'; new = UPLOAD_DIR / 'new_storage_test.jpg'
+        for f in (keep, orphan, new): f.write_bytes(b'x' * 10)
+        old = time.time() - 5 * 86400
+        for f in (keep, orphan): os.utime(f, (old, old))
+        cid = db.exec_("INSERT INTO candidates(title,url,status) VALUES('Storage test','https://x.test/storage','new')")
+        db.exec_("INSERT INTO articles(candidate_id,status,headline,image_local) VALUES(?,?,?,?)", (cid, 'draft', 'h', str(keep)))
+        storage.cleanup()
+        self.assertTrue(keep.exists()); self.assertFalse(orphan.exists()); self.assertTrue(new.exists())
+        storage.cleanup(deep=True)  # recién bajada (<10 min): se respeta
+        self.assertTrue(new.exists()); self.assertTrue(keep.exists())

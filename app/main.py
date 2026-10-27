@@ -9,13 +9,30 @@ from fastapi.responses import FileResponse, RedirectResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from . import db, sources, pipeline, publishers, photos, canva, ai, planner, layout, social, social_publish, brands, ocr
+from . import db, sources, pipeline, publishers, photos, canva, ai, planner, layout, social, social_publish, brands, ocr, storage
 from .auth import login, require_auth
 from starlette.concurrency import run_in_threadpool
 from .config import BASE_DIR, RENDER_DIR, UPLOAD_DIR, SCAN_INTERVAL_MINUTES, AUTO_PIPELINE, OPENAI_API_KEY, ADMIN_PASSWORD, JWT_SECRET, PUBLISH_MODE, CORS_ORIGINS, PUBLIC_BASE_URL, AUTO_PUBLISH
 
-VERSION='7.4.5'
+VERSION='7.4.6'
 app=FastAPI(title='InfoLinense Desk',version=VERSION)
+
+from fastapi.responses import JSONResponse as _JR
+@app.exception_handler(OSError)
+async def _disk_full(request,exc):
+    if getattr(exc,'errno',None)==28:
+        try: await run_in_threadpool(storage.cleanup,True)
+        except Exception: pass
+        return _JR({'detail':'El disco del servidor estaba lleno: ya se ha liberado espacio. Vuelve a intentarlo.'},status_code=507)
+    raise exc
+
+@app.middleware('http')
+async def _space_before_uploads(request,call_next):
+    """Antes de recibir fotos o zips: si el disco está casi lleno, se borra lo que ya no hace falta."""
+    if request.method=='POST' and 'multipart' in (request.headers.get('content-type') or ''):
+        try: await run_in_threadpool(storage.ensure_space)
+        except Exception: pass
+    return await call_next(request)
 app.add_middleware(CORSMiddleware,allow_origins=CORS_ORIGINS,allow_credentials=False,allow_methods=['*'],allow_headers=['Authorization','Content-Type'])
 db.init_db()
 social_publish.init_tables()
@@ -69,7 +86,7 @@ async def ai_error_handler(request,exc):
 def auth_login(body:LoginIn): return {'token':login(body.password)}
 @app.get('/api/health')
 def health():
-    return {'ok':True,'version':VERSION,'auth_configured':bool(ADMIN_PASSWORD and JWT_SECRET),'openai_configured':bool(OPENAI_API_KEY),'claude_configured':bool(ai.ANTHROPIC_API_KEY),'ai_configured':ai.AI_ENABLED,'ai_provider':ai.ACTIVE_PROVIDER or None,'ai_fallback':[p for p in ai.provider_chain()[1:]],'draft_provider':ai.ACTIVE_PROVIDER or 'source_draft','draft_mode':'ai' if ai.AI_ENABLED else 'source_draft','web_search':{p:ai.web_enabled(p) for p in ai.provider_chain()},'publish_mode':PUBLISH_MODE,'auto_publish':bool(AUTO_PUBLISH and PUBLISH_MODE!='none'),'paid_ai_allowed':ai.AI_ALLOW_PAID,'ocr':ocr.available()}
+    return {'ok':True,'version':VERSION,'auth_configured':bool(ADMIN_PASSWORD and JWT_SECRET),'openai_configured':bool(OPENAI_API_KEY),'claude_configured':bool(ai.ANTHROPIC_API_KEY),'ai_configured':ai.AI_ENABLED,'ai_provider':ai.ACTIVE_PROVIDER or None,'ai_fallback':[p for p in ai.provider_chain()[1:]],'draft_provider':ai.ACTIVE_PROVIDER or 'source_draft','draft_mode':'ai' if ai.AI_ENABLED else 'source_draft','web_search':{p:ai.web_enabled(p) for p in ai.provider_chain()},'publish_mode':PUBLISH_MODE,'auto_publish':bool(AUTO_PUBLISH and PUBLISH_MODE!='none'),'paid_ai_allowed':ai.AI_ALLOW_PAID,'ocr':ocr.available(),'disk_free_mb':storage.free_bytes()//(1024*1024)}
 
 @app.get('/api/ai/check',dependencies=[Depends(require_auth)])
 def ai_check():
@@ -740,6 +757,11 @@ async def quick_publish(headline:str=Form(...),subtitle:str=Form(''),body:str=Fo
         if im.format not in ('JPEG','PNG','WEBP','MPO'): raise ValueError('formato no permitido')
         im=_fit_width(im.convert('RGB'),1600)  # las imágenes enormes (p. ej. Canva a 2x o 4x) hacen fallar la web e Instagram
         dest=UPLOAD_DIR/(uuid4().hex+'.jpg'); im.save(dest,'JPEG',quality=90)
+    except OSError as e:
+        if getattr(e,'errno',None)==28:
+            storage.cleanup(deep=True)
+            raise HTTPException(507,'El disco del servidor estaba lleno: ya se ha liberado espacio. Vuelve a pulsar Publicar.')
+        raise HTTPException(400,f'La foto no es válida ({str(e)[:80]})')
     except Exception as e: raise HTTPException(400,f'La foto no es válida ({str(e)[:80]})')
     slides=[]
     for i,f in enumerate([f for f in (extra if isinstance(extra,list) else []) if f is not None][:9],1):
@@ -1628,6 +1650,8 @@ def scheduler_loop():
                 planner.rebuild_schedule()
                 pipeline.queue_useful_pending()
         except Exception as e: db.log('scheduler_error',str(e)[:250])
+        try: storage.cleanup(deep=storage.free_bytes()<storage.LOW)
+        except Exception as e: db.log('storage_error',str(e)[:250])
         # De 12:45 a 15:15 el Ayuntamiento publica lo del día: se busca cada 10 minutos
         t=datetime.now(MADRID); m=t.hour*60+t.minute
         time.sleep(600 if 765<=m<=915 else max(15,SCAN_INTERVAL_MINUTES)*60)
@@ -1655,6 +1679,7 @@ def mark_final_images():
 
 @app.on_event('startup')
 def startup():
+    threading.Thread(target=lambda: storage.cleanup(deep=storage.free_bytes()<storage.LOW),daemon=True).start()
     try: restore_final_covers()
     except Exception as e: db.log('cover_fix_error',str(e)[:250])
     try: mark_final_images()

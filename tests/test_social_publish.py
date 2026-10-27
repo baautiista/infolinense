@@ -101,21 +101,60 @@ class SocialPublishTests(unittest.TestCase):
             r = sp.publish('facebook', self.article)
         self.assertFalse(r['ok']); self.assertIn('Token caducado', r['message'])
 
-    def test_tiktok_uses_allowed_privacy(self):
-        sp._save_account('tiktok', {'access_token': 'T', 'refresh_token': 'R', 'expires_at': 9e12})
-        bodies = []
+    def test_tiktok_buffer_connection_and_confirmation_without_duplicates(self):
+        calls = []
         def fake(url, json=None, **kw):
-            bodies.append((url, json))
-            if url.endswith('creator_info/query/'):
-                return Resp({'data': {'privacy_level_options': ['SELF_ONLY']}, 'error': {'code': 'ok'}})
-            return Resp({'data': {'publish_id': 'P1'}, 'error': {'code': 'ok'}})
+            calls.append(json)
+            query = json['query']
+            if 'organizations' in query:
+                return Resp({'data': {'account': {'organizations': [{'id': 'O1'}]}}})
+            if 'channels(input:' in query:
+                return Resp({'data': {'channels': [{'id': 'C1', 'displayName': 'InfoLinense', 'service': 'tiktok'}]}})
+            if 'createPost' in query:
+                return Resp({'data': {'createPost': {'post': {'id': 'B1', 'status': 'sending', 'externalLink': None}}}})
+            if 'post(input:' in query:
+                return Resp({'data': {'post': {'status': 'sent', 'externalLink': 'https://www.tiktok.com/@infolinense/photo/1'}}})
+            raise AssertionError(query)
         with patch.object(sp.requests, 'post', side_effect=fake):
+            self.assertEqual(sp.connect_buffer_tiktok('my-key')['name'], 'InfoLinense')
+            self.assertTrue(sp.status()['tiktok']['connected'])
             r = sp.publish('tiktok', self.article)
-        self.assertTrue(r['ok']); self.assertIn('privada', r['message'])
-        init = bodies[-1][1]
-        self.assertEqual(init['media_type'], 'PHOTO')
-        self.assertEqual(init['post_info']['privacy_level'], 'SELF_ONLY')
-        self.assertTrue(init['source_info']['photo_images'][0].startswith('https://desk.example.com/p/'))
+            self.assertTrue(r['ok']); self.assertIn('pendiente', r['message'])
+            self.assertEqual(sp.publish('tiktok', self.article)['message'], r['message'])
+            mutation = next(c['variables']['input'] for c in calls if 'createPost' in c['query'])
+            self.assertEqual(mutation['mode'], 'shareNow')
+            self.assertEqual(mutation['schedulingType'], 'automatic')
+            self.assertEqual(mutation['metadata']['tiktok']['title'], self.article['headline'])
+            self.assertTrue(mutation['assets'][0]['image']['url'].startswith('https://desk.example.com/p/'))
+            db.exec_("UPDATE social_posts SET updated_at=datetime('now','-3 minutes') WHERE article_id=77 AND network='tiktok'")
+            sp.refresh_buffer_posts()
+        post = db.row("SELECT status,url FROM social_posts WHERE article_id=77 AND network='tiktok'")
+        self.assertEqual(post['status'], 'published')
+        self.assertEqual(post['url'], 'https://www.tiktok.com/@infolinense/photo/1')
+
+    def test_tiktok_rejected_direct_oauth_never_claims_connected(self):
+        sp._save_account('tiktok', {'access_token': 'T', 'refresh_token': 'R', 'expires_at': 9e12})
+        self.assertFalse(sp.status()['tiktok']['connected'])
+        r = sp.publish('tiktok', self.article)
+        self.assertFalse(r['ok']); self.assertIn('Buffer', r['message'])
+
+    def test_buffer_rejects_other_channels_and_publication_error(self):
+        def fake(url, json=None, **kw):
+            if 'organizations' in json['query']:
+                return Resp({'data': {'account': {'organizations': [{'id': 'O1'}]}}})
+            if 'channels(input:' in json['query']:
+                return Resp({'data': {'channels': [
+                    {'id': 'IG1', 'displayName': 'InfoLinense IG', 'service': 'instagram'},
+                    {'id': 'TT1', 'displayName': 'InfoLinense', 'service': 'tiktok'}]}})
+            return Resp({'data': {'createPost': {'message': 'Media format rejected'}}})
+        with patch.object(sp.requests, 'post', side_effect=fake):
+            with self.assertRaises(sp.SocialError):
+                sp.connect_buffer_tiktok('key', 'IG1')
+            sp.connect_buffer_tiktok('key')
+            result = sp.publish('tiktok', self.article)
+        self.assertFalse(result['ok'])
+        self.assertIn('Media format rejected', result['message'])
+        self.assertEqual(db.row("SELECT status FROM social_posts WHERE article_id=77 AND network='tiktok'")['status'], 'error')
 
     def test_missing_canva_image(self):
         r = sp.publish('facebook', dict(self.article, id=78, render_path=''))

@@ -14,7 +14,7 @@ from .auth import login, require_auth
 from starlette.concurrency import run_in_threadpool
 from .config import BASE_DIR, RENDER_DIR, UPLOAD_DIR, SCAN_INTERVAL_MINUTES, AUTO_PIPELINE, OPENAI_API_KEY, ADMIN_PASSWORD, JWT_SECRET, PUBLISH_MODE, CORS_ORIGINS, PUBLIC_BASE_URL, AUTO_PUBLISH
 
-VERSION='7.4.8'
+VERSION='7.4.9'
 app=FastAPI(title='InfoLinense Desk',version=VERSION)
 
 from fastapi.responses import JSONResponse as _JR
@@ -44,6 +44,7 @@ class ScheduleIn(BaseModel): at:str; networks:list[str]|None=None
 class MoveIn(BaseModel): date:str; slot:str='morning'; time:str|None=None
 class PageIn(BaseModel): page_id:str
 class TokenIn(BaseModel): token:str
+class BufferTikTokIn(BaseModel): token:str; channel_id:str=''
 class SourceIn(BaseModel):
     name:str
     url:str
@@ -1392,6 +1393,8 @@ def publish_loop():
     while True:
         try: publish_due()
         except Exception as e: db.log('schedule_error',str(e)[:250])
+        try: social_publish.refresh_buffer_posts()
+        except Exception as e: db.log('social_error','Buffer: '+str(e)[:200])
         time.sleep(30)
 
 @app.post('/api/articles/{aid}/networks/{network}',dependencies=[Depends(require_auth)])
@@ -1463,6 +1466,12 @@ def public_media(name:str):
 @app.get('/api/networks',dependencies=[Depends(require_auth)])
 def networks_status(brand:str='infolinense'):
     with social_publish.use_brand(brand): return social_publish.status()
+
+@app.post('/api/networks/tiktok/buffer',dependencies=[Depends(require_auth)])
+def networks_buffer_tiktok(data:BufferTikTokIn,brand:str='infolinense'):
+    try:
+        with social_publish.use_brand(brand): return social_publish.connect_buffer_tiktok(data.token,data.channel_id)
+    except social_publish.SocialError as e: raise HTTPException(400,str(e))
 
 @app.get('/api/networks/{network}/connect',dependencies=[Depends(require_auth)])
 def networks_connect(network:str,brand:str='infolinense'):

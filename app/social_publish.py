@@ -1,11 +1,12 @@
 """Publicación en Instagram, Facebook y TikTok.
 
-Solo se publica cuando el usuario pulsa «Publicar». Cada red se conecta una vez desde Ajustes
-(inicio de sesión oficial de Meta y de TikTok). Las claves y tokens se quedan en el servidor.
+Se publica cuando el usuario pulsa «Publicar» o llega la hora programada.
+Meta se conecta con su OAuth; TikTok se envía con la cuenta de Buffer del medio.
+Las claves y tokens se quedan en el servidor.
 
 - Facebook: foto (o varias, si hay carrusel) en la página, con el texto de la noticia.
 - Instagram (cuenta profesional unida a la página): foto o carrusel con el texto como pie.
-- TikTok: publicación de fotos (carrusel de fotos) con título y descripción.
+- TikTok: publicación de fotos a través de Buffer, con comprobación posterior del resultado.
 
 Las redes descargan la imagen desde una dirección pública temporal de este servidor
 (/p/<código>.jpg), que solo se crea en el momento de publicar.
@@ -47,6 +48,9 @@ TIKTOK_CLIENT_SECRET = os.getenv('TIKTOK_CLIENT_SECRET', '').strip()
 TIKTOK_VERIFY_FILE = os.getenv('TIKTOK_VERIFY_FILE', '').strip()
 TIKTOK_VERIFY_CONTENT = os.getenv('TIKTOK_VERIFY_CONTENT', '').strip()
 TIKTOK_PRIVACY = os.getenv('TIKTOK_PRIVACY', 'PUBLIC_TO_EVERYONE').strip()
+BUFFER_API_KEY = os.getenv('BUFFER_API_KEY', '').strip()
+BUFFER_TIKTOK_CHANNEL_ID = os.getenv('BUFFER_TIKTOK_CHANNEL_ID', '').strip()
+BUFFER_API = 'https://api.buffer.com'
 SOCIAL_HASHTAGS = os.getenv('SOCIAL_HASHTAGS', '#LaLínea #LaLíneaDeLaConcepción #InfoLinense').strip()
 
 GRAPH = 'https://graph.facebook.com/' + META_GRAPH_VERSION
@@ -119,6 +123,17 @@ def _save_account(network, data):
 
 def disconnect(network):
     db.exec_('DELETE FROM social_accounts WHERE network=?', (_key(network),))
+    if network == 'tiktok':
+        db.exec_('DELETE FROM social_accounts WHERE network=?', (_key('buffer_tiktok'),))
+
+
+def _buffer_account():
+    saved = _account('buffer_tiktok') or {}
+    if saved.get('api_key') and saved.get('channel_id'):
+        return saved
+    if _is_default() and BUFFER_API_KEY and BUFFER_TIKTOK_CHANNEL_ID:
+        return {'api_key': BUFFER_API_KEY, 'channel_id': BUFFER_TIKTOK_CHANNEL_ID}
+    return {}
 
 
 def _meta():
@@ -137,7 +152,7 @@ def status():
     """Estado de cada red para Ajustes y para la pantalla de Publicar."""
     meta = _meta()
     acc = _account('meta') or {}
-    tiktok = _account('tiktok') or {}
+    buffer = _buffer_account()
     return {
         'brand': _brand.get(),
         'public_url_ok': PUBLIC_BASE_URL.startswith('https://'),
@@ -154,7 +169,8 @@ def status():
                   for p in acc.get('pages', [])],
         'tiktok_configured': bool(TIKTOK_CLIENT_KEY and TIKTOK_CLIENT_SECRET and PUBLIC_BASE_URL),
         'tiktok_callback': PUBLIC_BASE_URL + '/api/networks/tiktok/callback' if PUBLIC_BASE_URL else '',
-        'tiktok': {'connected': bool(tiktok.get('refresh_token')), 'name': tiktok.get('name') or ''},
+        'tiktok': {'connected': bool(buffer), 'name': buffer.get('name') or '',
+                   'provider': 'buffer' if buffer else ''},
         'tiktok_url_prefix': PUBLIC_BASE_URL + '/p/' if PUBLIC_BASE_URL else '',
         'privacy_url': PUBLIC_BASE_URL + '/privacidad' if PUBLIC_BASE_URL else '',
         'terms_url': PUBLIC_BASE_URL + '/terminos' if PUBLIC_BASE_URL else '',
@@ -672,6 +688,95 @@ def _instagram(article, urls, paths=None):
     return media, link
 
 
+def _buffer_query(api_key, query, variables=None):
+    try:
+        response = requests.post(BUFFER_API, headers={
+            'Authorization': 'Bearer ' + api_key, 'Content-Type': 'application/json'},
+            json={'query': query, 'variables': variables or {}}, timeout=20)
+        data = response.json()
+    except (requests.RequestException, ValueError) as exc:
+        raise SocialError('Buffer no responde. Comprueba en Buffer si creó la publicación antes de reintentar.') from exc
+    if response.status_code >= 400 or data.get('errors'):
+        detail = (data.get('errors') or [{}])[0].get('message') or 'HTTP %s' % response.status_code
+        raise SocialError('Buffer: %s' % detail[:250])
+    return data.get('data') or {}
+
+
+def connect_buffer_tiktok(token, channel_id=''):
+    """Valida la clave personal y solo permite elegir un canal TikTok de esa cuenta."""
+    token = (token or '').strip()
+    if not token:
+        raise SocialError('Pega tu clave API personal de Buffer.')
+    account = _buffer_query(token, 'query { account { organizations { id } } }').get('account') or {}
+    choices = []
+    for org in account.get('organizations') or []:
+        result = _buffer_query(token, 'query($id: OrganizationId!) { channels(input: { organizationId: $id }) { id name displayName service } }',
+                               {'id': org['id']})
+        choices.extend(c for c in result.get('channels') or [] if str(c.get('service', '')).lower() == 'tiktok')
+    if not choices:
+        raise SocialError('Conecta primero tu cuenta de TikTok en Buffer → Channels.')
+    selected = next((c for c in choices if c.get('id') == channel_id), None) if channel_id else None
+    if not selected and len(choices) == 1 and not channel_id:
+        selected = choices[0]
+    if not selected:
+        names = ', '.join('%s (%s)' % (c.get('displayName') or c.get('name'), c['id']) for c in choices)
+        raise SocialError('Indica el ID del canal de TikTok en Buffer: ' + names[:250])
+    saved = {'api_key': token, 'channel_id': selected['id'],
+             'name': selected.get('displayName') or selected.get('name') or ''}
+    _save_account('buffer_tiktok', saved)
+    return {'name': saved['name']}
+
+
+def _buffer_tiktok_post(article, urls):
+    account = _buffer_account()
+    if not account:
+        raise SocialError('Conecta TikTok a través de Buffer en Ajustes → Redes sociales.')
+    title = re.sub(r'\s+', ' ', article.get('headline') or 'InfoLinense')[:90]
+    result = _buffer_query(account['api_key'], '''mutation($input: CreatePostInput!) {
+      createPost(input: $input) {
+        ... on PostActionSuccess { post { id status externalLink } }
+        ... on MutationError { message }
+      }
+    }''', {'input': {'text': caption(article, 2200), 'channelId': account['channel_id'],
+                     'schedulingType': 'automatic', 'mode': 'shareNow',
+                     'metadata': {'tiktok': {'title': title}},
+                     'assets': [{'image': {'url': u}} for u in urls[:10]]}})
+    output = result.get('createPost') or {}
+    if not (output.get('post') or {}).get('id'):
+        raise SocialError('Buffer: ' + (output.get('message') or 'no confirmó la publicación')[:250])
+    post = output['post']
+    return post['id'], post.get('externalLink') or '', post.get('status') or 'scheduled'
+
+
+def refresh_buffer_posts():
+    """Confirma el envío real; nunca confunde aceptado por Buffer con publicado en TikTok."""
+    rows = db.rows("SELECT article_id,remote_id FROM social_posts WHERE network='tiktok' AND status='pending' AND remote_id LIKE 'buffer:%' AND updated_at<=datetime('now','-2 minutes') LIMIT 10")
+    for row in rows:
+        article = db.row('SELECT brand FROM articles WHERE id=?', (row['article_id'],)) or {}
+        with use_brand(article.get('brand') or brands.DEFAULT):
+            account = _buffer_account()
+        if not account:
+            continue
+        try:
+            result = _buffer_query(account['api_key'], '''query($id: PostId!) {
+              post(input: { id: $id }) { status externalLink error { message } }
+            }''', {'id': row['remote_id'][7:]})
+            post = result.get('post') or {}
+            state = post.get('status')
+            if state == 'sent':
+                db.exec_("UPDATE social_posts SET status='published',url=?,message=?,updated_at=CURRENT_TIMESTAMP WHERE article_id=? AND network='tiktok' AND status='pending'",
+                         (post.get('externalLink') or '', 'Publicada en TikTok mediante Buffer', row['article_id']))
+            elif state == 'error':
+                msg = (post.get('error') or {}).get('message') or 'Buffer no pudo publicar en TikTok'
+                db.exec_("UPDATE social_posts SET status='error',message=?,updated_at=CURRENT_TIMESTAMP WHERE article_id=? AND network='tiktok' AND status='pending'",
+                         (msg[:400], row['article_id']))
+            else:
+                db.exec_("UPDATE social_posts SET updated_at=CURRENT_TIMESTAMP WHERE article_id=? AND network='tiktok' AND status='pending'", (row['article_id'],))
+        except SocialError:
+            # Una caída temporal al consultar no debe recrear ni duplicar el post.
+            db.exec_("UPDATE social_posts SET updated_at=CURRENT_TIMESTAMP WHERE article_id=? AND network='tiktok' AND status='pending'", (row['article_id'],))
+
+
 def _tiktok_post(article, urls):
     info = _tiktok('/post/publish/creator_info/query/', {})
     options = info.get('privacy_level_options') or ['SELF_ONLY']
@@ -696,9 +801,10 @@ def publish(network, article):
 def _publish(network, article):
     if network not in NETWORKS:
         raise SocialError('Red desconocida')
-    done = db.row("SELECT * FROM social_posts WHERE article_id=? AND network=? AND status='published'", (article['id'], network))
+    done = db.row("SELECT * FROM social_posts WHERE article_id=? AND network=? AND status IN ('published','pending')", (article['id'], network))
     if done:
-        return {'network': network, 'ok': True, 'url': done.get('url') or '', 'message': 'Ya estaba publicada'}
+        return {'network': network, 'ok': True, 'url': done.get('url') or '',
+                'message': 'Enviada a Buffer; pendiente de confirmación de TikTok' if done['status'] == 'pending' else 'Ya estaba publicada'}
     note = ''
     try:
         paths = article_images(article)
@@ -708,7 +814,12 @@ def _publish(network, article):
             urls = [public_image(p) for p in paths]
             remote, url = _instagram(article, urls, paths)
         else:
-            remote, url, note = _tiktok_post(article, [public_image(p) for p in paths])
+            remote, url, state = _buffer_tiktok_post(article, [public_image(p) for p in paths])
+            if state != 'sent':
+                db.exec_('INSERT OR REPLACE INTO social_posts(article_id,network,status,remote_id,url,message,updated_at) VALUES(?,?,?,?,?,?,CURRENT_TIMESTAMP)',
+                         (article['id'], network, 'pending', 'buffer:' + str(remote), url,
+                          'Enviada a Buffer; pendiente de confirmación de TikTok'))
+                return {'network': network, 'ok': True, 'url': url, 'message': 'Enviada a Buffer; pendiente de confirmación de TikTok'}
     except SocialError as exc:
         db.exec_('INSERT OR REPLACE INTO social_posts(article_id,network,status,message,updated_at) VALUES(?,?,?,?,CURRENT_TIMESTAMP)',
                  (article['id'], network, 'error', str(exc)[:400]))

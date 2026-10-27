@@ -602,3 +602,22 @@ class CanvaConflictRetryTests(unittest.TestCase):
             job = canva._merge_call({'type': 'modify_existing_design'})
         self.assertEqual(len(posts), 2)
         self.assertEqual(job['status'], 'success')
+
+
+class CanvaBatchSelectionTests(unittest.TestCase):
+    def test_uses_last_import(self):
+        import json
+        from unittest import mock
+        from app import db, main
+        ids = []
+        for n in range(3):
+            cid = db.exec_("INSERT INTO candidates(title,url,status) VALUES(?,?,'new')", ('Sel %d' % n, 'https://x.test/sel%d' % n))
+            ids.append(db.exec_("INSERT INTO articles(candidate_id,status,headline,workflow) VALUES(?,?,?,?)", (cid, 'approved', 'Titular %d' % n, 'lote')))
+        db.exec_("INSERT OR REPLACE INTO canva_designs(article_id,design_id,url,exported,content_hash) VALUES(?,'x','',1,'h')", (ids[0],))
+        db.set_setting('last_lote_ids', json.dumps(ids))
+        seen = []
+        with mock.patch.object(main.canva, 'batch_design', side_effect=lambda rows, progress=None: seen.extend(r['id'] for r in rows) or {'done_ids': []}), \
+             mock.patch.object(main.threading, 'Thread', side_effect=lambda target, daemon: mock.Mock(start=target)):
+            main._canva_job['busy'] = False
+            main.canva_batch('')
+        self.assertEqual(seen, ids)

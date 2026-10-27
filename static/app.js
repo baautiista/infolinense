@@ -212,7 +212,7 @@ function armGpt(v) {
       if (r.error) { out.innerHTML = `<span class="error">${esc(r.error)}</span>`; return }
       const x = r.result;
       if (!x) return;
-      out.innerHTML = `<a class="btn small primary" href="${safeUrl(x.url)}" target="_blank" rel="noopener">Abrir en Canva (${x.pages} noticias)</a>${x.errors.length ? `<p class="error small">No se pudieron añadir: ${x.errors.map(esc).join('<br>')}</p>` : ''}`;
+      out.innerHTML = `<a class="btn small primary" href="${safeUrl(x.url)}" target="_blank" rel="noopener">Abrir en Canva (${x.pages} noticias)</a>${r.total && x.pages < r.total ? `<p class="error small">Faltan ${r.total - x.pages} de ${r.total}.</p>` : ''}${x.errors.length ? `<p class="error small">No se pudieron añadir: ${x.errors.map(esc).join('<br>')}</p>` : ''}`;
       window.open(x.url, '_blank', 'noopener');
     };
     try {

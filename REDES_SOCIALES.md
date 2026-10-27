@@ -1,6 +1,6 @@
 # Publicar en Instagram, Facebook y TikTok
 
-El panel publica en las redes **solo cuando pulsas «Publicar»**. Usa la imagen hecha en Canva (o el carrusel, si lo has creado) y el texto de la noticia, con estos hashtags al final: `#LaLínea #LaLíneaDeLaConcepción #InfoLinense` (se cambian con `SOCIAL_HASHTAGS`).
+El panel publica en las redes al pulsar «Publicar» o cuando llega la hora programada. Usa la imagen hecha en Canva (o el carrusel, si lo has creado) y el texto de la noticia, con estos hashtags al final: `#LaLínea #LaLíneaDeLaConcepción #InfoLinense` (se cambian con `SOCIAL_HASHTAGS`).
 
 Antes de nada, comprueba que en Railway existe `PUBLIC_BASE_URL` con la dirección del panel (`https://…up.railway.app`). Las redes descargan la imagen desde ahí.
 
@@ -27,22 +27,14 @@ Si algún día creas una página de Facebook, se puede conectar desde Ajustes (a
 
 ## 2. TikTok
 
-**Pasos:**
-1. Entra en https://developers.tiktok.com → **Manage apps** → **Connect an app**.
-2. Añade los productos **Login Kit** y **Content Posting API**. En Content Posting API activa **Direct Post**.
-3. Permisos (scopes): `user.info.basic` y `video.publish`.
-4. En **Login Kit → Redirect URI**, pega la dirección que aparece en el panel. Termina en `/api/networks/tiktok/callback`.
-5. **Verifica la dirección de las imágenes.** En la app de TikTok, en **URL properties**, añade el **prefijo de URL** que aparece en el panel (termina en `/p/`). TikTok te dará un archivo con un nombre como `tiktokAbC123.txt` y un contenido. En Railway añade:
-   - `TIKTOK_VERIFY_FILE` = el nombre del archivo (por ejemplo `tiktokAbC123.txt`)
-   - `TIKTOK_VERIFY_CONTENT` = el texto que hay dentro del archivo
+TikTok rechazó la app de InfoLinense para publicación directa porque se utiliza como herramienta interna. La conexión pública usa ahora Buffer y su API personal. No necesitas cambiar la cuenta a privada ni mantener la app de TikTok para Developers.
 
-   Redespliega y pulsa **Verify** en TikTok.
-6. Copia el **Client key** y el **Client secret** y añádelos en Railway:
-   - `TIKTOK_CLIENT_KEY`
-   - `TIKTOK_CLIENT_SECRET`
-7. Redespliega. En el panel: **Ajustes → Redes sociales → Conectar TikTok**.
+1. Crea una cuenta en https://buffer.com (plan Gratis) y conecta el TikTok público de InfoLinense en https://publish.buffer.com/settings/channels.
+2. En https://publish.buffer.com/settings/api crea una **clave API personal**.
+3. En el panel entra en **Ajustes → Redes sociales → TikTok**, pega la clave y pulsa **Conectar TikTok con Buffer**. Si la cuenta de Buffer tiene varios TikTok, el panel mostrará los ID de canal disponibles: pega el que corresponda a InfoLinense.
+4. Al publicar una noticia o al llegar la hora programada, Desk envía a Buffer su imagen, texto y titular en modo **automático y publicar ahora**. La noticia aparece pendiente hasta que Buffer confirme que TikTok la publicó. Los errores se muestran en la noticia sin repetir envíos pendientes.
 
-**Importante:** hasta que TikTok revise y apruebe tu app (botón *Submit for review*), sus normas solo permiten publicar en **privado** («Solo yo»). El panel lo hace así y te avisa. Cuando TikTok la apruebe, las publicaciones saldrán públicas sin cambiar nada.
+También puedes poner `BUFFER_API_KEY` y `BUFFER_TIKTOK_CHANNEL_ID` en Railway para InfoLinense; la conexión desde el panel evita tocar las variables. Buffer Gratis permite hasta diez publicaciones en cola por canal y la API está incluida. Se aplican los límites de publicación de TikTok y Buffer. Mantén la URL pública de las imágenes accesible hasta que Buffer publique.
 
 ---
 
@@ -50,5 +42,5 @@ Si algún día creas una página de Facebook, se puede conectar desde Ajustes (a
 
 - En **4 Publicar** aparece «Publicar también en: Instagram, Facebook, TikTok» con casillas. El panel recuerda lo que marcaste.
 - Al pulsar **Publicar** se envía a la web y a las redes marcadas. Cada red muestra ✓ con su enlace, o «reintentar» si falló. Si pasas el dedo o el ratón por encima, ves el motivo.
-- Una noticia nunca se publica dos veces en la misma red.
+- Una noticia pendiente o ya publicada no se vuelve a enviar a la misma red.
 - Si la noticia tiene carrusel exportado, se publica como carrusel: la imagen principal y luego las diapositivas.

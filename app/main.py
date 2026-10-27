@@ -567,7 +567,7 @@ def _keeps_clean_photo(a):
     kind=(a or {}).get('image_kind') or ''
     if kind=='final_image' or not (a or {}).get('image_local') or not Path(a['image_local']).is_file(): return False
     if kind=='web_photo': return True
-    # Anterior a la 7.4.5: la imagen terminada se guardaba como 'user_upload' de la Redacción con un diseño 'upload'
+    # Anterior a la 7.4.4: la imagen terminada se guardaba como 'user_upload' de la Redacción con un diseño 'upload'
     legacy=db.row("SELECT 1 FROM canva_designs WHERE article_id=? AND design_id='upload'",(a['id'],))
     return not legacy
 
@@ -1646,7 +1646,7 @@ def restore_final_covers():
         except Exception: continue
 
 def mark_final_images():
-    """Noticias sin publicar subidas antes de la 7.4.5 cuya «foto» es la imagen terminada de Canva:
+    """Noticias sin publicar subidas antes de la 7.4.4 cuya «foto» es la imagen terminada de Canva:
     se marcan para que la web no la use de portada."""
     db.exec_("""UPDATE articles SET image_kind='final_image'
                 WHERE status!='published' AND image_kind='user_upload' AND image_source='Redacción'

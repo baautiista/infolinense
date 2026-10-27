@@ -126,15 +126,21 @@ def _page_name(url):
     return path[0] if path else 'Facebook'
 
 
-def _add(item, sid, outlet, kind=None):
+def local_post(text, watched_page=False):
+    """¿Es de La Línea? En una página o grupo vigilado de La Línea basta con que no hable de otro sitio;
+    en el resto (búsquedas e IA) tiene que decir claramente La Línea de la Concepción."""
+    if sources.foreign(text) or sources.other_place(text):
+        return False
+    return True if watched_page else sources.strict_local(text)
+
+
+def _add(item, sid, outlet, kind=None, watched_page=False):
     text = item['title'] + ' ' + item.get('snippet', '')
     kind = kind or kind_of(text)
     if not kind:
         return None  # ventas, publicidad o noticias de medios compartidas
-    if not sources.exact_locality(text) and 'linea' not in outlet.lower() and 'línea' not in outlet.lower():
-        return None
-    if sources.foreign(text) or (sources._OTHER_TOWNS.search(item['title']) and not sources.exact_locality(item['title'])):
-        return None  # de otro sitio aunque la página sea de La Línea
+    if not local_post(text, watched_page):
+        return None  # de otro pueblo (Nerja, Algeciras…) o sin nada claro de La Línea
     date = sources.parse_es_date(item.get('snippet', '')) or sources.parse_es_date(item.get('title', ''))
     cid = sources.add_candidate(item['title'], item['url'], item.get('snippet', ''), SOURCE_NAME, sid,
                                 date,  # fecha leída de la publicación; vacía si no se conoce
@@ -163,7 +169,7 @@ def scan():
                                             {'priority': src.get('priority') or 70, 'official': 0, 'local_scope': 1, 'brand': src['brand']},
                                             outlet=src['name'])
             else:
-                cid = _add(item, sid, src['name'])
+                cid = _add(item, sid, src['name'], watched_page=True)
             if cid: added.append(cid)
     # 2. Quejas vecinales públicas
     for q in ('site:facebook.com "La Línea" vecinos (queja OR denuncian OR quejan OR reclaman OR abandono)',
@@ -178,10 +184,12 @@ def scan():
     try:
         from . import ai
         if any(ai.web_enabled(p) for p in ai.provider_chain()):
-            prompt = ('Busca publicaciones PÚBLICAS de los últimos 3 días en páginas y grupos de Facebook de La Línea de la Concepción (Cádiz) con: '
+            prompt = ('Busca publicaciones PÚBLICAS de los últimos 3 días en páginas y grupos de Facebook de La Línea de la Concepción (Cádiz, junto a Gibraltar) con: '
                       'quejas de vecinos sobre calles y servicios (limpieza, baches, alumbrado, agua, seguridad, ruidos, tráfico, parques), '
                       'propuestas ciudadanas, y comunicados o actividades de asociaciones vecinales, colectivos, plataformas, AMPAs, hermandades o clubes. '
-                      'Descarta ventas, anuncios, sorteos, publicidad y noticias de medios compartidas. Solo resultados reales con URL que hayas visto. '
+                      'Descarta ventas, anuncios, sorteos, publicidad y noticias de medios compartidas. Descarta TODO lo de otros municipios '
+                      '(Nerja, Málaga, Algeciras, San Roque, Marbella…) y cualquier «La Línea» que no sea La Línea de la Concepción. '
+                      'En summary di siempre el barrio o la calle de La Línea. Solo resultados reales con URL que hayas visto. '
                       'Devuelve JSON {"items":[{"title","url","page_name","summary","type":"queja|propuesta|asociacion"}]} con máximo 12.')
             data, _, _ = ai.ask_json(ai.SYSTEM, prompt, web=True, web_required=True, max_tokens=3000)
             for it in (data.get('items') or [])[:12]:
@@ -200,7 +208,20 @@ def scan():
     return {'added': added, 'errors': errors}
 
 
+def cleanup():
+    """Retira del panel lo ya guardado que no es de La Línea (p. ej. de Nerja)."""
+    names = {(r['name'] or '').strip().lower() for r in watched()}
+    n = 0
+    for r in db.rows("""SELECT id,title,excerpt,outlet FROM candidates WHERE social_type IS NOT NULL
+                        AND status NOT IN ('archived','published') AND editorial_priority IN ('undecided','')"""):
+        if not local_post((r['title'] or '') + ' ' + (r['excerpt'] or ''), (r.get('outlet') or '').strip().lower() in names):
+            db.exec_("UPDATE candidates SET status='archived',reason='Fuera de La Línea' WHERE id=?", (r['id'],)); n += 1
+    return n
+
+
 def items():
+    try: cleanup()
+    except Exception: pass
     rows = db.rows("""SELECT c.*,s.kind AS source_kind,a.id AS article_id,a.status AS article_status
                       FROM candidates c LEFT JOIN sources s ON s.id=c.source_id
                       LEFT JOIN articles a ON a.candidate_id=c.id AND a.status!='rejected'

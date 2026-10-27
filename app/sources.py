@@ -10,7 +10,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from functools import lru_cache
 from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
-from urllib.parse import quote, urljoin, urlparse, urldefrag
+from urllib.parse import parse_qs, quote, urljoin, urlparse, urldefrag
 
 import requests
 from bs4 import BeautifulSoup
@@ -551,6 +551,40 @@ def gibraltar_topic(text):
     return bool(_GIB_EVENT.search(t) or (_GIB_POLITICS.search(t) and spain) or (_GIB_FILL.search(t) and spain))
 
 
+# Sitios que no son La Línea (para descartar publicaciones de redes de otros pueblos: Nerja, Marbella…)
+_ELSEWHERE = re.compile(r'\b(nerja|m[aá]laga|marbella|estepona|fuengirola|torremolinos|benalm[aá]dena|mijas|manilva|casares|'
+                        r'sotogrande|ronda|antequera|v[eé]lez|torrox|frigiliana|almu[nñ][eé]car|motril|rinc[oó]n\s+de\s+la\s+victoria|'
+                        r'ceuta|melilla|sevilla|granada|almer[ií]a|huelva|ja[eé]n|c[oó]rdoba|madrid|barcelona|valencia|alicante|murcia|'
+                        r'benidorm|torrevieja|zaragoza|bilbao|vigo|coru[nñ]a|palma|ibiza|tenerife|las\s+palmas|lanzarote|'
+                        r'puerto\s+real|san\s+fernando|rota|chipiona|sanl[uú]car|conil|barbate|vejer|arcos|ubrique|olvera|medina|'
+                        r'chiclana|jerez|c[aá]diz\s+capital)\b', re.I)
+_LOCAL_SPECIFIC = re.compile(r'(gibraltar|frontera|verja|juan\s+franco|alcaidesa|cruz\s+herrera|parque\s+princesa\s+sof[ií]a|velada|'
+                             r'san\s+bernardo|santa\s+margarita|\bbalona\b|atunara|zabal|junquillos|conchal|poniente\s+de\s+la\s+l[ií]nea|'
+                             r'calle\s+real|plaza\s+de\s+la\s+iglesia|ayuntamiento\s+de\s+la\s+l[ií]nea|polideportivo\s+municipal|'
+                             r'barriada|campo\s+de\s+gibraltar)', re.I)
+
+
+def other_place(text):
+    """Habla de otro municipio (Ayuntamiento de X, Nerja, Algeciras…) sin señal fuerte de La Línea."""
+    text = re.sub(r'\((?:provincia\s+de\s+)?c[aá]diz\)|,\s*c[aá]diz\b|(?:provincia|diputaci[oó]n|bop|diario)\s+de\s+c[aá]diz|bop\s+c[aá]diz',
+                  ' ', text or '', flags=re.I)
+    if _CITY_STRONG.search(text):
+        return False
+    if _ELSEWHERE.search(text) or _OTHER_TOWNS.search(text):
+        return True
+    return any(not re.search(r'la\s+l[ií]nea', m.group(2), re.I) for m in _TOWN_HALL.finditer(text))
+
+
+def strict_local(text):
+    """Para redes sociales: tiene que ser claramente de La Línea de la Concepción."""
+    text = text or ''
+    if foreign(text) or other_place(text):
+        return False
+    if _CITY_STRONG.search(text):
+        return True
+    return bool(re.search(r'\bLa\s+L[ií]nea\b', text) and not _UNRELATED.search(text) and _LOCAL_SPECIFIC.search(text))
+
+
 def place_ok(text, extra=''):
     """¿Interesa a InfoLinense? Solo La Línea; de Gibraltar, lo que afecta (rellenos, obras, eventos, elecciones, frontera)."""
     text = text or ''
@@ -891,25 +925,47 @@ def comarca_angle(url, text_hint=''):
 
 ADAPT_PREFIX = 'Nacionales adaptables · Temas'
 # Temas nacionales que se pueden contar en clave local («suben los alquileres» → cómo afecta en La Línea).
-_ADAPT_TOPIC = re.compile(r'\b(alquiler\w*|vivienda\w*|hipotec\w*|eur[ií]bor|pensi[oó]n\w*|pensionistas|jubilaci[oó]n|ipc|inflaci[oó]n|'
-                          r'precio\w*|luz|electricidad|factura|gasolina|di[eé]sel|carburantes?|combustibles?|butano|'
-                          r'salario m[ií]nimo|smi|paro|desempleo|empleo|afiliaci[oó]n|autónomos|autonomos|seguridad social|'
-                          r'ingreso m[ií]nimo|ayudas?|bono\w*|subvenci[oó]n\w*|becas?|impuestos?|irpf|iva|hacienda|declaraci[oó]n de la renta|'
-                          r'dgt|multas?|carn[eé] de conducir|itv|radares?|aemet|alerta|ola de calor|temporal|lluvias|'
-                          r'sanidad|sanitari\w*|m[eé]dicos|listas? de espera|vacun\w*|gripe|farmacias?|medicamentos?|'
-                          r'colegios?|curso escolar|educaci[oó]n|oposiciones|huelgas?|cesta de la compra|supermercados?|alimentos|'
-                          r'okupa\w*|renfe|trenes|autob[uú]s|transporte p[uú]blico|cambio de hora|festivos?|permisos?|bajas?|'
-                          r'estafas?|consumidores|tarifas?|subida|bajada|sube|suben|baja|bajan)\b', re.I)
-# Lo que no se adapta: otras comunidades o ciudades concretas, deportes, sucesos y famosos.
-_ADAPT_NO = re.compile(r'\b(madrid|barcelona|catalu\w+|valencia\w*|pa[ií]s vasco|euskadi|galicia|asturias|murcia|arag[oó]n|zaragoza|'
+_ADAPT_TOPICS = {
+    'vivienda y precios': r'alquiler\w*|vivienda\w*|hipotec\w*|eur[ií]bor|ipc|inflaci[oó]n|precios?\s+de\s+(la\s+)?(luz|gasolina|vivienda|alimentos|la\s+compra)|'
+                          r'factura\s+de\s+la\s+luz|recibo\s+de\s+la\s+luz|tarifa\s+el[eé]ctrica|electricidad|gasolina|di[eé]sel|carburantes?|butano|'
+                          r'cesta\s+de\s+la\s+compra|supermercados?|alimentos|aceite\s+de\s+oliva',
+    'empleo y paro': r'paro|parados|desempleo|desemplead\w*|\bepa\b|afiliaci[oó]n|afiliados|seguridad\s+social|salario\s+m[ií]nimo|\bsmi\b|'
+                     r'salarios?|sueldos?|aut[oó]nomos|contratos?\s+(temporales|indefinidos|fijos)|\berte\b|empleo|ofertas?\s+de\s+empleo|sepe|oposiciones',
+    'rentas, impuestos y ayudas': r'rentas?|irpf|hacienda|impuestos?|\biva\b|declaraci[oó]n\s+de\s+la\s+renta|pensi[oó]n\w*|pensionistas|jubilaci[oó]n|'
+                                  r'ingreso\s+m[ií]nimo|\bimv\b|ayudas?|subsidios?|prestaci[oó]n\w*|becas?|bono\s+(social|alquiler|joven|cultural)|'
+                                  r'cheque|deducci[oó]n\w*|pobreza|exclusi[oó]n\s+social',
+    'economía': r'econom[ií]a|econ[oó]mic\w*|\bpib\b|tipos?\s+de\s+inter[eé]s|\bbce\b|banco\s+de\s+espa[nñ]a|consumo|comercio|peque[nñ]o\s+comercio|'
+                r'hosteler[ií]a|turismo|tur[ií]stas|rebajas|black\s+friday|ventas|exportaciones|morosidad|cr[eé]ditos?|ahorro|bancos?|comisiones',
+    'medio ambiente': r'medio\s?ambiente|medioambiental\w*|clima|clim[aá]tic\w*|ola\s+de\s+calor|calor|sequ[ií]a|incendios?|contaminaci[oó]n|'
+                      r'calidad\s+del\s+aire|reciclaje|residuos|basura|pl[aá]sticos?|playas?|costas?|litoral|vertidos?|emisiones|'
+                      r'renovables|placas\s+solares|autoconsumo|aemet|alertas?\s+(amarilla|naranja|roja)|temporal|dana|lluvias|tormentas?',
+    'servicios y día a día': r'\bdgt\b|itv|multas?|radares?|carn[eé]\s+de\s+conducir|sanidad|sanitari\w*|m[eé]dicos|listas?\s+de\s+espera|'
+                             r'atenci[oó]n\s+primaria|vacun\w*|gripe|farmacias?|medicamentos?|colegios?|curso\s+escolar|educaci[oó]n|universidad\w*|'
+                             r'huelgas?|renfe|trenes|autob[uú]s|transporte\s+p[uú]blico|cambio\s+de\s+hora|festivos?|puentes?|permisos?|bajas?\s+laborales?|'
+                             r'okupa\w*|estafas?|consumidores|correos|dependencia|mayores|j[oó]venes',
+}
+_ADAPT_TOPIC = re.compile(r'\b(' + '|'.join('(?:%s)' % v for v in _ADAPT_TOPICS.values()) + r')\b', re.I)
+# Lo que no se adapta: otras comunidades o ciudades concretas, bolsa, deportes, sucesos, famosos, pelea política y el extranjero.
+_ADAPT_NO = re.compile(r'\b(madrid|barcelona|catalu\w+|valencia\w*|pa[ií]s\s+vasco|euskadi|galicia|asturias|murcia|arag[oó]n|zaragoza|'
                        r'bilbao|canarias|baleares|mallorca|ibiza|navarra|castilla|extremadura|cantabria|rioja|toledo|valladolid|'
-                       r'alicante|m[aá]laga|sevilla|granada|c[oó]rdoba|almer[ií]a|huelva|ja[eé]n|'
-                       r'f[uú]tbol|liga|champions|real madrid|bar[cç]a|atl[eé]tico|tenis|f[oó]rmula 1|motogp|'
-                       r'asesin\w*|cr[ií]men|detenid\w*|juicio|famos\w*|boda|reality|gran hermano|supervivientes|'
-                       r'trump|putin|ucrania|gaza|israel|eeuu|estados unidos|francia|alemania|china|rusia)\b', re.I)
+                       r'alicante|m[aá]laga|sevilla|granada|c[oó]rdoba|almer[ií]a|huelva|ja[eé]n|nerja|marbella|benidorm|'
+                       r'ibex|bolsa|cotiza\w*|acciones|dividendo|beneficio\s+neto|\bopa\b|'
+                       r'f[uú]tbol|liga|champions|real\s+madrid|bar[cç]a|atl[eé]tico|tenis|f[oó]rmula\s+1|motogp|baloncesto|'
+                       r'asesin\w*|cr[ií]men|detenid\w*|juicio|tribunal\s+supremo|imputad\w*|famos\w*|boda|reality|gran\s+hermano|supervivientes|'
+                       r'feij[oó]o|abascal|puigdemont|amnist[ií]a|moci[oó]n\s+de\s+censura|'
+                       r'trump|putin|ucrania|gaza|israel|eeuu|estados\s+unidos|francia|alemania|china|rusia|marruecos)\b', re.I)
 ADAPT_ANGLE = ('ENFOQUE LA LÍNEA (NACIONAL ADAPTADA): es una noticia de ámbito nacional. No la copies: cuenta cómo afecta a los vecinos '
                'de La Línea (a quién afecta, cuánto, desde cuándo, qué hay que hacer o dónde pedirlo). El titular se centra en La Línea '
-               '(p. ej. «Así afecta a La Línea la subida de…»). Si hay un dato local (oficina, centro, precio en la zona), úsalo; no inventes cifras locales.')
+               '(p. ej. «Así afecta a La Línea la subida de…», «El paro en La Línea…»). Busca el dato de La Línea si existe (paro registrado del '
+               'municipio, renta media del INE, precio del alquiler en la ciudad, oficina del SEPE o de la Seguridad Social, centro de salud, '
+               'playas, empresas locales); si no lo hay, explica el efecto para los linenses sin inventar cifras locales.')
+
+def adapt_topic(title):
+    """Tema adaptable del titular (vivienda y precios, empleo y paro, economía…), o ''."""
+    for name, rx in _ADAPT_TOPICS.items():
+        if re.search(r'\b(' + rx + r')\b', title or '', re.I):
+            return name
+    return ''
 
 
 def adaptable_source(meta):
@@ -926,13 +982,16 @@ def add_candidate(title, url, excerpt, source_name, source_id=None, published_at
     source_meta = source_meta or {'priority': 60, 'official': 0, 'local_scope': 0}
     title, excerpt = clean(title)[:260], clean(excerpt)[:4000]
     local_angle = clean(local_angle)[:800]
+    if source_meta.get('kind') == 'social' and (source_meta.get('brand') or 'infolinense') == 'infolinense' \
+            and other_place(title + ' ' + excerpt[:600]):
+        return None  # publicación de redes sobre otro pueblo
     if adaptable_source(source_meta):
         if not adaptable_ok(title) or not recent_enough(published_at):
             return None
         if source_id and (db.row("SELECT COUNT(*) n FROM candidates WHERE source_id=? AND created_at>=datetime('now','-1 day')",
-                                 (source_id,)) or {}).get('n', 0) >= 6:
+                                 (source_id,)) or {}).get('n', 0) >= 5:
             return None  # pocas al día: lo local va primero
-        local_angle = ADAPT_ANGLE
+        local_angle = ADAPT_ANGLE + ' Tema: ' + adapt_topic(title) + '.'
         source_meta = dict(source_meta, local_scope=1)  # ya filtrada: no se le pide «La Línea» en el texto
     elif str(source_meta.get('name') or source_name or '').startswith('Medios nacionales') and not exact_locality(title + ' ' + excerpt[:300]):
         return None  # mención de pasada a La Línea en un medio nacional
@@ -1095,9 +1154,13 @@ def read_source(source, remember_state=True):
         else:
             query = f'site:{host}/{account}'
         items = []
+        pid = (parse_qs(target.query).get('id') or [''])[0]
         for it in social.web_search(query, days=7, limit=15):
             if not re.search(r'facebook\.com|instagram\.com', it.get('url') or ''):
                 continue
+            if account == 'profile.php' and pid and pid not in (it.get('url') or '') \
+                    and not strict_local((it.get('title') or '') + ' ' + (it.get('snippet') or '')):
+                continue  # búsqueda por nombre: puede traer páginas de otros pueblos
             items.append({'title': it.get('title') or '', 'url': it['url'], 'excerpt': it.get('snippet') or it.get('title') or '',
                           'published_at': parse_es_date(it.get('snippet', '')) or parse_es_date(it.get('title', ''))})
         if not items:  # plan B: Google News
@@ -1364,10 +1427,13 @@ def auto_ayto(ids):
 def archive_off_topic():
     """Retira del radar lo que no es de La Línea (ni de Gibraltar con interés) y nadie ha marcado."""
     n = 0
-    for r in db.rows("""SELECT c.id,c.title,c.excerpt,c.source_name,c.local_angle,c.brand,s.local_scope,s.official FROM candidates c LEFT JOIN sources s ON s.id=c.source_id
+    for r in db.rows("""SELECT c.id,c.title,c.excerpt,c.source_name,c.local_angle,c.brand,s.local_scope,s.official,s.kind FROM candidates c LEFT JOIN sources s ON s.id=c.source_id
                         WHERE c.status IN ('new','researched','needs_config') AND c.editorial_priority IN ('undecided','')
                         AND c.social_type IS NULL"""):
         title, excerpt = r['title'] or '', r['excerpt'] or ''
+        if r.get('kind') == 'social' and (r.get('brand') or 'infolinense') == 'infolinense' and other_place(title + ' ' + excerpt[:600]):
+            db.exec_("UPDATE candidates SET status='archived',reason='Fuera de La Línea' WHERE id=?", (r['id'],)); n += 1
+            continue
         if not r.get('local_scope') and foreign(title + ' ' + excerpt[:600]):
             db.exec_("UPDATE candidates SET status='archived',reason='Fuera de La Línea' WHERE id=?", (r['id'],)); n += 1
             continue

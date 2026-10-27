@@ -409,6 +409,7 @@ TEMA: {candidate.get('title', '')}
 FUENTE ORIGINAL: {candidate.get('source_name', '')} · {candidate.get('url', '')}
 FECHA DE LA FUENTE: {candidate.get('published_at') or 'no consta'}
 ÁNGULO LOCAL DETECTADO: {candidate.get('local_angle') or ''}
+{'ES UNA NOTICIA NACIONAL QUE HAY QUE ADAPTAR: busca también los datos de La Línea de la Concepción sobre ese tema (paro registrado del municipio, renta media del INE, precio del alquiler en la ciudad, pensionistas, oficinas del SEPE o la Seguridad Social, centros de salud, colegios, playas, comercios afectados) y anótalos en facts con su fuente.' if 'NACIONAL ADAPTADA' in (candidate.get('local_angle') or '') else ''}
 EXTRACTO: {candidate.get('excerpt', '')[:1500]}
 TEXTO FUENTE: {(source_text or '')[:10000]}'''
     data, provider, used_web = ask_json(SYSTEM, prompt, web=True, max_tokens=4000)
@@ -517,9 +518,11 @@ Párrafos de 2 a 4 frases separados por una línea en blanco.
 PROHIBIDO en titular, subtítulo y texto: hablar de lo que no se sabe o falta («no consta», «se desconoce», «no se ha encontrado», «no se especifica», «falta confirmar»), hablar de la fuente o del documento («según la documentación», «la nota no detalla») o pedir comprobaciones. Si un dato no está, no lo menciones y cuenta la noticia con lo que sí se sabe. Atribuye solo cuando lo haría un periodista («según el Ayuntamiento», «recoge el BOP»).
 Céntrate en los hechos y en lo que cambia para la ciudad, no en tecnicismos ni en las fuentes.
 ENFOQUE LA LÍNEA: si la noticia es comarcal (Campo de Gibraltar), de Gibraltar o de varios pueblos, el titular y la entradilla se centran en lo que toca a La Línea (su agrupación, sus vecinos, su calle, su dinero…) y lo demás se cuenta después en el texto. Ejemplo: «Cinco agrupaciones del Campo cantarán en el Falla» → «La comparsa linense X cantará en el Falla» y luego las demás.
+{'NACIONAL ADAPTADA A LA LÍNEA: la fuente es una noticia nacional. NO la copies: titular y entradilla sobre cómo afecta a La Línea y a los linenses («Así afecta a La Línea…», «El paro en La Línea…», «Los linenses pagarán…»). Primero el efecto en la ciudad (con los datos de La Línea de HECHOS Y CONTEXTO si los hay), luego el dato nacional como contexto. No inventes cifras de La Línea: si no hay dato local, explica a quién afecta en la ciudad y qué tiene que hacer.' if 'NACIONAL ADAPTADA' in (candidate.get('local_angle') or '') else ''}
 {'Noticia de menor peso: pieza corta.' if quick else ''}
 
 CANDIDATA: {candidate.get('title', '')}
+ÁNGULO LOCAL: {candidate.get('local_angle') or ''}
 FUENTE: {candidate.get('source_name', '')} · {candidate.get('url', '')}
 FECHA DE LA FUENTE: {candidate.get('published_at') or 'no consta'}
 EXTRACTO: {candidate.get('excerpt', '')[:1500]}

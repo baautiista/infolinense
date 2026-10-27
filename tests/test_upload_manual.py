@@ -621,3 +621,20 @@ class CanvaBatchSelectionTests(unittest.TestCase):
             main._canva_job['busy'] = False
             main.canva_batch('')
         self.assertEqual(seen, ids)
+
+
+class AdaptableTopicsAndSocialTests(unittest.TestCase):
+    def test_topics(self):
+        from app import sources
+        for t in ('El paro baja en 25.000 personas en octubre', 'La renta media de los hogares sube un 4%',
+                  'La economía crecerá un 2,5% según el Banco de España', 'La sequía obliga a restringir el agua'):
+            self.assertTrue(sources.adaptable_ok(t), t)
+        for t in ('El Ibex 35 cae un 2% en bolsa', 'Un incendio en Nerja obliga a desalojar', 'Feijóo carga contra la amnistía'):
+            self.assertFalse(sources.adaptable_ok(t), t)
+
+    def test_facebook_other_town(self):
+        from app import social
+        self.assertFalse(social.local_post('Vecinos de Nerja denuncian la suciedad en el paseo'))
+        self.assertFalse(social.local_post('El Ayuntamiento de Nerja abre plazo de reclamaciones', True))
+        self.assertTrue(social.local_post('Vecinos de la Atunara piden arreglar los baches'))
+        self.assertTrue(social.local_post('Vecinos de La Línea (Cádiz) denuncian falta de limpieza en Santa Margarita'))

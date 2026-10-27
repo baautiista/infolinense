@@ -938,7 +938,7 @@ _ADAPT_TOPICS = {
                 r'hosteler[ií]a|turismo|tur[ií]stas|rebajas|black\s+friday|ventas|exportaciones|morosidad|cr[eé]ditos?|ahorro|bancos?|comisiones',
     'medio ambiente': r'medio\s?ambiente|medioambiental\w*|clima|clim[aá]tic\w*|ola\s+de\s+calor|calor|sequ[ií]a|incendios?|contaminaci[oó]n|'
                       r'calidad\s+del\s+aire|reciclaje|residuos|basura|pl[aá]sticos?|playas?|costas?|litoral|vertidos?|emisiones|'
-                      r'renovables|placas\s+solares|autoconsumo|aemet|alertas?\s+(amarilla|naranja|roja)|temporal|dana|lluvias|tormentas?',
+                      r'renovables|placas\s+solares|autoconsumo|aemet|alertas?\s+(amarilla|naranja|roja)|temporal|lluvias|tormentas?',
     'servicios y día a día': r'\bdgt\b|itv|multas?|radares?|carn[eé]\s+de\s+conducir|sanidad|sanitari\w*|m[eé]dicos|listas?\s+de\s+espera|'
                              r'atenci[oó]n\s+primaria|vacun\w*|gripe|farmacias?|medicamentos?|colegios?|curso\s+escolar|educaci[oó]n|universidad\w*|'
                              r'huelgas?|renfe|trenes|autob[uú]s|transporte\s+p[uú]blico|cambio\s+de\s+hora|festivos?|puentes?|permisos?|bajas?\s+laborales?|'
@@ -972,10 +972,39 @@ def adaptable_source(meta):
     return str((meta or {}).get('name') or '').startswith(ADAPT_PREFIX)
 
 
+# Ayudas o daños de una catástrofe en otro sitio (DANA de Valencia, volcán de La Palma…): no se adaptan
+_ELSEWHERE_EVENT = re.compile(r'\b(dana|volc[aá]n|la\s+palma|paiporta|riadas?|damnificad\w*|zona\s+cero|reconstrucci[oó]n|'
+                              r'afectados\s+por\s+(la|el)\s+\w+)\b', re.I)
+_HOME_AREA = re.compile(r'andaluc|c[aá]diz|campo\s+de\s+gibraltar|l[ií]nea\s+de\s+la\s+concepci', re.I)
+
+
 def adaptable_ok(title):
     """Titular nacional que se puede llevar a La Línea: tema que toca el bolsillo o el día a día, sin otra ciudad ni región."""
     title = title or ''
+    if _ELSEWHERE_EVENT.search(title) and not _HOME_AREA.search(title):
+        return False
     return bool(_ADAPT_TOPIC.search(title)) and not _ADAPT_NO.search(title) and not _OTHER_TOWNS.search(title) and not foreign(title)
+
+
+def adapt_check(title, excerpt=''):
+    """Segunda opinión con IA (si hay): ¿afecta de verdad a los vecinos de La Línea? Devuelve (sí/no, cómo).
+    Si la IA no está o falla, vale lo que dicen las reglas."""
+    from . import ai
+    if not ai.AI_ENABLED:
+        return True, ''
+    prompt = ('Noticia nacional: «%s». %s\n¿Afecta de forma concreta a los vecinos de La Línea de la Concepción (Cádiz, Andalucía)? '
+              'Responde que SÍ solo si la medida, el cambio o el dato se aplica en toda España, en Andalucía o en la provincia de Cádiz '
+              '(p. ej. suben las pensiones, baja el paro, nuevo bono, cambia una norma de la DGT, alerta en Andalucía). '
+              'Responde que NO si es de otra comunidad o ciudad, de una catástrofe o ayudas para otra zona (DANA de Valencia, La Palma…), '
+              'de una empresa concreta, de bolsa, de pelea política sin medida, o si no cambia nada para un vecino. '
+              'Devuelve JSON {"ok": true|false, "como": "una frase: qué cambia para un vecino de La Línea"}.') % (title, (excerpt or '')[:600])
+    try:
+        data, _, _ = ai.ask_json(ai.SYSTEM, prompt, max_tokens=300)
+        if isinstance(data, dict) and 'ok' in data:
+            return bool(data.get('ok')), str(data.get('como') or '')[:300]
+    except Exception:
+        pass
+    return True, ''
 
 
 def add_candidate(title, url, excerpt, source_name, source_id=None, published_at='', source_meta=None, local_angle='', outlet='', image=''):
@@ -991,7 +1020,12 @@ def add_candidate(title, url, excerpt, source_name, source_id=None, published_at
         if source_id and (db.row("SELECT COUNT(*) n FROM candidates WHERE source_id=? AND created_at>=datetime('now','-1 day')",
                                  (source_id,)) or {}).get('n', 0) >= 5:
             return None  # pocas al día: lo local va primero
-        local_angle = ADAPT_ANGLE + ' Tema: ' + adapt_topic(title) + '.'
+        if url and db.row('SELECT 1 FROM candidates WHERE url=?', (url,)):
+            return None
+        ok, how = adapt_check(title, excerpt)
+        if not ok:
+            return None  # la IA ve que no cambia nada para La Línea
+        local_angle = ADAPT_ANGLE + ' Tema: ' + adapt_topic(title) + '.' + (' En La Línea: ' + how if how else '')
         source_meta = dict(source_meta, local_scope=1)  # ya filtrada: no se le pide «La Línea» en el texto
     elif str(source_meta.get('name') or source_name or '').startswith('Medios nacionales') and not exact_locality(title + ' ' + excerpt[:300]):
         return None  # mención de pasada a La Línea en un medio nacional
@@ -1446,6 +1480,9 @@ def archive_off_topic():
             continue
         if not r.get('local_scope') and foreign(title + ' ' + excerpt[:600]):
             db.exec_("UPDATE candidates SET status='archived',reason='Fuera de La Línea' WHERE id=?", (r['id'],)); n += 1
+            continue
+        if 'NACIONAL ADAPTADA' in str(r.get('local_angle') or '') and not adaptable_ok(title):
+            db.exec_("UPDATE candidates SET status='archived',reason='No se adapta a La Línea' WHERE id=?", (r['id'],)); n += 1
             continue
         if str(r.get('local_angle') or '').startswith('ENFOQUE') or (r.get('brand') or 'infolinense') != 'infolinense':
             continue  # comarcal con dato de La Línea comprobado, o de Cofrade/Carnaval

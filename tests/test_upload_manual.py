@@ -679,3 +679,12 @@ class LearnFromDiscardsTests(unittest.TestCase):
         db.exec_("INSERT INTO candidates(title,url,status,editorial_priority) VALUES('Nuevo carril en Alcaidesa','https://x.test/alc1','new','today')")
         cid = db.exec_("INSERT INTO candidates(title,url,status) VALUES('Fiesta privada en Alcaidesa','https://x.test/alc2','new')")
         self.assertNotIn('Alcaidesa', learn.learn_from(cid))
+
+
+class AdaptElsewhereEventTests(unittest.TestCase):
+    def test_dana_aid_not_adaptable(self):
+        from app import sources
+        self.assertFalse(sources.adaptable_ok('El Gobierno amplía las ayudas a los afectados por la DANA'))
+        self.assertFalse(sources.adaptable_ok('Nuevas ayudas de la DANA para autónomos y empresas'))
+        self.assertTrue(sources.adaptable_ok('La AEMET activa la alerta naranja por lluvias en Andalucía'))
+        self.assertTrue(sources.adaptable_ok('El Gobierno aprueba nuevas ayudas al alquiler para jóvenes'))

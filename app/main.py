@@ -9,12 +9,12 @@ from fastapi.responses import FileResponse, RedirectResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from . import db, sources, pipeline, publishers, photos, canva, ai, planner, layout, social, social_publish, brands, ocr, storage
+from . import db, sources, pipeline, publishers, photos, canva, ai, planner, layout, social, social_publish, brands, ocr, storage, learn
 from .auth import login, require_auth
 from starlette.concurrency import run_in_threadpool
 from .config import BASE_DIR, RENDER_DIR, UPLOAD_DIR, SCAN_INTERVAL_MINUTES, AUTO_PIPELINE, OPENAI_API_KEY, ADMIN_PASSWORD, JWT_SECRET, PUBLISH_MODE, CORS_ORIGINS, PUBLIC_BASE_URL, AUTO_PUBLISH
 
-VERSION='7.4.6'
+VERSION='7.4.7'
 app=FastAPI(title='InfoLinense Desk',version=VERSION)
 
 from fastapi.responses import JSONResponse as _JR
@@ -196,6 +196,18 @@ def scan_status():
     # buscando = hay una búsqueda con el candado, o se acaba de pulsar «Buscar» y está arrancando
     st['busy']=bool(sources._scan_lock.locked() or (st['busy'] and time.time()-st.get('started_at',0)<10))
     return st
+class LearnIn(BaseModel):
+    label:str
+@app.get('/api/learned',dependencies=[Depends(require_auth)])
+def learned_list(): return {'items':learn.terms()}
+@app.post('/api/learned',dependencies=[Depends(require_auth)])
+def learned_add(body:LearnIn):
+    try: learn.add(body.label)
+    except ValueError as e: raise HTTPException(400,str(e))
+    sources.archive_off_topic(); return {'items':learn.terms()}
+@app.delete('/api/learned/{term}',dependencies=[Depends(require_auth)])
+def learned_remove(term:str): learn.remove(term); return {'items':learn.terms()}
+
 @app.get('/api/social',dependencies=[Depends(require_auth)])
 def social_items():
     """Panel de redes: quejas y noticias públicas de páginas y grupos de Facebook de La Línea."""
@@ -232,6 +244,8 @@ def triage_candidate(cid:int,body:TriageIn):
         except ValueError: raise HTTPException(400,'La hora debe tener formato ISO 8601')
     if priority=='no_interest':
         db.exec_("UPDATE candidates SET editorial_priority=?,planned_at=NULL,plan_locked=0,plan_reason=NULL,status='archived' WHERE id=?",(priority,cid))
+        try: learn.learn_from(cid)  # aprende para no volver a enseñar noticias así
+        except Exception as e: db.log('learn_error',str(e)[:200])
         db.exec_("UPDATE articles SET status='rejected' WHERE candidate_id=? AND status='draft'",(cid,))
     else:
         db.exec_("UPDATE candidates SET editorial_priority=?,planned_at=?,plan_locked=?,plan_day=?,plan_reason=NULL,status=CASE WHEN status='archived' THEN 'new' ELSE status END WHERE id=?",(priority,planned,locked,plan_day,cid))
@@ -834,6 +848,8 @@ def delete_article(aid:int):
         return {'ok':True,'hidden':True}
     db.exec_("UPDATE articles SET status='rejected',scheduled_at=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=?",(aid,))
     db.exec_("UPDATE candidates SET status='archived',editorial_priority='no_interest',planned_at=NULL WHERE id=?",(a['candidate_id'],))
+    try: learn.learn_from(a['candidate_id'])
+    except Exception as e: db.log('learn_error',str(e)[:200])
     db.log('delete',f'Noticia {aid} eliminada')
     return {'ok':True}
 
@@ -957,8 +973,10 @@ def archive_candidate(cid:int):
     c=db.row('SELECT id,status FROM candidates WHERE id=?',(cid,))
     if not c: raise HTTPException(404)
     if c['status'] not in ('new','researched','draft'): raise HTTPException(400,'Esta pieza ya está en revisión')
-    db.exec_("UPDATE candidates SET status='archived' WHERE id=?",(cid,))
+    db.exec_("UPDATE candidates SET status='archived',editorial_priority='no_interest' WHERE id=?",(cid,))
     db.exec_("UPDATE articles SET status='rejected' WHERE candidate_id=? AND status='draft'",(cid,))
+    try: learn.learn_from(cid)
+    except Exception as e: db.log('learn_error',str(e)[:200])
     return {'ok':True}
 @app.post('/api/candidates/{cid}/prepare',dependencies=[Depends(require_auth)])
 def prepare(cid:int,research:bool=False):
@@ -1679,6 +1697,12 @@ def mark_final_images():
 
 @app.on_event('startup')
 def startup():
+    try:  # una vez: aprende de lo que ya descartaste en el último mes
+        if not db.get_setting('learn_boot_747',''):
+            for r in db.rows("SELECT id FROM candidates WHERE editorial_priority='no_interest' AND created_at>=datetime('now','-30 day') ORDER BY id"):
+                learn.learn_from(r['id'])
+            db.set_setting('learn_boot_747','1'); sources.archive_off_topic()
+    except Exception as e: db.log('learn_error',str(e)[:200])
     threading.Thread(target=lambda: storage.cleanup(deep=storage.free_bytes()<storage.LOW),daemon=True).start()
     try: restore_final_covers()
     except Exception as e: db.log('cover_fix_error',str(e)[:250])

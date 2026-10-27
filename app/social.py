@@ -214,7 +214,8 @@ def cleanup():
     n = 0
     for r in db.rows("""SELECT id,title,excerpt,outlet FROM candidates WHERE social_type IS NOT NULL
                         AND status NOT IN ('archived','published') AND editorial_priority IN ('undecided','')"""):
-        if not local_post((r['title'] or '') + ' ' + (r['excerpt'] or ''), (r.get('outlet') or '').strip().lower() in names):
+        from . import learn
+        if learn.blocked(r['title'] or '') or not local_post((r['title'] or '') + ' ' + (r['excerpt'] or ''), (r.get('outlet') or '').strip().lower() in names):
             db.exec_("UPDATE candidates SET status='archived',reason='Fuera de La Línea' WHERE id=?", (r['id'],)); n += 1
     return n
 

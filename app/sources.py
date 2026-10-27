@@ -1014,6 +1014,10 @@ def add_candidate(title, url, excerpt, source_name, source_id=None, published_at
         return None  # titular de otro municipio (Algeciras, San Roque…) sin nada de La Línea
     if url and (db.row('SELECT 1 FROM candidates WHERE url=?', (url,)) or db.row('SELECT 1 FROM candidate_links WHERE url=?', (url,))):
         return None
+    if not (source_meta.get('official') and source_meta.get('local_scope')):
+        from . import learn
+        if learn.blocked(title, excerpt):
+            return None  # se parece a lo que descartas («No sirve»)
     if similar_to_published(title) and not (source_meta.get('official') and source_meta.get('local_scope')): return None
     official_local = bool(source_meta.get('official') and source_meta.get('local_scope'))
     same = None if official_local else (find_tender(title) if tender else find_story(title, excerpt=excerpt))
@@ -1431,6 +1435,12 @@ def archive_off_topic():
                         WHERE c.status IN ('new','researched','needs_config') AND c.editorial_priority IN ('undecided','')
                         AND c.social_type IS NULL"""):
         title, excerpt = r['title'] or '', r['excerpt'] or ''
+        if not (r.get('local_scope') and r.get('official')):
+            from . import learn
+            why = learn.blocked(title, excerpt)
+            if why:
+                db.exec_("UPDATE candidates SET status='archived',reason=? WHERE id=?", (why[:200], r['id'])); n += 1
+                continue
         if r.get('kind') == 'social' and (r.get('brand') or 'infolinense') == 'infolinense' and other_place(title + ' ' + excerpt[:600]):
             db.exec_("UPDATE candidates SET status='archived',reason='Fuera de La Línea' WHERE id=?", (r['id'],)); n += 1
             continue

@@ -656,3 +656,26 @@ class StorageCleanupTests(unittest.TestCase):
         self.assertTrue(keep.exists()); self.assertFalse(orphan.exists()); self.assertTrue(new.exists())
         storage.cleanup(deep=True)  # recién bajada (<10 min): se respeta
         self.assertTrue(new.exists()); self.assertTrue(keep.exists())
+
+
+class LearnFromDiscardsTests(unittest.TestCase):
+    def test_learns_place_and_blocks(self):
+        from app import db, learn, sources
+        from datetime import datetime, timezone
+        cid = db.exec_("INSERT INTO candidates(title,url,status) VALUES(?,?,'new')",
+                       ('Un vecino de Castelldefels gana el premio de pintura', 'https://x.test/castell1'))
+        db.exec_("UPDATE candidates SET editorial_priority='no_interest',status='archived' WHERE id=?", (cid,))
+        self.assertIn('Castelldefels', learn.learn_from(cid))
+        self.assertTrue(learn.blocked('Obras en el paseo de Castelldefels'))
+        self.assertFalse(learn.blocked('Obras en el paseo de Poniente de La Línea'))
+        meta = {'name': 'X', 'priority': 60, 'official': 0, 'local_scope': 1}
+        now = datetime.now(timezone.utc).isoformat()
+        self.assertIsNone(sources.add_candidate('Castelldefels estrena carril bici', 'https://x.test/castell2', '', 'X', None, now, meta))
+        learn.remove('castelldefels')
+        self.assertFalse(learn.blocked('Obras en el paseo de Castelldefels'))
+
+    def test_never_learns_from_good_news(self):
+        from app import db, learn
+        db.exec_("INSERT INTO candidates(title,url,status,editorial_priority) VALUES('Nuevo carril en Alcaidesa','https://x.test/alc1','new','today')")
+        cid = db.exec_("INSERT INTO candidates(title,url,status) VALUES('Fiesta privada en Alcaidesa','https://x.test/alc2','new')")
+        self.assertNotIn('Alcaidesa', learn.learn_from(cid))

@@ -1089,11 +1089,18 @@ async function settings(v) {
         ${s.last_error ? `<p class="srcerr small"><span class="error">${esc(s.last_error.slice(0, 220))}</span><br><span class="muted">${esc(s.url.slice(0, 90))}</span></p>` : ''}`;
       }).join('') || '<p class="muted small">Ninguna todavía.</p>'}</div>
 </section>
+    <section class="panel"><h2>Lo que no quieres ver</h2><p class="muted small">Se aprende solo cuando marcas «No sirve» o eliminas una noticia: esas palabras o sitios ya no vuelven a salir. Quita la que no quieras.</p>
+      <div class="sources" id="learnList"></div>
+      <form id="addLearn" class="row wrap"><input name="label" placeholder="Palabra o sitio (p. ej. Castelldefels)" required><button class="btn small">Añadir</button></form></section>
     <section class="panel"><h2>Páginas y grupos de Facebook vigilados</h2><p class="muted small">Solo lo público. Se buscan quejas, propuestas y asociaciones.</p>
       <div class="sources" id="fbList"></div>
       <form id="addFb" class="stack"><input name="name" placeholder="Nombre (p. ej. AVV La Atunara)" required><input name="url" type="url" placeholder="https://www.facebook.com/groups/…" required><button class="btn small">Vigilar</button></form></section>
     <button class="btn" onclick="logout()">Salir</button>`;
   api('/api/social').then(d => { $('#fbList').innerHTML = d.watched.filter(x => (x.brand || 'infolinense') === SB).map(s => `<div class="srcrow"><label class="switch"><input type="checkbox" ${s.active ? 'checked' : ''} onchange="toggleSource(${s.id})"> ${esc(s.name)}</label></div>`).join('') || '<p class="muted small">Ninguna todavía.</p>' }).catch(() => { });
+  const showLearn = d => { $('#learnList').innerHTML = d.items.map(t => `<div class="srcrow"><span title="${esc(t.example || '')}">${esc(t.label)}</span><button class="link small" data-unlearn="${esc(t.term)}">Quitar</button></div>`).join('') || '<p class="muted small">Nada todavía.</p>' };
+  api('/api/learned').then(showLearn).catch(() => {});
+  $('#learnList').onclick = async e => { const t = e.target.dataset.unlearn; if (!t) return; try { showLearn(await api('/api/learned/' + encodeURIComponent(t), { method: 'DELETE' })) } catch (er) { toast(er.message) } };
+  $('#addLearn').onsubmit = async e => { e.preventDefault(); try { showLearn(await api('/api/learned', { method: 'POST', body: JSON.stringify(Object.fromEntries(new FormData(e.target))) })); e.target.reset(); toast('Ya no saldrán noticias con eso') } catch (er) { toast(er.message) } };
   $('#addFb').onsubmit = async e => { e.preventDefault(); const d = Object.fromEntries(new FormData(e.target)); try { await api('/api/sources', { method: 'POST', body: JSON.stringify({ ...d, kind: 'social', priority: 60, local_scope: true }) }); toast('Ahora se vigila'); render() } catch (er) { toast(er.message) } };
   $('#aiCheck').onclick = async e => {
     e.target.disabled = true; e.target.textContent = 'Comprobando…';

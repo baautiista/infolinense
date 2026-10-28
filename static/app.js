@@ -1116,7 +1116,7 @@ async function settings(v) {
   settingsBrand = settingsBrand || netBrand();
   const SB = settingsBrand, B = brandOf(SB), q = '?brand=' + SB;
   const [h, caps, allSrcs, nets] = await Promise.all([api('/api/health'), api('/api/capabilities'), api('/api/sources'), api('/api/networks' + q).catch(() => ({}))]);
-  const srcs = allSrcs.filter(s => (s.brand || 'infolinense') === SB);
+  const srcs = allSrcs.filter(s => (s.brand || 'infolinense') === SB && s.kind !== 'social');
   const isMain = SB === 'infolinense';
   const T = B.templates || {};
   v.innerHTML = `<section class="panel brandpick"><h2>Medio</h2><p class="muted small">Plantilla de Canva, redes, web y fuentes de cada medio.</p>
@@ -1185,17 +1185,30 @@ async function settings(v) {
     <section class="panel"><h2>Sitios que no te interesan</h2><p class="muted small">Se aprende por contexto: al descartar una noticia que NO es de La Línea, se guardan los sitios de los que habla (p. ej. Castelldefels, Lima). Solo frenan noticias de esos sitios: lo que sea de La Línea entra siempre, trate del tema que trate. Lo que descartas de La Línea no vuelve a salir desde otro medio, salvo que haya un cambio importante.</p>
       <div class="sources" id="learnList"></div>
       <form id="addLearn" class="row wrap"><input name="label" placeholder="Sitio (p. ej. Castelldefels)" required><button class="btn small">Añadir</button></form></section>
-    <section class="panel"><h2>Páginas y grupos de Facebook vigilados</h2><p class="muted small">Solo lo público. Se buscan quejas, propuestas y asociaciones.</p>
+    <section class="panel"><h2>Fuentes de redes sociales</h2><p class="muted small">Facebook e Instagram: el panel SOLO lee las cuentas de esta lista y no descubre otras. Cómo se lee cada una: <b>API</b> (página que administras o cuenta profesional de Instagram), <b>buscador</b> (lo que Google tenga indexado: parcial) o <b>no se puede leer</b>.</p>
       <div class="sources" id="fbList"></div>
-      <form id="addFb" class="stack"><input name="name" placeholder="Nombre (p. ej. AVV La Atunara)" required><input name="url" type="url" placeholder="https://www.facebook.com/groups/…" required><button class="btn small">Vigilar</button></form></section>
+      <form id="addFb" class="soc-form"><select name="network"><option value="facebook">Facebook</option><option value="instagram">Instagram</option></select><input name="account" placeholder="URL, usuario o identificador" required><input name="name" placeholder="Nombre (p. ej. AVV La Atunara)" required><button class="btn primary small">Añadir</button></form></section>
     <button class="btn" onclick="logout()">Salir</button>`;
-  api('/api/social').then(d => { $('#fbList').innerHTML = d.watched.filter(x => (x.brand || 'infolinense') === SB).map(s => `<div class="srcrow"><label class="switch"><input type="checkbox" ${s.active ? 'checked' : ''} onchange="toggleSource(${s.id})"> ${esc(s.name)}</label></div>`).join('') || '<p class="muted small">Ninguna todavía.</p>' }).catch(() => { });
+  const socUrl = (net, acc) => { acc = acc.trim(); if (/^https?:\/\//i.test(acc)) return acc; acc = acc.replace(/^@/, ''); return net === 'instagram' ? `https://www.instagram.com/${acc}/` : /^\d+$/.test(acc) ? `https://www.facebook.com/profile.php?id=${acc}` : `https://www.facebook.com/${acc}`; };
+  const MODE = { api: ['API', 'pub'], buscador: ['Buscador (parcial)', 'warn'], no: ['No se puede leer', 'bad'] };
+  const drawSoc = () => api('/api/social').then(d => { $('#fbList').innerHTML = d.watched.filter(x => (x.brand || 'infolinense') === SB).map(s => { const m = MODE[s.access_mode] || ['Sin revisar', '']; const net = s.network || (/instagram/.test(s.url) ? 'instagram' : 'facebook');
+      return `<div class="soc-row"><label class="switch"><input type="checkbox" ${s.active ? 'checked' : ''} onchange="toggleSource(${s.id})"></label><span class="net-badge ${net}">${net === 'instagram' ? 'Instagram' : 'Facebook'}</span>
+        <div class="grow"><b>${esc(s.name)}</b><a class="small" href="${safeUrl(s.url)}" target="_blank" rel="noopener">${esc(s.url.replace(/^https?:\/\/(www\.)?/, ''))}</a>
+        <span class="small muted">Lectura: <span class="mode ${m[1]}">${m[0]}</span> · Última revisión: ${s.last_checked_at ? esc(whenText(utcToMadrid(s.last_checked_at))) : 'nunca'}</span>${s.last_error ? `<span class="error small">${esc(s.last_error.slice(0, 200))}</span>` : ''}</div>
+        <button class="link small" data-socedit="${s.id}">Editar</button><button class="link small danger" data-socdel="${s.id}">Eliminar</button></div>` }).join('') || '<p class="muted small">Ninguna todavía. Sin cuentas aquí, no entra nada de Facebook ni de Instagram.</p>';
+    $('#fbList').querySelectorAll('[data-socdel]').forEach(b => b.onclick = async () => { try { await api('/api/sources/' + b.dataset.socdel, { method: 'DELETE' }); toast('Fuente eliminada'); drawSoc() } catch (e) { toast(e.message) } });
+    $('#fbList').querySelectorAll('[data-socedit]').forEach(b => b.onclick = () => { const s = d.watched.find(x => x.id === +b.dataset.socedit); const sheet = document.createElement('div'); sheet.className = 'sheet-bg';
+      sheet.innerHTML = `<div class="sheet" role="dialog" aria-label="Editar fuente"><h2>Editar fuente</h2><label>Nombre<input id="seName" value="${esc(s.name)}"></label><label>Dirección<input id="seUrl" value="${esc(s.url)}"></label><div class="row"><button class="btn" id="seNo">Cancelar</button><button class="btn primary" id="seOk">Guardar</button></div></div>`;
+      document.body.appendChild(sheet); sheet.onclick = e => { if (e.target === sheet) sheet.remove() }; sheet.querySelector('#seNo').onclick = () => sheet.remove();
+      sheet.querySelector('#seOk').onclick = async () => { try { await api('/api/sources/' + s.id, { method: 'PUT', body: JSON.stringify({ name: sheet.querySelector('#seName').value, url: sheet.querySelector('#seUrl').value, kind: 'social', priority: s.priority || 60, official: !!s.official, local_scope: !!s.local_scope, brand: s.brand || 'infolinense' }) }); sheet.remove(); toast('Guardado'); drawSoc() } catch (e) { toast(e.message) } } });
+  }).catch(() => { });
+  drawSoc();
   const showLearn = d => { $('#learnList').innerHTML = d.items.map(t => `<div class="srcrow"><span title="${esc(t.example || '')}">${esc(t.label)}</span><button class="link small" data-unlearn="${esc(t.term)}">Quitar</button></div>`).join('') || '<p class="muted small">Nada todavía.</p>' };
   api('/api/learned').then(showLearn).catch(() => {});
   drawPush();
   $('#learnList').onclick = async e => { const t = e.target.dataset.unlearn; if (!t) return; try { showLearn(await api('/api/learned/' + encodeURIComponent(t), { method: 'DELETE' })) } catch (er) { toast(er.message) } };
   $('#addLearn').onsubmit = async e => { e.preventDefault(); try { showLearn(await api('/api/learned', { method: 'POST', body: JSON.stringify(Object.fromEntries(new FormData(e.target))) })); e.target.reset(); toast('Ya no saldrán noticias con eso') } catch (er) { toast(er.message) } };
-  $('#addFb').onsubmit = async e => { e.preventDefault(); const d = Object.fromEntries(new FormData(e.target)); try { await api('/api/sources', { method: 'POST', body: JSON.stringify({ ...d, kind: 'social', priority: 60, local_scope: true }) }); toast('Ahora se vigila'); render() } catch (er) { toast(er.message) } };
+  $('#addFb').onsubmit = async e => { e.preventDefault(); const d = Object.fromEntries(new FormData(e.target)); try { await api('/api/sources', { method: 'POST', body: JSON.stringify({ name: d.name, url: socUrl(d.network, d.account), kind: 'social', priority: 60, local_scope: true, brand: SB }) }); toast('Fuente añadida'); e.target.reset(); drawSoc() } catch (er) { toast(er.message) } };
   $('#aiCheck').onclick = async e => {
     e.target.disabled = true; e.target.textContent = 'Comprobando…';
     try { const r = await api('/api/ai/check'); $('#aiOut').innerHTML = r.providers.filter(p => p.configured).map(p => `<p class="${p.ok ? 'ok' : 'error'}"><b>${esc(p.provider_name)}</b> ${p.active ? '(en uso)' : ''}: ${p.ok === null ? esc(p.message) : p.ok ? 'funciona' : esc(p.message) + (p.http_status ? ` <small>(HTTP ${p.http_status} ${esc(p.code || '')})</small>` : '')}</p>`).join('') || '<p class="error">Sin claves configuradas.</p>' }

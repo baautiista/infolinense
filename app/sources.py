@@ -1023,6 +1023,15 @@ def adapt_check(title, excerpt=''):
     return True, ''
 
 
+def social_authorized(url, meta=None):
+    """¿El enlace es de una cuenta de Facebook o Instagram que está en tu lista (y activa)?"""
+    from . import social
+    meta = meta or {}
+    if meta.get('kind') == 'social' and meta.get('url') and social.same_account(url, meta['url']):
+        return True
+    return any(social.same_account(url, r['url']) for r in db.rows("SELECT url FROM sources WHERE kind='social' AND active=1"))
+
+
 def lead_text(title, excerpt):
     """Lo que cuenta para saber de qué va una noticia: titular y comienzo. El resto del texto solo cuenta si nombra
     a La Línea más de una vez (una mención de pasada en una noticia de otra ciudad no vale)."""
@@ -1098,6 +1107,8 @@ def add_candidate(title, url, excerpt, source_name, source_id=None, published_at
     if source_meta.get('kind') == 'social' and (source_meta.get('brand') or 'infolinense') == 'infolinense' \
             and other_place(title + ' ' + excerpt[:600]):
         return None  # publicación de redes sobre otro pueblo
+    if re.search(r'(^|\.)(facebook|instagram)\.com/', re.sub(r'^https?://(www\.|m\.)?', '', url or '')) and not social_authorized(url, source_meta):
+        return None  # Facebook e Instagram: solo las cuentas que tú has autorizado en Fuentes de redes sociales
     if adaptable_source(source_meta):
         if not adaptable_ok(title) or not recent_enough(published_at):
             return None
@@ -1276,14 +1287,24 @@ def read_source(source, remember_state=True):
         parts = (target.path or '/').strip('/').split('/')
         account = '/'.join(parts[:2]) if parts[0] == 'groups' else parts[0]
         if not account: raise ValueError('Indica el nombre de la página o grupo')
-        # 1) Si la hermandad te ha dado acceso a su página, se leen sus publicaciones directamente de Facebook (todas)
         from . import social_publish
-        try:
-            direct = social_publish.page_posts_for(source['url'], source.get('name') or '')
-        except Exception:
-            direct = None
-        if direct is not None:
-            return direct
+        mode = lambda m: db.exec_('UPDATE sources SET access_mode=? WHERE id=?', (m, source.get('id')))
+        if 'instagram.com' in host:  # Instagram: API oficial para cuentas profesionales
+            try:
+                direct = social_publish.ig_posts_for(source['url'])
+            except social_publish.SocialError as exc:
+                mode('no'); raise ValueError(str(exc))
+            if direct is not None:
+                mode('api'); return direct
+        else:
+            # 1) Si te han dado acceso a la página (o es tuya), se leen sus publicaciones directamente de Facebook (todas)
+            try:
+                direct = social_publish.page_posts_for(source['url'], source.get('name') or '')
+            except Exception:
+                direct = None
+            if direct is not None:
+                mode('api'); return direct
+        mode('buscador')  # sin acceso por la API: lo que los buscadores tengan indexado (parcial)
         # 2) Sin acceso, Facebook no deja leer la página: se usa lo que los buscadores tienen indexado
         from . import social
         if account == 'profile.php':  # páginas sin nombre: se busca por el nombre de la fuente
@@ -1583,10 +1604,13 @@ def after_new(ids):
 def archive_off_topic():
     """Retira del radar lo que no es de La Línea (ni de Gibraltar con interés) y nadie ha marcado."""
     n = 0
-    for r in db.rows("""SELECT c.id,c.title,c.excerpt,c.source_name,c.local_angle,c.brand,s.local_scope,s.official,s.kind FROM candidates c LEFT JOIN sources s ON s.id=c.source_id
+    for r in db.rows("""SELECT c.id,c.title,c.excerpt,c.url,c.source_name,c.local_angle,c.brand,s.local_scope,s.official,s.kind FROM candidates c LEFT JOIN sources s ON s.id=c.source_id
                         WHERE c.status IN ('new','researched','needs_config') AND c.editorial_priority IN ('undecided','')
                         AND c.social_type IS NULL"""):
         title, excerpt = r['title'] or '', r['excerpt'] or ''
+        if re.search(r'(facebook|instagram)\.com/', r.get('url') or '') and not social_authorized(r['url']):
+            db.exec_("UPDATE candidates SET status='archived',reason='Cuenta de redes no autorizada' WHERE id=?", (r['id'],)); n += 1
+            continue
         if not (r.get('local_scope') and r.get('official')):
             from . import learn
             why = learn.blocked(title, excerpt)

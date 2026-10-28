@@ -286,8 +286,10 @@ class SocialPanel(unittest.TestCase):
 
         class R:
             text = html
+        from app import db
+        db.exec_("INSERT OR IGNORE INTO sources(name,url,kind,priority,official,local_scope,active) VALUES('Vecinos La Línea','https://www.facebook.com/groups/lalineavecinos','social',60,0,1,1)")
         with patch.object(social.requests, 'get', return_value=R()), patch.object(social.ai if hasattr(social, 'ai') else ai, 'provider_chain', return_value=[]):
-            result = social.scan()
+            result = social.scan()  # solo cuentas autorizadas: el grupo está en la lista, la página del Ayuntamiento no
         rows = {r['url']: r for r in social.items()}
         self.assertTrue(result['added'])
         self.assertEqual(social.kind_of('Vendo sofá en La Línea, 50 euros'), None)

@@ -1707,7 +1707,10 @@ def validate_source(s):
 @app.post('/api/sources',dependencies=[Depends(require_auth)])
 def add_source(s:SourceIn):
     values=validate_source(s)
-    try: return {'id':db.exec_('INSERT INTO sources(name,url,kind,priority,official,local_scope,brand) VALUES(?,?,?,?,?,?,?)',values)}
+    try:
+        sid=db.exec_('INSERT INTO sources(name,url,kind,priority,official,local_scope,brand) VALUES(?,?,?,?,?,?,?)',values)
+        if s.kind=='social': db.exec_("UPDATE sources SET network=? WHERE id=?",('instagram' if 'instagram.com' in s.url else 'facebook',sid))
+        return {'id':sid}
     except Exception as e: raise HTTPException(400,str(e))
 @app.put('/api/sources/{sid}',dependencies=[Depends(require_auth)])
 def edit_source(sid:int,s:SourceIn):
@@ -1717,6 +1720,11 @@ def edit_source(sid:int,s:SourceIn):
         db.exec_('''UPDATE sources SET name=?,url=?,kind=?,priority=?,official=?,local_scope=?,brand=?,
                    last_checked_at=NULL,last_error=NULL WHERE id=?''',(*values,sid))
     except Exception as e: raise HTTPException(400,str(e))
+    return {'ok':True}
+@app.delete('/api/sources/{sid}',dependencies=[Depends(require_auth)])
+def delete_source(sid:int):
+    if not db.row('SELECT id FROM sources WHERE id=?',(sid,)): raise HTTPException(404)
+    db.exec_('DELETE FROM sources WHERE id=?',(sid,))
     return {'ok':True}
 @app.post('/api/sources/{sid}/toggle',dependencies=[Depends(require_auth)])
 def toggle_source(sid:int):

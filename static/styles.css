@@ -775,3 +775,12 @@ label{color:var(--ink)}
 @media(min-width:1024px){body.editing .tabs{display:flex}}
 .flag.upd{background:var(--blue);color:#fff}
 .flag.scoop{background:var(--ink);color:var(--lime)}
+.soc-form{display:grid;gap:8px;margin-top:10px}
+@media(min-width:700px){.soc-form{grid-template-columns:140px 1.4fr 1fr auto}}
+.soc-row{display:flex;gap:10px;align-items:flex-start;padding:10px 0;border-bottom:1px solid var(--line)}
+.soc-row .grow{display:grid;gap:2px;min-width:0}
+.soc-row a{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.net-badge{border-radius:999px;padding:2px 9px;font-size:11px;font-weight:800;color:#fff;flex:none;margin-top:2px}
+.net-badge.facebook{background:#1877F2}.net-badge.instagram{background:#C13584}
+.mode{font-weight:800}.mode.pub{color:var(--green)}.mode.warn{color:#9A6B00}.mode.bad{color:var(--red)}
+.link.danger{color:var(--red)}

@@ -98,13 +98,23 @@ def init_db():
         'merged_into':'INTEGER',
         'plan_day':'TEXT',
         'manual_photo':'TEXT',
+        'format':'TEXT',
+        'format_reason':'TEXT',
+        'format_by':'TEXT',
+        'carousel_state':'TEXT',
+        'adapt_json':'TEXT',
         'update_of':'INTEGER',
         'brand':"TEXT NOT NULL DEFAULT 'infolinense'"
     }.items():
         if name not in existing_candidates: c.execute(f'ALTER TABLE candidates ADD COLUMN {name} {ddl}')
+    existing_sources={r[1] for r in c.execute('PRAGMA table_info(sources)')}
+    for name,ddl in {'network':'TEXT','access_mode':'TEXT'}.items():
+        if name not in existing_sources: c.execute(f'ALTER TABLE sources ADD COLUMN {name} {ddl}')
+    # Facebook e Instagram: solo las cuentas que tú autorizas (7.8). Las búsquedas genéricas en esas redes se apagan.
     existing_articles={r[1] for r in c.execute('PRAGMA table_info(articles)')}
     for name,ddl in {
         'carousel_suitable':'INTEGER NOT NULL DEFAULT 0',
+        'network_texts':'TEXT',
         'lote_hash':'TEXT',
         'scheduled_at':'TEXT',
         'section_label':'TEXT',
@@ -185,6 +195,9 @@ def init_db():
     ]
     for n,u,k,p,o,scope in defaults:
         c.execute('INSERT OR IGNORE INTO sources(name,url,kind,priority,official,local_scope) VALUES(?,?,?,?,?,?)',(n,u,k,p,o,scope))
+    # Facebook e Instagram: solo las cuentas que tú autorizas (7.8). Las búsquedas genéricas en esas redes quedan apagadas.
+    c.execute("UPDATE sources SET active=0 WHERE kind!='social' AND (url LIKE '%facebook.com%' OR url LIKE '%instagram.com%')")
+    c.execute("UPDATE sources SET network=CASE WHEN url LIKE '%instagram.com%' THEN 'instagram' ELSE 'facebook' END WHERE kind='social' AND network IS NULL")
     # Nacionales adaptables: solo las búsquedas actuales (las antiguas con otra consulta se apagan)
     temas=[u for n,u,*_ in defaults if n.startswith('Nacionales adaptables · Temas')]
     c.execute(f"UPDATE sources SET active=0 WHERE name LIKE 'Nacionales adaptables · Temas%' AND url NOT IN ({','.join('?'*len(temas))})",temas)

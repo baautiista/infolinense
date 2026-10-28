@@ -906,3 +906,40 @@ def page_posts_for(url, name=''):
                               'image': post.get('full_picture') or '', 'outlet': p.get('name') or ''})
             return [i for i in items if i['url']]
     return None
+
+
+# ---------- leer cuentas de Instagram autorizadas (API oficial: «business discovery») ----------
+
+def ig_username(url):
+    from urllib.parse import urlparse as _up
+    parts = [x for x in (_up(url or '').path or '').split('/') if x]
+    return parts[0].lstrip('@').lower() if parts and parts[0] not in ('p', 'reel', 'reels', 'stories', 'explore') else ''
+
+
+def ig_posts_for(url):
+    """Publicaciones recientes de una cuenta PROFESIONAL de Instagram (empresa o creador), con la cuenta de Instagram
+    conectada a la página de Facebook. Devuelve None si no hay cuenta conectada; lanza SocialError si esa cuenta no
+    se puede leer (personal, privada o inexistente)."""
+    user = ig_username(url)
+    if not user:
+        raise SocialError('Dirección de Instagram no válida')
+    page = _meta()
+    if not (page.get('access_token') and page.get('instagram_id')):
+        return None
+    fields = 'business_discovery.username(%s){username,name,media.limit(15){caption,permalink,timestamp,media_url,thumbnail_url,media_type}}' % user
+    try:
+        data = _graph('GET', '/%s' % page['instagram_id'], params={'fields': fields, 'access_token': page['access_token']})
+    except SocialError as exc:
+        raise SocialError('Instagram no deja leer @%s: solo se pueden leer cuentas profesionales (empresa o creador) y públicas. %s'
+                          % (user, str(exc)[:120]))
+    bd = data.get('business_discovery') or {}
+    items = []
+    for m in (bd.get('media') or {}).get('data') or []:
+        cap = (m.get('caption') or '').strip()
+        if len(cap) < 20 or not m.get('permalink'):
+            continue
+        first = re.split(r'(?<=[.!?])\s|\n', cap, maxsplit=1)[0].strip()
+        items.append({'title': (first if len(first) >= 20 else cap)[:200], 'url': m['permalink'], 'excerpt': cap[:1500],
+                      'published_at': m.get('timestamp') or '', 'image': m.get('thumbnail_url') or m.get('media_url') or '',
+                      'outlet': bd.get('name') or ('@' + user)})
+    return items

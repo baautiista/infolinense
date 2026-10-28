@@ -829,3 +829,14 @@ class FacebookPlaceTests(unittest.TestCase):
         self.assertTrue(social.same_account('https://www.facebook.com/permalink.php?story_fbid=1&id=100064501760045',
                                             'https://www.facebook.com/profile.php?id=100064501760045'))
         gazetteer._names['set'] = set()
+
+
+class AuthorizedSocialTests(unittest.TestCase):
+    def test_only_authorized_accounts(self):
+        from app import db, sources
+        from datetime import datetime, timezone
+        now = datetime.now(timezone.utc).isoformat()
+        meta = {'name': 'Búsqueda web', 'priority': 60, 'official': 0, 'local_scope': 1}
+        self.assertIsNone(sources.add_candidate('Vecinos de La Línea de la Concepción piden arreglar la calle', 'https://www.facebook.com/paginaajena/posts/1', '', 'x', None, now, meta))
+        db.exec_("INSERT OR IGNORE INTO sources(name,url,kind,priority,official,local_scope,active) VALUES('AVV Test','https://www.facebook.com/avvtestlinea','social',60,0,1,1)")
+        self.assertTrue(sources.add_candidate('Vecinos de La Línea de la Concepción piden arreglar la calle Real', 'https://www.facebook.com/avvtestlinea/posts/2', '', 'x', None, now, meta))

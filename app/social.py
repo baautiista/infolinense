@@ -1,9 +1,9 @@
-"""Panel de redes: quejas vecinales y noticias en páginas y grupos públicos de Facebook de La Línea.
+"""Panel de redes: publicaciones de las páginas de Facebook y cuentas de Instagram que TÚ autorizas
+(Ajustes → Fuentes de redes sociales). No se descubren cuentas nuevas por su cuenta.
 
-Facebook no permite leer grupos sin permiso de Meta, así que se trabaja con lo que es público:
-1. Publicaciones indexadas por Google de las páginas y grupos que vigilas (Ajustes → Redes).
-2. Búsqueda de quejas recientes en Facebook sobre La Línea (Google, últimos 3 días).
-3. Si ChatGPT tiene la búsqueda web activada, un barrido extra de quejas y avisos públicos.
+Cómo se lee cada cuenta:
+- Páginas de Facebook que administras y cuentas profesionales de Instagram: API oficial de Meta.
+- Otras páginas de Facebook: Meta no da acceso, así que se usa lo que los buscadores tienen indexado (parcial).
 """
 import re
 from datetime import datetime, timedelta, timezone
@@ -182,7 +182,7 @@ def local_post(text, watched_page=False, url='', page_name=''):
     return sources.strict_local(text)
 
 
-def _add(item, sid, outlet, kind=None, watched_page=False):
+def _add(item, sid, outlet, kind=None, watched_page=False, src=None):
     text = item['title'] + ' ' + item.get('snippet', '')
     kind = kind or kind_of(text)
     if not kind:
@@ -192,7 +192,7 @@ def _add(item, sid, outlet, kind=None, watched_page=False):
     date = sources.parse_es_date(item.get('snippet', '')) or sources.parse_es_date(item.get('title', ''))
     cid = sources.add_candidate(item['title'], item['url'], item.get('snippet', ''), SOURCE_NAME, sid,
                                 date,  # fecha leída de la publicación; vacía si no se conoce
-                                {'priority': 60, 'official': 0, 'local_scope': 1}, outlet=outlet)
+                                {'priority': 60, 'official': 0, 'local_scope': 1, 'kind': 'social', 'url': (src or {}).get('url', '')}, outlet=outlet)
     if cid:
         db.exec_('UPDATE candidates SET social_type=? WHERE id=?', (kind, cid))
     return cid
@@ -210,50 +210,32 @@ def scan():
         target = '/'.join(path.split('/')[:2]) if path.startswith('groups/') else path.split('/')[0]
         host = urlparse(src['url']).hostname or 'facebook.com'
         own = (src.get('brand') or 'infolinense') != 'infolinense'
-        for item in web_search(f'site:{host}/{target}', days=3, limit=15):
+        found = None
+        try:  # API oficial cuando se puede (página tuya o cuenta profesional de Instagram)
+            from . import social_publish
+            api = social_publish.ig_posts_for(src['url']) if 'instagram.com' in host else social_publish.page_posts_for(src['url'], src.get('name') or '')
+            if api is not None:
+                found = [{'title': i['title'], 'url': i['url'], 'snippet': i.get('excerpt', '')} for i in api]
+                db.exec_("UPDATE sources SET access_mode='api',last_checked_at=CURRENT_TIMESTAMP,last_error=NULL WHERE id=?", (src['id'],))
+        except Exception as exc:
+            db.exec_("UPDATE sources SET access_mode='no',last_checked_at=CURRENT_TIMESTAMP,last_error=? WHERE id=?", (str(exc)[:300], src['id']))
+            errors.append('%s: %s' % (src['name'], str(exc)[:150]))
+            continue
+        if found is None:
+            found = web_search(f'site:{host}/{target}', days=3, limit=15)
+            db.exec_("UPDATE sources SET access_mode='buscador',last_checked_at=CURRENT_TIMESTAMP WHERE id=?", (src['id'],))
+        for item in found:
             if not same_account(item.get('url') or '', src['url']):
                 continue  # la búsqueda trajo una publicación de otra página (p. ej. de otro ayuntamiento)
             if own:  # página de una hermandad o agrupación: todo lo que publica es del medio (Cofrade, Carnaval)
                 date = sources.parse_es_date(item.get('snippet', '')) or sources.parse_es_date(item.get('title', ''))
                 cid = sources.add_candidate(item['title'], item['url'], item.get('snippet', ''), src['name'], src['id'], date,
-                                            {'priority': src.get('priority') or 70, 'official': 0, 'local_scope': 1, 'brand': src['brand']},
+                                            {'priority': src.get('priority') or 70, 'official': 0, 'local_scope': 1, 'brand': src['brand'], 'kind': 'social', 'url': src['url']},
                                             outlet=src['name'])
             else:
-                cid = _add(item, sid, src['name'], watched_page=True)
+                cid = _add(item, sid, src['name'], watched_page=True, src=src)
             if cid: added.append(cid)
-    # 2. Quejas vecinales públicas
-    for q in ('site:facebook.com "La Línea" vecinos (queja OR denuncian OR quejan OR reclaman OR abandono)',
-              'site:facebook.com "La Línea de la Concepción" (basura OR baches OR "sin luz" OR ratas OR suciedad OR inseguridad OR aceras)',
-              'site:facebook.com "La Línea" (propuesta OR proponen OR "recogida de firmas" OR piden OR solicitan)',
-              'site:facebook.com ("asociación de vecinos" OR AAVV OR plataforma OR colectivo OR federación) "La Línea"',
-              'site:facebook.com/groups "La Línea" (queja OR denuncia OR propuesta OR asociación)'):
-        for item in web_search(q, days=3, limit=15):
-            cid = _add(item, sid, _page_name(item['url']))
-            if cid: added.append(cid)
-    # 3. Barrido con ChatGPT (búsqueda web), si está disponible
-    try:
-        from . import ai
-        if any(ai.web_enabled(p) for p in ai.provider_chain()):
-            prompt = ('Busca publicaciones PÚBLICAS de los últimos 3 días en páginas y grupos de Facebook de La Línea de la Concepción (Cádiz, junto a Gibraltar) con: '
-                      'quejas de vecinos sobre calles y servicios (limpieza, baches, alumbrado, agua, seguridad, ruidos, tráfico, parques), '
-                      'propuestas ciudadanas, y comunicados o actividades de asociaciones vecinales, colectivos, plataformas, AMPAs, hermandades o clubes. '
-                      'Descarta ventas, anuncios, sorteos, publicidad y noticias de medios compartidas. Descarta TODO lo de otros municipios '
-                      '(Nerja, Málaga, Algeciras, San Roque, Marbella…) y cualquier «La Línea» que no sea La Línea de la Concepción. '
-                      'En summary di siempre el barrio o la calle de La Línea. Solo resultados reales con URL que hayas visto. '
-                      'Devuelve JSON {"items":[{"title","url","page_name","summary","type":"queja|propuesta|asociacion"}]} con máximo 12.')
-            data, _, _ = ai.ask_json(ai.SYSTEM, prompt, web=True, web_required=True, max_tokens=3000)
-            for it in (data.get('items') or [])[:12]:
-                if str(it.get('url', '')).startswith('http'):
-                    text = it.get('title', '') + ' ' + it.get('summary', '')
-                    if SALE.search(text) or MEDIA.search(text):
-                        continue
-                    kind = it.get('type') if it.get('type') in ('queja', 'propuesta', 'asociacion') else None
-                    cid = _add({'title': it.get('title', ''), 'url': it['url'], 'snippet': it.get('summary', '')}, sid,
-                               it.get('page_name') or _page_name(it['url']), kind)
-                    if cid:
-                        added.append(cid)
-    except Exception as exc:
-        errors.append('Búsqueda con IA: ' + str(exc)[:200])
+    # Solo las cuentas autorizadas: ya no se buscan quejas en Facebook en general ni se hace barrido con IA (7.8).
     try:
         sources.after_new(added)
     except Exception as exc:
@@ -269,8 +251,8 @@ def cleanup():
     for r in db.rows("""SELECT id,title,excerpt,outlet,url FROM candidates WHERE social_type IS NOT NULL
                         AND status NOT IN ('archived','published') AND editorial_priority IN ('undecided','')"""):
         from . import learn
-        mine = any(same_account(r.get('url') or '', p['url']) for p in pages)
-        if learn.blocked(r['title'] or '') or not local_post((r['title'] or '') + ' ' + (r['excerpt'] or ''), mine, r.get('url') or '', r.get('outlet') or ''):
+        mine = any(same_account(r.get('url') or '', p['url']) for p in pages if p.get('active'))
+        if not mine or learn.blocked(r['title'] or '') or not local_post((r['title'] or '') + ' ' + (r['excerpt'] or ''), mine, r.get('url') or '', r.get('outlet') or ''):
             db.exec_("UPDATE candidates SET status='archived',reason='Fuera de La Línea' WHERE id=?", (r['id'],)); n += 1
     return n
 

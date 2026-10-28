@@ -14,7 +14,7 @@ from .auth import login, require_auth
 from starlette.concurrency import run_in_threadpool
 from .config import BASE_DIR, RENDER_DIR, UPLOAD_DIR, SCAN_INTERVAL_MINUTES, AUTO_PIPELINE, OPENAI_API_KEY, ADMIN_PASSWORD, JWT_SECRET, PUBLISH_MODE, CORS_ORIGINS, PUBLIC_BASE_URL, AUTO_PUBLISH
 
-VERSION='7.4.9'
+VERSION='7.5.0'
 app=FastAPI(title='InfoLinense Desk',version=VERSION)
 
 from fastapi.responses import JSONResponse as _JR
@@ -468,10 +468,13 @@ def _sort_queue(brand=''):
 
 def _drafting(brand=''):
     rows=db.rows("""SELECT c.id,c.brand,c.title,a.section,a.subtitle,a.section_label,a.image_local IS NOT NULL AND a.image_local!='' has_photo,c.source_name,c.outlet,c.editorial_priority,c.planned_at,c.work_state,c.work_step,c.work_error,
-                      a.id article_id,a.status article_status,a.headline
+                      a.id article_id,a.status article_status,a.headline,
+                      (a.status IN ('review_ready','approved')) needs_image
                       FROM candidates c LEFT JOIN articles a ON a.candidate_id=c.id AND a.status!='rejected'
                       WHERE c.status NOT IN ('archived','published') AND c.editorial_priority IN ('urgent','today','this_week','future')
-                        AND (a.id IS NULL OR a.status='draft')""")
+                        AND (a.id IS NULL OR a.status='draft'
+                             OR (a.status IN ('review_ready','approved') AND COALESCE(a.hidden,0)=0 AND a.scheduled_at IS NULL
+                                 AND NOT (COALESCE(a.render_path,'')!='' AND EXISTS (SELECT 1 FROM canva_designs d WHERE d.article_id=a.id AND d.exported=1))))""")
     rows=_bf(rows,brand)
     order={'urgent':0,'today':1,'this_week':2,'future':3}
     rows.sort(key=lambda r:(order.get(r['editorial_priority'],9),r.get('planned_at') or '9999'))
@@ -483,7 +486,9 @@ def _drafting(brand=''):
 def workflow(brand:str=''):
     """Cuántas piezas hay en cada fase del día."""
     drafting=_drafting(brand)
-    publish=_bf(db.rows("SELECT id,brand FROM articles WHERE status IN ('review_ready','approved')"),brand)
+    publish=_bf(db.rows("""SELECT a.id,a.brand FROM articles a JOIN canva_designs d ON d.article_id=a.id AND d.exported=1
+                           WHERE a.status IN ('review_ready','approved') AND COALESCE(a.hidden,0)=0 AND a.scheduled_at IS NULL
+                           AND COALESCE(a.render_path,'')!=''"""),brand)  # en la cola de Publicar (sin hora)
     published=len(_bf(db.rows("SELECT id,brand FROM articles WHERE status='published' AND updated_at>=date('now')"),brand))
     return {'sort':len(_sort_queue(brand)),'drafting':sum(1 for r in drafting if r['state']!='ready'),
             'errors':sum(1 for r in drafting if r['state']=='error'),'review':sum(1 for r in drafting if r['state']=='ready'),
@@ -867,10 +872,10 @@ def mark_ready(aid:int):
 @app.get('/api/to-publish',dependencies=[Depends(require_auth)])
 def to_publish(brand:str=''):
     rows=db.rows("""SELECT a.id,a.brand,COALESCE(NULLIF(a.headline,''),''||c.title) headline,a.section,a.status,a.image_local,a.publish_url,c.planned_at,c.editorial_priority,c.id candidate_id,
-                      a.scheduled_at,a.scheduled_networks,a.schedule_error,d.exported canva_exported FROM articles a LEFT JOIN candidates c ON c.id=a.candidate_id
+                      a.scheduled_at,a.scheduled_networks,a.schedule_error,a.updated_at,d.exported canva_exported FROM articles a LEFT JOIN candidates c ON c.id=a.candidate_id
                       LEFT JOIN canva_designs d ON d.article_id=a.id
                       WHERE (a.status IN ('review_ready','approved') AND COALESCE(a.hidden,0)=0 AND d.exported=1 AND COALESCE(a.render_path,'')!='')
-                         OR (a.status='published' AND a.updated_at>=date('now') AND COALESCE(a.hidden,0)=0)""")
+                         OR (a.status='published' AND a.updated_at>=datetime('now','-40 day') AND COALESCE(a.hidden,0)=0)""")
     rows=_bf(rows,brand)  # en Publicar solo lo revisado y con imagen final: lo «Sin revisar» o sin imagen sigue en Revisar
     for r in rows: r['has_photo']=bool(r.pop('image_local',None))
     posts=social_publish.posts_for([r['id'] for r in rows])

@@ -595,44 +595,6 @@ function dayTitle(iso) {
   return [rel, (rel === 'Hoy' || rel === 'Mañana' || rel === 'Ayer' ? wd + ' ' : '') + dm];
 }
 function slotOf(planned) { const h = +String(planned || '').slice(11, 13); return !planned ? '' : h < 14 ? 'morning' : h < 20 ? 'afternoon' : 'night' }
-function placeOf(r) {
-  const today = madridDate();
-  if (r.planned_at) { const d = String(r.planned_at).slice(0, 10); return [d < today ? today : d, slotOf(r.planned_at)] }
-  return (r.editorial_priority === 'urgent' || r.editorial_priority === 'today') ? [today, ''] : ['later', ''];
-}
-// Calendario por días y franjas (lo usa Publicar). place(r) → [día, franja]; card(r) → HTML.
-function calendarHtml(rows, place, card) {
-  const today = madridDate();
-  const days = [...new Set([today, addDays(today, 1), ...rows.map(r => place(r)[0])])].sort((a, b) => a === 'later' ? 1 : b === 'later' ? -1 : a.localeCompare(b));
-  return days.map(d => {
-    const inDay = rows.filter(r => place(r)[0] === d);
-    if (d === 'later' && !inDay.length) return '';
-    const [rel, long] = d === 'later' ? ['Más adelante', 'sin fecha fijada'] : dayTitle(d);
-    const unslotted = inDay.filter(r => !place(r)[1]);
-    const slots = d === 'later' ? '' : SLOTS.map(([k, name, icon]) => {
-      const list = inDay.filter(r => place(r)[1] === k).sort((a, b) => String(a._at).localeCompare(String(b._at)));
-      return `<div class="rv-slot" data-date="${d}" data-slot="${k}"><h3><span>${icon}</span> ${name} <b>${list.length || ''}</b></h3>${list.map(card).join('') || '<p class="rv-empty">Arrastra aquí o usa «Mover»</p>'}</div>`;
-    }).join('');
-    return `<section class="rv-day ${d === today ? 'today' : ''}"><header><h2>${esc(rel)}</h2><span>${esc(long)}</span><b>${inDay.length} ${inDay.length === 1 ? 'noticia' : 'noticias'}</b></header>
-      ${unslotted.length ? `<div class="rv-slot rv-loose" data-date="${d === 'later' ? '' : d}" data-slot=""><h3>${d === 'later' ? 'Sin día' : 'Sin hora'} <b>${unslotted.length}</b></h3>${unslotted.map(card).join('')}</div>` : ''}
-      ${slots ? `<div class="rv-slots">${slots}</div>` : ''}</section>`;
-  }).join('');
-}
-function armDrag(v) {
-  v.querySelectorAll('.rv-card[draggable="true"]').forEach(c => { c.ondragstart = e => { e.dataTransfer.setData('text/plain', c.dataset.aid); c.classList.add('dragging') }; c.ondragend = () => c.classList.remove('dragging') });
-  v.querySelectorAll('.rv-slot[data-slot]:not(.rv-loose)').forEach(z => {
-    z.ondragover = e => { e.preventDefault(); z.classList.add('over') };
-    z.ondragleave = () => z.classList.remove('over');
-    z.ondrop = e => {
-      e.preventDefault(); z.classList.remove('over'); const aid = +e.dataTransfer.getData('text/plain'); if (!aid) return;
-      if (z.dataset.slot === 'keep') {  // vista de mes: mismo hora, otro día
-        const tag = document.querySelector(`.mc-item[data-aid="${aid}"] i`); const t = tag ? tag.textContent.trim() : '';
-        return moveTo(aid, z.dataset.date, t ? slotOf('0000-00-00T' + t) : 'morning', t);
-      }
-      moveTo(aid, z.dataset.date, z.dataset.slot);
-    };
-  });
-}
 function whenLabel(at) {
   if (!at) return 'Sin fecha';
   const d = String(at).slice(0, 10), t = String(at).slice(11, 16);
@@ -644,11 +606,11 @@ async function reviewView(v) {
     .sort((a, b) => String(a.planned_at || '9999').localeCompare(String(b.planned_at || '9999')));
   reviewIds = rows.map(r => r.article_id);
   const card = r => `<article class="rv-card" data-aid="${r.article_id}" style="--bc:${brandOf(r.brand).color}">
-      <div class="meta">${brandBadge(r.brand)}${r.section ? secBadge(r.section, r.brand) : ''}<span class="rv-time">${esc(whenLabel(r.planned_at))}</span>${r.editorial_priority === 'urgent' ? '<span class="flag">Urgente</span>' : ''}${r.has_photo ? '' : '<span class="muted small">sin foto</span>'}</div>
+      <div class="meta">${brandBadge(r.brand)}${r.section ? secBadge(r.section, r.brand) : ''}<span class="rv-time">${esc(whenLabel(r.planned_at))}</span>${r.editorial_priority === 'urgent' ? '<span class="flag">Urgente</span>' : ''}${r.needs_image ? '<span class="flag lime">Revisada · falta imagen</span>' : r.has_photo ? '' : '<span class="muted small">sin foto</span>'}</div>
       <h3 class="go" data-go="#editor/${r.article_id}">${esc(r.headline || r.title)}</h3>
       ${r.subtitle ? `<p class="rv-sub">${esc(r.subtitle)}</p>` : ''}
       <div class="rv-actions"><button class="btn small primary" onclick="go('editor/${r.article_id}')">Revisar</button><button class="btn small danger icon" title="Eliminar" aria-label="Eliminar" onclick="removeArticle(${r.article_id})">Eliminar</button></div></article>`;
-  v.innerHTML = rows.length ? `<div class="rv-intro"><p><b>${rows.length}</b> por revisar. Abre cada una, corrige texto, foto e imagen y pulsa «Revisada».</p><p class="muted small">El día y la hora de cada noticia se organizan en <a href="#publish">Publicar</a>.</p></div><div class="list">${rows.map(card).join('')}</div>`
+  v.innerHTML = rows.length ? `<div class="rv-intro"><p><b>${rows.length}</b> por revisar. Abre cada una, corrige texto, foto e imagen y pulsa «Revisada». Pasan a Publicar cuando tienen el texto revisado y la imagen final.</p><p class="muted small">El día y la hora de cada noticia se organizan en <a href="#publish">Publicar</a>.</p></div><div class="list">${rows.map(card).join('')}</div>`
     : `<p class="empty">No queda nada por revisar.</p>${nextPhase('Ir a Publicar', 'publish')}`;
 }
 async function moveTo(aid, date, slot, time) {
@@ -696,29 +658,18 @@ const NET_NAMES = { web: 'Web', instagram: 'Instagram', facebook: 'Facebook', ti
 function netPrefs(available) { return available }  // todas las redes conectadas, siempre
 function saveNetPrefs() { try { localStorage.setItem('nets', JSON.stringify([...document.querySelectorAll('.netpick input:checked')].map(i => i.value))) } catch (e) { } }
 function netStatus(r) { const n = r.networks || {}; return Object.keys(n).map(k => n[k].status === 'published' ? (n[k].url ? `<a class="net ok" href="${safeUrl(n[k].url)}" target="_blank" rel="noopener">${NET_NAMES[k]} ✓</a>` : `<span class="net ok">${NET_NAMES[k]} ✓</span>`) : n[k].status === 'pending' ? `<span class="net">${NET_NAMES[k]}: pendiente de confirmación</span>` : `<span><button class="net bad" title="${esc(n[k].message)}" onclick="retryNet(${r.id},'${k}',this)">${NET_NAMES[k]}: reintentar</button><small class="neterr">${esc(String(n[k].message || '').slice(0, 160))}</small></span>`).join('') }
-// Vista de mes del calendario de Publicar
-let calView = 'days', calMonth = madridDate().slice(0, 7), calFocus = '';
+// Publicar: a la izquierda la cola (listas, sin programar); a la derecha las 9 franjas del día.
+// Se arrastra de la cola a una franja (o se pulsa la franja libre y se elige). Semana y mes: solo resumen.
+const GRID = ['08:30', '10:00', '11:30', '13:00', '16:00', '17:45', '19:30', '21:00', '22:30'];
+let pubMode = 'day', pubDay = '', calMonth = madridDate().slice(0, 7), PUB = null;
 const addMonths = (ym, n) => { const d = new Date(ym + '-15T12:00:00Z'); d.setUTCMonth(d.getUTCMonth() + n); return d.toISOString().slice(0, 7) };
-function monthHtml(rows, place) {
-  const first = calMonth + '-01', today = madridDate();
-  const start = addDays(first, -((new Date(first + 'T12:00:00Z').getUTCDay() + 6) % 7));  // lunes de la primera semana
-  const title = new Date(first + 'T12:00:00Z').toLocaleDateString('es-ES', { month: 'long', year: 'numeric', timeZone: 'UTC' });
-  const cells = Array.from({ length: 42 }, (_, i) => addDays(start, i)).filter((d, i) => i < 35 || d.slice(0, 7) === calMonth);
-  const later = rows.filter(r => place(r)[0] === 'later');
-  return `<div class="mcal"><div class="mc-head"><button class="btn small" data-mstep="-1" aria-label="Mes anterior">‹</button><h2>${esc(title.charAt(0).toUpperCase() + title.slice(1))}</h2><button class="btn small" data-mstep="1" aria-label="Mes siguiente">›</button></div>
-    <div class="mc-grid">${['L', 'M', 'X', 'J', 'V', 'S', 'D'].map(d => `<b class="mc-wd">${d}</b>`).join('')}
-    ${cells.map(d => {
-      const list = rows.filter(r => place(r)[0] === d).sort((a, b) => String(a._at).localeCompare(String(b._at)));
-      const past = d < today, other = d.slice(0, 7) !== calMonth;
-      return `<div class="mc-day rv-slot ${d === today ? 'today' : ''} ${other ? 'other' : ''} ${past ? 'past' : ''}" data-date="${d}" ${past ? '' : 'data-slot="keep"'}>
-        <span class="mc-n">${+d.slice(8, 10)}</span>${list.slice(0, 4).map(r => `<a class="mc-item rv-card ${r.status === 'published' ? 'done' : ''}" ${r.status === 'published' ? '' : 'draggable="true"'} data-aid="${r.id}" href="#editor/${r.id}" style="--bc:${brandOf(r.brand).color}" title="${esc(r.headline)}">${r._at ? `<i>${esc(String(r._at).slice(11, 16))}</i> ` : ''}${esc(r.headline)}</a>`).join('')}
-        ${list.length > 4 ? `<span class="mc-more">+${list.length - 4} más</span>` : ''}</div>`;
-    }).join('')}</div>
-    ${later.length ? `<p class="muted small">Sin día fijado: ${later.length}. Arrástralas a un día del mes.</p><div class="mc-later rv-slot">${later.map(r => `<a class="mc-item rv-card" draggable="true" data-aid="${r.id}" href="#editor/${r.id}" style="--bc:${brandOf(r.brand).color}">${esc(r.headline)}</a>`).join('')}</div>` : ''}</div>`;
-}
+const utcToMadrid = s => { if (!s) return ''; const d = new Date(String(s).replace(' ', 'T') + (/[zZ+]/.test(String(s).slice(10)) ? '' : 'Z')); return isNaN(d) ? '' : d.toLocaleString('sv-SE', { timeZone: 'Europe/Madrid' }).replace(' ', 'T').slice(0, 16) };
+const pubAt = r => r.status === 'published' ? utcToMadrid(r.updated_at) : String(r.scheduled_at || '').slice(0, 16);
+const nearSlot = t => GRID.reduce((best, g) => Math.abs(mins(g) - mins(t)) < Math.abs(mins(best) - mins(t)) ? g : best, GRID[0]);
+const mins = t => +t.slice(0, 2) * 60 + +t.slice(3, 5);
+function shortDay(iso) { const d = new Date(iso + 'T12:00:00Z'); return d.toLocaleDateString('es-ES', { weekday: 'short', day: 'numeric', timeZone: 'UTC' }) }
 async function publishView(v) {
   const rows = await api('/api/to-publish');
-  // Cada medio publica en SUS cuentas: se mira lo conectado de cada uno
   const slugs = BRAND === 'all' ? [...new Set([netBrand(), ...rows.map(r => r.brand || 'infolinense')])] : [BRAND];
   const byBrand = {};
   await Promise.all(slugs.map(async b => { byBrand[b] = await api('/api/networks?brand=' + b).catch(() => ({})) }));
@@ -727,53 +678,146 @@ async function publishView(v) {
   const bname = b => (BRANDS.find(x => x.slug === b) || {}).short || b;
   const offline = slugs.flatMap(b => NETS.filter(n => !(byBrand[b][n] || {}).connected).map(n => (slugs.length > 1 ? bname(b) + ' · ' : '') + NET_NAMES[n]));
   const noNets = b => !NETS.some(n => (byBrand[b] && byBrand[b][n] || {}).connected);
-  const pending = rows.filter(r => !['published', 'draft'].includes(r.status) && !r.scheduled_at);
-  const picker = `<div class="netpick row wrap"><span class="muted small">${slugs.length > 1 ? 'Se publica a la vez en (cada noticia en las cuentas de su medio):' : 'Se publica a la vez en:'}</span>${available.map(n => `<label class="switch"><input type="checkbox" value="${n}" checked> ${NET_NAMES[n]}</label>`).join('')}
+  const today = madridDate(), now = madridNow();
+  if (!pubDay) pubDay = today;
+  const queue = rows.filter(r => r.status !== 'published' && !r.scheduled_at)
+    .sort((a, b) => ({ urgent: 0, today: 1 }[a.editorial_priority] ?? 2) - ({ urgent: 0, today: 1 }[b.editorial_priority] ?? 2) || String(a.planned_at || '9999').localeCompare(String(b.planned_at || '9999')));
+  const placed = rows.filter(r => r.status === 'published' || r.scheduled_at);
+  PUB = { rows, queue, placed };
+  const onDay = d => placed.filter(r => pubAt(r).startsWith(d));
+  const picker = `<div class="netpick row wrap"><span class="muted small">${slugs.length > 1 ? 'Cada noticia sale en las cuentas de su medio:' : 'Sale a la vez en:'}</span><span class="pill-net on">Web</span>${available.map(n => `<label class="switch"><input type="checkbox" value="${n}" checked> ${NET_NAMES[n]}</label>`).join('')}
     ${offline.map(t => `<a class="switch off" href="#settings" title="Sin conectar">${esc(t)}: sin conectar</a>`).join('')}</div>`;
-  rows.forEach(r => r._at = r.status === 'published' ? '' : (r.scheduled_at || r.planned_at || ''));
-  const place = r => {
-    const today = madridDate();
-    if (r.status === 'published') return [today, ''];
-    const at = r._at;
-    if (at) { const d = String(at).slice(0, 10); return [d < today ? today : d, slotOf(at)] }
-    return (r.editorial_priority === 'urgent' || r.editorial_priority === 'today') ? [today, ''] : ['later', ''];
-  };
-  const card = r => {
-    const done = r.status === 'published';
-    const del = `<button class="btn small danger icon" title="Eliminar" aria-label="Eliminar" onclick="removeArticle(${r.id})">Eliminar</button>`;
-    const actions = r.status === 'draft' ? `<div class="rv-actions"><button class="btn small primary" onclick="go('editor/${r.id}')">Revisar</button><button class="btn small" onclick="moveSheet(${r.id})">Mover</button><button class="btn small danger icon" title="Eliminar" aria-label="Eliminar" onclick="removeArticle(${r.id})">Eliminar</button></div>`
-      : done ? `<div class="row wrap">${r.publish_url ? `<a class="net ok" href="${safeUrl(r.publish_url)}" target="_blank" rel="noopener">Web ✓</a>` : ''}${netStatus(r)}${del}</div>`
-      : r.scheduled_at ? `<div class="sched"><b>Se publica sola ${esc(whenText(r.scheduled_at))}</b> · ${schedNets(r)}</div>
-         <div class="rv-actions"><button class="btn small" onclick="publishNow(${r.id},this)">Publicar ahora</button><button class="btn small" onclick="moveSheet(${r.id})">Mover</button><button class="link" onclick="unschedule(${r.id})">Cancelar</button><button class="btn small danger icon" title="Eliminar" aria-label="Eliminar" onclick="removeArticle(${r.id})">Eliminar</button></div>`
-      : `${r.schedule_error ? `<p class="error small">No se pudo publicar a su hora: ${esc(r.schedule_error)}</p>` : ''}
-         <div class="rv-actions"><button class="btn small primary" onclick="scheduleAt(${r.id},'${esc(r._at)}',this)">Programar${r._at ? ' ' + esc(String(r._at).slice(11, 16)) : ''}</button><button class="btn small" onclick="publishNow(${r.id},this)">Publicar ahora</button><button class="btn small" onclick="moveSheet(${r.id})">Mover</button><button class="btn small danger icon" title="Eliminar" aria-label="Eliminar" onclick="removeArticle(${r.id})">Eliminar</button></div>`;
-    return `<article class="rv-card ${done ? 'done' : ''}" ${done ? '' : 'draggable="true"'} data-aid="${r.id}" style="--bc:${brandOf(r.brand).color}">
-      <div class="meta">${brandBadge(r.brand)}${secBadge(r.section, r.brand)}${r._at ? `<span class="rv-time">${esc(String(r._at).slice(11, 16))}</span>` : ''}${done ? '<span class="st st-published">Publicada</span>' : r.status === 'draft' ? '<span class="flag">Sin revisar</span>' : ''}<span class="muted small">${r.canva_exported ? 'Imagen lista' : r.has_photo ? 'Sin imagen de Canva' : 'Sin foto'}</span></div>
+  const modes = `<div class="seg pubmode" role="tablist">${[['day', 'Día'], ['week', 'Semana'], ['month', 'Mes']].map(([k, n]) => `<label><input type="radio" name="pubmode" value="${k}" ${pubMode === k ? 'checked' : ''}><span>${n}</span></label>`).join('')}</div>`;
+  const qcard = r => {
+    const sug = r.planned_at && String(r.planned_at).slice(0, 16) > now ? String(r.planned_at).slice(0, 16) : '';
+    return `<article class="q-card" draggable="true" data-aid="${r.id}" style="--bc:${brandOf(r.brand).color}">
+      <div class="meta">${brandBadge(r.brand)}${secBadge(r.section, r.brand)}${r.editorial_priority === 'urgent' ? '<span class="flag">Urgente</span>' : ''}</div>
       <h3 class="go" data-go="#editor/${r.id}">${esc(r.headline)}</h3>
-      ${!done && (r.brand || 'infolinense') !== 'infolinense' && noNets(r.brand) ? `<p class="error small">${esc(bname(r.brand))} no tiene redes conectadas. <a href="#settings">Conectar</a></p>` : ''}
-      ${actions}</article>`;
+      ${r.schedule_error ? `<p class="error small">No salió a su hora: ${esc(r.schedule_error)}</p>` : ''}
+      ${(r.brand || 'infolinense') !== 'infolinense' && noNets(r.brand) ? `<p class="error small">${esc(bname(r.brand))} sin redes. <a href="#settings">Conectar</a></p>` : ''}
+      <div class="q-actions"><button class="btn small primary" onclick="placeSheet(${r.id})">Elegir hora</button>${sug ? `<button class="btn small" onclick="placeAt(${r.id},'${sug.slice(0, 10)}','${sug.slice(11, 16)}')">${esc(whenText(sug))}</button>` : ''}<button class="btn small" onclick="publishNow(${r.id},this)">Publicar ya</button><button class="btn small danger icon" title="Eliminar" aria-label="Eliminar" onclick="removeArticle(${r.id})">×</button></div></article>`;
   };
-  const viewSwitch = `<div class="seg calview" role="tablist"><label><input type="radio" name="calview" value="days" ${calView === 'days' ? 'checked' : ''}><span>Por días</span></label><label><input type="radio" name="calview" value="month" ${calView === 'month' ? 'checked' : ''}><span>Mes</span></label></div>`;
-  v.innerHTML = rows.length ? `${picker}${viewSwitch}
-    <div class="rv-intro"><p>Organiza ${calView === 'month' ? 'el mes: arrastra cada noticia a otro día o pulsa un día para verlo' : 'el día: arrastra las tarjetas (o «Mover») a otro día o franja'}. Si cambias el día, «hoy», «mañana»… se ajustan solos en el texto.</p>
-      ${pending.length ? `<button class="btn primary" id="schedAll">Programar las ${pending.length} a su hora</button>` : ''}</div>
-    ${calView === 'month' ? monthHtml(rows, place) : calendarHtml(rows, place, card)}`
-    : `<p class="empty">Aún no hay noticias para publicar.</p>${nextPhase('Ir a Revisar', 'review')}`;
-  v.querySelectorAll('[name=calview]').forEach(i => i.onchange = () => { calView = i.value; render() });
+  const scard = r => {
+    const done = r.status === 'published';
+    return `<article class="s-card ${done ? 'done' : ''}" ${done ? '' : 'draggable="true"'} data-aid="${r.id}" style="--bc:${brandOf(r.brand).color}">
+      <div class="meta">${brandBadge(r.brand)}${secBadge(r.section, r.brand)}<span class="s-state ${done ? 'pub' : 'prog'}">${done ? 'Publicada' : 'Programada'}</span>${pubAt(r).slice(11, 16) && !GRID.includes(pubAt(r).slice(11, 16)) && GRID.includes(nearSlot(pubAt(r).slice(11, 16))) && Math.abs(mins(nearSlot(pubAt(r).slice(11, 16))) - mins(pubAt(r).slice(11, 16))) <= 40 ? `<span class="rv-time">${esc(pubAt(r).slice(11, 16))}</span>` : ''}</div>
+      <h3 class="go" data-go="#editor/${r.id}">${esc(r.headline)}</h3>
+      ${done ? `<div class="row wrap">${r.publish_url ? `<a class="net ok" href="${safeUrl(r.publish_url)}" target="_blank" rel="noopener">Web ✓</a>` : ''}${netStatus(r)}</div>`
+        : `<div class="s-actions"><span class="muted small">${schedNets(r)}</span><button class="link small" onclick="publishNow(${r.id},this)">Publicar ya</button><button class="link small" onclick="placeSheet(${r.id})">Cambiar hora</button><button class="link small" onclick="unschedule(${r.id})">Quitar hora</button></div>`}</article>`;
+  };
+  const dayHtml = () => {
+    const list = onDay(pubDay);
+    // franja fija si la hora cae cerca (±40 min); si no, fila propia con su hora (p. ej. publicada a las 02:46)
+    const slotFor = t => { const g = nearSlot(t); return Math.abs(mins(g) - mins(t)) <= 40 ? g : t };
+    const bySlot = {}; list.forEach(r => { const t = slotFor(pubAt(r).slice(11, 16)); (bySlot[t] = bySlot[t] || []).push(r) });
+    const times = [...new Set([...GRID, ...Object.keys(bySlot)])].sort();
+    const [rel, long] = dayTitle(pubDay);
+    const free = GRID.filter(t => !bySlot[t] && `${pubDay}T${t}` > now).length;
+    return `<div class="pub-day">
+      <section class="q-col"><header class="col-h"><h2>Listas</h2><b class="count">${queue.length}</b></header>
+        <p class="muted small">Revisadas y con imagen. Arrástralas a una hora o pulsa «Elegir hora».</p>
+        ${queue.length ? `<button class="btn lime full" id="fillDay" ${free ? '' : 'disabled'}>Rellenar ${free ? free + ' huecos libres' : 'huecos'} de ${esc(rel.toLowerCase())}</button>` : ''}
+        <div class="q-list rv-slot" data-queue="1">${queue.map(qcard).join('') || '<p class="rv-empty">Nada en espera. Lo que revises con imagen aparecerá aquí.</p>'}</div></section>
+      <section class="s-col"><header class="col-h day-nav"><button class="btn small round" data-dstep="-1" aria-label="Día anterior">‹</button><div><h2>${esc(rel)}</h2><span class="muted small">${esc(long)}</span></div><button class="btn small round" data-dstep="1" aria-label="Día siguiente">›</button></header>
+        ${pubDay !== today ? '<button class="link small" data-dgo="today">Volver a hoy</button>' : ''}
+        <ol class="slots">${times.map(t => {
+          const items = (bySlot[t] || []).sort((a, b) => pubAt(a).localeCompare(pubAt(b)));
+          const past = `${pubDay}T${t}` <= now;
+          return `<li class="slot ${items.length ? 'full' : 'free'} ${past ? 'past' : ''}" ${past ? '' : `data-date="${pubDay}" data-time="${t}"`}><time>${t}</time><div class="slot-body">${items.map(scard).join('') || (past ? '<span class="slot-empty">—</span>' : `<button class="slot-add" onclick="slotPick('${pubDay}','${t}')">+ Hueco libre</button>`)}</div></li>`;
+        }).join('')}</ol></section></div>`;
+  };
+  const weekStart = addDays(pubDay, -((new Date(pubDay + 'T12:00:00Z').getUTCDay() + 6) % 7));
+  const weekHtml = () => `<div class="sum-head"><button class="btn small round" data-wstep="-7" aria-label="Semana anterior">‹</button><h2>Semana del ${esc(shortDay(weekStart))}</h2><button class="btn small round" data-wstep="7" aria-label="Semana siguiente">›</button></div>
+    <div class="week">${Array.from({ length: 7 }, (_, i) => addDays(weekStart, i)).map(d => {
+      const list = onDay(d).sort((a, b) => pubAt(a).localeCompare(pubAt(b)));
+      const pub = list.filter(r => r.status === 'published').length;
+      return `<button class="wk-day ${d === today ? 'today' : ''} ${d < today ? 'past' : ''}" data-open="${d}"><span class="wk-name">${esc(dayTitle(d)[0])}</span><span class="wk-date">${esc(shortDay(d))}</span>
+        <span class="wk-bar"><i style="width:${Math.min(100, list.length / GRID.length * 100)}%"></i></span><span class="wk-n"><b>${list.length}</b>/${GRID.length} franjas${pub ? ` · ${pub} publicadas` : ''}</span>
+        <span class="wk-list">${list.slice(0, 4).map(r => `<span><i>${esc(pubAt(r).slice(11, 16))}</i>${esc(r.headline)}</span>`).join('')}${list.length > 4 ? `<span class="muted">+${list.length - 4} más</span>` : ''}</span></button>`;
+    }).join('')}</div>`;
+  const monthHtml = () => {
+    const first = calMonth + '-01';
+    const start = addDays(first, -((new Date(first + 'T12:00:00Z').getUTCDay() + 6) % 7));
+    const title = new Date(first + 'T12:00:00Z').toLocaleDateString('es-ES', { month: 'long', year: 'numeric', timeZone: 'UTC' });
+    const cells = Array.from({ length: 42 }, (_, i) => addDays(start, i)).filter((d, i) => i < 35 || d.slice(0, 7) === calMonth);
+    return `<div class="sum-head"><button class="btn small round" data-mstep="-1" aria-label="Mes anterior">‹</button><h2>${esc(title.charAt(0).toUpperCase() + title.slice(1))}</h2><button class="btn small round" data-mstep="1" aria-label="Mes siguiente">›</button></div>
+      <div class="month">${['L', 'M', 'X', 'J', 'V', 'S', 'D'].map(d => `<b class="mo-wd">${d}</b>`).join('')}${cells.map(d => {
+        const n = onDay(d).length;
+        return `<button class="mo-day ${d === today ? 'today' : ''} ${d.slice(0, 7) !== calMonth ? 'other' : ''} ${d < today ? 'past' : ''}" data-open="${d}"><span>${+d.slice(8, 10)}</span>${n ? `<b class="mo-n">${n}</b>` : ''}</button>`;
+      }).join('')}</div><p class="muted small">El número es cuántas noticias hay programadas o publicadas ese día. Pulsa un día para organizarlo.</p>`;
+  };
+  v.innerHTML = rows.length || pubMode !== 'day' ? `<div class="pub-top">${modes}${picker}</div>${pubMode === 'week' ? weekHtml() : pubMode === 'month' ? monthHtml() : dayHtml()}`
+    : `<p class="empty">Aún no hay noticias listas para publicar. Llegan aquí cuando están revisadas y tienen imagen.</p>${nextPhase('Ir a Revisar', 'review')}`;
+  v.querySelectorAll('[name=pubmode]').forEach(i => i.onchange = () => { pubMode = i.value; if (pubMode === 'month') calMonth = pubDay.slice(0, 7); render() });
+  v.querySelectorAll('[data-dstep]').forEach(b => b.onclick = () => { pubDay = addDays(pubDay, +b.dataset.dstep); render() });
+  v.querySelectorAll('[data-dgo]').forEach(b => b.onclick = () => { pubDay = today; render() });
+  v.querySelectorAll('[data-wstep]').forEach(b => b.onclick = () => { pubDay = addDays(pubDay, +b.dataset.wstep); render() });
   v.querySelectorAll('[data-mstep]').forEach(b => b.onclick = () => { calMonth = addMonths(calMonth, +b.dataset.mstep); render() });
-  v.querySelectorAll('.mc-day[data-date]').forEach(c => c.onclick = e => { if (e.target.closest('a')) return; calView = 'days'; calFocus = c.dataset.date; render() });
-  armDrag(v);
-  if (calFocus) { const el = v.querySelector(`.rv-slot[data-date="${calFocus}"]`); calFocus = ''; if (el) el.closest('.rv-day').scrollIntoView({ behavior: 'smooth' }) }
-  if ($('#schedAll')) $('#schedAll').onclick = async e => {
-    const b = e.target; b.disabled = true; b.textContent = 'Programando…'; let ok = 0; const errs = [];
-    for (const r of pending) {
-      const at = r._at && String(r._at).slice(0, 16) > madridNow() ? String(r._at).slice(0, 16) : null;
-      if (!at) { errs.push('«' + r.headline.slice(0, 40) + '»: sin hora futura'); continue }
-      try { await api(`/api/articles/${r.id}/schedule`, { method: 'POST', body: JSON.stringify({ at, networks: pickedNets() }) }); ok++ } catch (er) { errs.push('«' + r.headline.slice(0, 40) + '»: ' + er.message) }
+  v.querySelectorAll('[data-open]').forEach(b => b.onclick = () => { pubDay = b.dataset.open; pubMode = 'day'; render() });
+  v.querySelectorAll('.q-card,.s-card[draggable="true"]').forEach(c => { c.ondragstart = e => { e.dataTransfer.setData('text/plain', c.dataset.aid); c.classList.add('dragging') }; c.ondragend = () => c.classList.remove('dragging') });
+  v.querySelectorAll('.slot[data-time]').forEach(z => {
+    z.ondragover = e => { e.preventDefault(); z.classList.add('over') };
+    z.ondragleave = () => z.classList.remove('over');
+    z.ondrop = e => { e.preventDefault(); z.classList.remove('over'); const aid = +e.dataTransfer.getData('text/plain'); if (aid) placeAt(aid, z.dataset.date, z.dataset.time) };
+  });
+  const q = v.querySelector('[data-queue]');
+  if (q) { q.ondragover = e => e.preventDefault(); q.ondrop = e => { e.preventDefault(); const aid = +e.dataTransfer.getData('text/plain'); if (aid && PUB.placed.some(r => r.id === aid && r.status !== 'published')) unschedule(aid) } }
+  if ($('#fillDay')) $('#fillDay').onclick = async e => {
+    const b = e.target; b.disabled = true;
+    const freeSlots = GRID.filter(t => !onDay(pubDay).some(r => Math.abs(mins(pubAt(r).slice(11, 16)) - mins(t)) <= 40) && `${pubDay}T${t}` > madridNow());
+    const todo = queue.slice(0, freeSlots.length); let ok = 0; const errs = [];
+    for (const [k, r] of todo.entries()) {
+      b.textContent = `Programando ${k + 1}/${todo.length}…`;
+      try { await placeAt(r.id, pubDay, freeSlots[k], true); ok++ } catch (er) { errs.push('«' + r.headline.slice(0, 40) + '»: ' + er.message) }
     }
     toast(`${ok} programadas` + (errs.length ? ' · ' + errs.slice(0, 2).join(' · ') : '')); render(); counts();
   };
 }
+// Pone una noticia a un día y hora: ajusta «hoy/mañana» del texto si cambia el día y la programa (web + redes marcadas)
+window.placeAt = async (aid, date, time, quiet) => {
+  const at = `${date}T${time}`;
+  if (at <= madridNow()) { if (quiet) throw new Error('esa hora ya ha pasado'); return toast('Esa hora ya ha pasado') }
+  if (!quiet) toast('Programando…');
+  try {
+    await api(`/api/articles/${aid}/move`, { method: 'POST', body: JSON.stringify({ date, slot: slotOf(at), time }) });
+    const r = await api(`/api/articles/${aid}/schedule`, { method: 'POST', body: JSON.stringify({ at, networks: pickedNets() }) });
+    if (!quiet) { toast('Programada: se publicará sola ' + whenText(r.scheduled_at)); render(); counts() }
+  } catch (e) { if (quiet) throw e; toast(e.message); render() }
+};
+// Franja libre pulsada: elige qué noticia de la cola va ahí (sin arrastrar, va bien en el móvil)
+window.slotPick = (date, time) => {
+  const q = (PUB && PUB.queue) || [];
+  if (!q.length) return toast('No hay noticias en espera');
+  const sheet = document.createElement('div'); sheet.className = 'sheet-bg';
+  sheet.innerHTML = `<div class="sheet" role="dialog" aria-label="Elegir noticia"><h2>${esc(dayTitle(date)[0])} · ${time}</h2><p class="muted small">¿Qué noticia sale a esta hora?</p>
+    <div class="pick-list">${q.map(r => `<button class="pick" data-aid="${r.id}">${secBadge(r.section, r.brand)}<span>${esc(r.headline)}</span></button>`).join('')}</div>
+    <div class="row"><button class="btn" id="pkNo">Cancelar</button></div></div>`;
+  document.body.appendChild(sheet);
+  sheet.onclick = e => { if (e.target === sheet) sheet.remove() };
+  sheet.querySelector('#pkNo').onclick = () => sheet.remove();
+  sheet.querySelectorAll('[data-aid]').forEach(b => b.onclick = () => { sheet.remove(); placeAt(+b.dataset.aid, date, time) });
+};
+// Elegir día y franja para una noticia (cola o ya programada)
+window.placeSheet = aid => {
+  const today = madridDate(), now = madridNow();
+  const days = Array.from({ length: 7 }, (_, i) => addDays(today, i));
+  const taken = (d, t) => (PUB ? PUB.placed : []).some(r => r.id !== aid && pubAt(r).startsWith(d) && Math.abs(mins(pubAt(r).slice(11, 16)) - mins(t)) <= 40);
+  let d = pubDay && pubDay >= today ? pubDay : today;
+  const sheet = document.createElement('div'); sheet.className = 'sheet-bg';
+  const draw = () => {
+    sheet.innerHTML = `<div class="sheet" role="dialog" aria-label="Elegir hora"><h2>¿Cuándo sale?</h2>
+      <div class="chips wrapc">${days.map(x => `<button class="chip ${x === d ? 'on' : ''}" data-d="${x}">${esc(dayTitle(x)[0])}${x > addDays(today, 1) ? ' ' + new Date(x + 'T12:00:00Z').getUTCDate() : ''}</button>`).join('')}</div>
+      <div class="pick-slots">${GRID.map(t => { const past = `${d}T${t}` <= now, busy = taken(d, t); return `<button class="pslot ${busy ? 'busy' : ''}" data-t="${t}" ${past ? 'disabled' : ''}>${t}<small>${past ? 'pasada' : busy ? 'ocupada' : 'libre'}</small></button>` }).join('')}</div>
+      <label class="small">Otra hora<input type="time" id="psTime"></label>
+      <div class="row"><button class="btn" id="psNo">Cancelar</button><button class="btn primary" id="psOk">Usar esa hora</button></div></div>`;
+    sheet.querySelectorAll('[data-d]').forEach(b => b.onclick = () => { d = b.dataset.d; draw() });
+    sheet.querySelectorAll('[data-t]').forEach(b => b.onclick = () => { sheet.remove(); placeAt(aid, d, b.dataset.t) });
+    sheet.querySelector('#psNo').onclick = () => sheet.remove();
+    sheet.querySelector('#psOk').onclick = () => { const t = sheet.querySelector('#psTime').value; if (!t) return toast('Escribe una hora'); sheet.remove(); placeAt(aid, d, t) };
+  };
+  sheet.onclick = e => { if (e.target === sheet) sheet.remove() };
+  draw(); document.body.appendChild(sheet);
+};
 window.scheduleAt = async (id, at, b) => {
   // Siempre se elige el día y la hora (viene propuesta la de la planificación)
   const when = await new Promise(res => {

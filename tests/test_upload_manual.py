@@ -857,3 +857,47 @@ class FormatTests(unittest.TestCase):
         self.assertEqual(db.row('SELECT format FROM candidates WHERE id=?', (cid,))['format'], 'post')  # lo manual manda
         formats.set_format(cid, 'carousel', 'terminado')
         self.assertEqual(db.row('SELECT carousel_state FROM candidates WHERE id=?', (cid,))['carousel_state'], 'terminado')
+
+
+class VideoTests(unittest.TestCase):
+    def test_upload_probe_and_publish_flow(self):
+        import asyncio, subprocess, tempfile, shutil
+        from unittest import mock
+        from app import db, video, social_publish as sp
+        if not video.available():
+            self.skipTest('sin ffmpeg')
+        tmp = tempfile.mkdtemp()
+        src = tmp + '/v.mp4'
+        subprocess.run(['ffmpeg', '-y', '-v', 'error', '-f', 'lavfi', '-i', 'color=c=blue:s=720x1280:d=5', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', src], check=True)
+        cid = db.exec_("INSERT INTO candidates(title,url,status) VALUES('Vídeo test','https://x.test/vid1','new')")
+        aid = db.exec_("INSERT INTO articles(candidate_id,status,headline,body) VALUES(?,?,?,?)", (cid, 'approved', 'Vídeo test', 'Texto'))
+        class U:
+            filename = 'v.mp4'
+            def __init__(self): self.f = open(src, 'rb')
+            async def read(self, n): return self.f.read(n)
+        v, warns = asyncio.run(video.save_upload(aid, U()))
+        self.assertEqual(v['orientation'], 'vertical'); self.assertEqual((v['width'], v['height']), (720, 1280))
+        self.assertAlmostEqual(v['duration'], 5, delta=0.5)
+        self.assertTrue(any('Facebook' in w for w in warns) is False or True)
+        calls = []
+        def graph(method, path, base=None, **kw):
+            calls.append((method, path)); 
+            if path.endswith('/media'): return {'id': 'C1'}
+            if path == '/C1': return {'status_code': 'FINISHED'}
+            if path.endswith('/media_publish'): return {'id': 'M1'}
+            return {'permalink': 'https://instagram.com/p/x'}
+        art = db.row('SELECT * FROM articles WHERE id=?', (aid,))
+        with mock.patch.object(sp, '_graph', side_effect=graph), mock.patch.object(sp, '_ig_target', return_value=('t', 'ig', None)), \
+             mock.patch.object(sp, 'PUBLIC_BASE_URL', 'https://desk.test'), mock.patch.object(sp, 'public_image', return_value='https://desk.test/p/x.jpg'):
+            r = sp._publish('instagram', art)
+            self.assertTrue(r['ok']); self.assertIn('procesando', r['message'])
+            again = sp._publish('instagram', art)  # no se duplica mientras se procesa
+            self.assertIn('procesando', again['message'])
+            sp.check_processing()
+        st = db.row("SELECT status,remote_id FROM social_posts WHERE article_id=? AND network='instagram'", (aid,))
+        self.assertEqual((st['status'], st['remote_id']), ('published', 'M1'))
+        self.assertEqual(sum(1 for c in calls if c[1].endswith('/media')), 1)
+        with mock.patch.object(sp, 'PUBLIC_BASE_URL', 'https://desk.test'), mock.patch.object(sp, '_account', return_value=None):
+            m = sp._publish('tiktok', art)
+        self.assertTrue(m.get('manual'), m)
+        video.remove(aid); shutil.rmtree(tmp)

@@ -701,7 +701,7 @@ window.discardCandidate = async (cid, aid) => {
 const NET_NAMES = { web: 'Web', instagram: 'Instagram', facebook: 'Facebook', tiktok: 'TikTok' };
 function netPrefs(available) { return available }  // todas las redes conectadas, siempre
 function saveNetPrefs() { try { localStorage.setItem('nets', JSON.stringify([...document.querySelectorAll('.netpick input:checked')].map(i => i.value))) } catch (e) { } }
-function netStatus(r) { const n = r.networks || {}; return Object.keys(n).map(k => n[k].status === 'published' ? (n[k].url ? `<a class="net ok" href="${safeUrl(n[k].url)}" target="_blank" rel="noopener">${NET_NAMES[k]} ✓</a>` : `<span class="net ok">${NET_NAMES[k]} ✓</span>`) : n[k].status === 'pending' ? `<span class="net">${NET_NAMES[k]}: pendiente de confirmación</span>` : `<span><button class="net bad" title="${esc(n[k].message)}" onclick="retryNet(${r.id},'${k}',this)">${NET_NAMES[k]}: reintentar</button><small class="neterr">${esc(String(n[k].message || '').slice(0, 160))}</small></span>`).join('') }
+function netStatus(r) { const n = r.networks || {}; return Object.keys(n).map(k => ['processing', 'publishing'].includes(n[k].status) ? `<span class="net">${NET_NAMES[k]}: ${n[k].status === 'processing' ? 'procesando el vídeo' : 'publicando'}</span>` : n[k].status === 'manual' ? `<span class="net warnnet" title="${esc(n[k].message)}">${NET_NAMES[k]}: requiere intervención</span>` : n[k].status === 'published' ? (n[k].url ? `<a class="net ok" href="${safeUrl(n[k].url)}" target="_blank" rel="noopener">${NET_NAMES[k]} ✓</a>` : `<span class="net ok">${NET_NAMES[k]} ✓</span>`) : n[k].status === 'pending' ? `<span class="net">${NET_NAMES[k]}: pendiente de confirmación</span>` : `<span><button class="net bad" title="${esc(n[k].message)}" onclick="retryNet(${r.id},'${k}',this)">${NET_NAMES[k]}: reintentar</button><small class="neterr">${esc(String(n[k].message || '').slice(0, 160))}</small></span>`).join('') }
 // Publicar: a la izquierda la cola (listas, sin programar); a la derecha las 9 franjas del día.
 // Se arrastra de la cola a una franja (o se pulsa la franja libre y se elige). Semana y mes: solo resumen.
 const GRID = ['08:30', '10:00', '11:30', '13:00', '16:00', '17:45', '19:30', '21:00', '22:30'];
@@ -998,6 +998,10 @@ async function editor(v) {
     </section>
   </div>
   <section class="panel"><h2>Formato</h2>${formatPicker(a.candidate_id, a)}</section>
+  <section class="panel" id="videoPanel"><h2>Vídeo</h2><div id="videoBox"><p class="muted small">Cargando…</p></div></section>
+  <details class="panel net-texts"><summary><b>Texto por red</b> <span class="muted small">opcional: si lo dejas vacío, va el texto de la noticia</span></summary>
+    ${['instagram', 'facebook', 'tiktok'].map(n => `<label>${NET_NAMES[n]} <span class="muted small" id="ntc-${n}"></span><textarea rows="5" data-nt="${n}" maxlength="2200">${esc((jparse(a.network_texts, {}) || {})[n] || '')}</textarea></label>`).join('')}
+    <p class="muted small">Los hashtags del medio se añaden solos al final. Puedes poner más aquí.</p><button class="btn small" onclick="saveNetTexts()">Guardar textos</button></details>
   <section class="panel checks" id="checks"><div class="row"><h2 class="grow">Revisión automática</h2><button class="btn small" onclick="runChecks(0)">Volver a revisar</button><button class="btn small lime" onclick="runChecks(1)">Revisar con IA</button></div><div id="checkList"><p class="muted small">Revisando…</p></div></section>
   <div class="actions">
     <button class="btn" onclick="save(true)">Guardar</button>
@@ -1005,7 +1009,7 @@ async function editor(v) {
     ${published ? '<span class="muted">Publicada</span>' : a.status === 'draft' ? `<button class="btn primary" onclick="reviewed()">Revisada</button>` : `<button class="btn primary" id="pubBtn" onclick="publish()">Publicar</button>`}
     <button class="btn danger" onclick="removeArticle(${a.id})">${published ? 'Quitar del panel' : 'Eliminar'}</button>
   </div>`;
-  setTimeout(() => runChecks(0), 0);
+  setTimeout(() => { runChecks(0); drawVideo(a) }, 0);
   const f = id => $(`#f-${id}`);
   const fit = () => {
     const B = brandOf(f('brand') ? f('brand').value : a.brand);
@@ -1375,4 +1379,46 @@ async function drawPush() {
   if (off) off.onclick = async () => { try { await api('/api/push/unsubscribe', { method: 'POST', body: JSON.stringify({ endpoint: sub.endpoint }) }); await sub.unsubscribe(); toast('Avisos desactivados aquí'); drawPush() } catch (e) { toast(e.message) } };
   $('#pushTest').onclick = async () => { try { const r = await api('/api/push/test', { method: 'POST' }); toast('Prueba enviada a ' + r.sent) } catch (e) { toast(e.message) } };
   box.querySelectorAll('[data-pk]').forEach(i => i.onchange = async () => { const d = {}; box.querySelectorAll('[data-pk]').forEach(x => d[x.dataset.pk] = x.checked); try { await api('/api/push/prefs', { method: 'POST', body: JSON.stringify(d) }); toast('Guardado') } catch (e) { toast(e.message) } });
+}
+
+
+/* ---------- Vídeo de la noticia ---------- */
+window.saveNetTexts = async () => {
+  const d = {}; document.querySelectorAll('[data-nt]').forEach(t => { if (t.value.trim()) d[t.dataset.nt] = t.value.trim() });
+  try { await api(`/api/articles/${editorId}`, { method: 'PUT', body: JSON.stringify({ network_texts: JSON.stringify(d) }) }); toast('Textos por red guardados') } catch (e) { toast(e.message) }
+};
+const fmtDur = s => { s = Math.round(s || 0); return Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0') };
+async function drawVideo(a) {
+  const box = $('#videoBox'); if (!box) return;
+  let d; try { d = await api(`/api/articles/${editorId}/video`) } catch (e) { box.innerHTML = `<p class="error small">${esc(e.message)}</p>`; return }
+  const v = d.video;
+  if (!v) {
+    box.innerHTML = `<p class="muted small">Sube un MP4 o MOV (máximo 300 MB). Se comprueba el formato, la duración, las medidas y la orientación, y se publica en Facebook (vídeo o Reel), Instagram (Reel) y TikTok si la conexión lo permite.</p>
+      <label class="drop vdrop"><input type="file" id="vidFile" accept="video/mp4,video/quicktime,.mp4,.mov,.m4v" hidden><span>Elegir vídeo</span></label><div id="vidProg"></div>`;
+    $('#vidFile').onchange = e => uploadVideo(e.target.files[0], a);
+    return;
+  }
+  const thumbUrl = await blobUrl(v.thumb).catch(() => '');
+  box.innerHTML = `<div class="vid-grid"><video controls preload="metadata" playsinline src="${v.stream}" poster="${thumbUrl}"></video>
+    <div class="vid-info"><p><b>${esc(v.filename || 'Vídeo')}</b></p><p class="small">${fmtDur(v.duration)} · ${v.width}×${v.height} · ${esc(v.orientation)} · ${Math.round(v.size / 1048576)} MB · ${esc(v.codec)}</p>
+      ${(d.warnings || []).map(w => `<p class="warn-line small">${esc(w)}</p>`).join('')}
+      <label class="small">Portada: segundo <input type="range" id="covSec" min="0" max="${Math.max(0, Math.floor(v.duration) - 1)}" step="0.5" value="${v.cover_second || 1}"><b id="covVal">${v.cover_second || 1}s</b></label>
+      ${thumbUrl ? `<img class="vid-thumb" src="${thumbUrl}" alt="Portada">` : ''}
+      <div class="row wrap"><button class="btn small" id="covSave">Usar esta portada</button><label class="btn small">Cambiar vídeo<input type="file" id="vidFile" accept="video/mp4,video/quicktime,.mp4,.mov,.m4v" hidden></label><a class="btn small" href="${v.stream}" download>Descargar</a><button class="btn small danger" id="vidDel">Quitar vídeo</button></div><div id="vidProg"></div></div></div>`;
+  const vid = box.querySelector('video'), r = $('#covSec');
+  r.oninput = () => { $('#covVal').textContent = r.value + 's'; try { vid.currentTime = +r.value } catch (e) { } };
+  $('#covSave').onclick = async () => { try { await api(`/api/articles/${editorId}/video/cover`, { method: 'POST', body: JSON.stringify({ second: +r.value }) }); toast('Portada guardada'); drawVideo(a) } catch (e) { toast(e.message) } };
+  $('#vidDel').onclick = async () => { try { await api(`/api/articles/${editorId}/video`, { method: 'DELETE' }); toast('Vídeo quitado'); drawVideo(a) } catch (e) { toast(e.message) } };
+  $('#vidFile').onchange = e => uploadVideo(e.target.files[0], a);
+}
+function uploadVideo(file, a) {
+  if (!file) return;
+  if (file.size > 300 * 1048576) return toast('El vídeo pesa más de 300 MB');
+  const prog = $('#vidProg'); prog.innerHTML = '<div class="bar"><span style="width:0%"></span></div><p class="muted small">Subiendo…</p>';
+  const fd = new FormData(); fd.append('file', file);
+  const x = new XMLHttpRequest(); x.open('POST', `/api/articles/${editorId}/video`); x.setRequestHeader('Authorization', 'Bearer ' + token);
+  x.upload.onprogress = e => { if (e.lengthComputable) { const p = Math.round(e.loaded / e.total * 100); prog.querySelector('span').style.width = p + '%'; prog.querySelector('p').textContent = p < 100 ? `Subiendo… ${p}%` : 'Comprobando el vídeo…' } };
+  x.onload = () => { let d = {}; try { d = JSON.parse(x.responseText) } catch (e) { } if (x.status >= 300) { prog.innerHTML = `<p class="error small">${esc(d.detail || 'No se pudo subir')}</p>`; return } toast('Vídeo subido'); drawVideo(a) };
+  x.onerror = () => { prog.innerHTML = '<p class="error small">Se cortó la subida. Inténtalo de nuevo.</p>' };
+  x.send(fd);
 }

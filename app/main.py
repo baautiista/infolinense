@@ -10,6 +10,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from . import db, sources, pipeline, publishers, photos, canva, ai, planner, layout, social, social_publish, brands, ocr, storage, learn, alerts, topics, agenda, stats, formats
+from . import video as videos
 from . import review as checks
 from .auth import login, require_auth
 from starlette.concurrency import run_in_threadpool
@@ -55,6 +56,7 @@ class SourceIn(BaseModel):
     local_scope:bool=False
     brand:str='infolinense'
 class EditArticle(BaseModel):
+    network_texts:str|None=None
     section:str|None=None; headline:str|None=None; headline_size:str|None=None; photo_zoom:float|None=None; photo_x:float|None=None; photo_y:float|None=None; subtitle:str|None=None; body:str|None=None; graphic_summary:str|None=None; image_headline:str|None=None; brand:str|None=None; section_label:str|None=None
 class PhotoChoice(BaseModel): url:str; source:str=''; license:str=''; author:str=''; confirm_permission:bool=False
 class TriageIn(BaseModel): priority:str; planned_at:str|None=None
@@ -273,6 +275,55 @@ def stats_view(days:int=30,brand:str=''):
 def stats_best(brand:str=''): return stats.best_slots(60,brand)
 @app.post('/api/stats/refresh',dependencies=[Depends(require_auth)])
 def stats_refresh(): return {'updated':stats.refresh()}
+
+# ---------- vídeo de la noticia ----------
+def _video_out(aid):
+    v=videos.get(aid)
+    if not v: return {'video':None}
+    out={k:v.get(k) for k in ('id','filename','size','duration','width','height','orientation','codec','cover_second')}
+    out['stream']=videos.signed(v['id']); out['thumb']=f'/api/articles/{aid}/video/thumb'
+    return {'video':out,'warnings':videos.check({'duration':v['duration'] or 0,'width':v['width'] or 0,'height':v['height'] or 0,'orientation':v['orientation'],'codec':v['codec'] or ''},v['size'] or 0)[1]}
+@app.get('/api/articles/{aid}/video',dependencies=[Depends(require_auth)])
+def article_video(aid:int): return _video_out(aid)
+@app.post('/api/articles/{aid}/video',dependencies=[Depends(require_auth)])
+async def article_video_upload(aid:int,file:UploadFile=File(...)):
+    a=db.row('SELECT id,candidate_id,image_local,status FROM articles WHERE id=?',(aid,))
+    if not a: raise HTTPException(404)
+    if a['status']=='published': raise HTTPException(400,'Ya está publicada')
+    if not videos.available(): raise HTTPException(500,'El servidor no tiene ffmpeg instalado todavía (se instala al desplegar la 7.8)')
+    try: v,warns=await videos.save_upload(aid,file)
+    except ValueError as e: raise HTTPException(400,str(e))
+    if not a.get('image_local') or not Path(a['image_local']).is_file():  # la portada sirve de imagen para la web
+        db.exec_("UPDATE articles SET image_local=?,image_kind='video_cover' WHERE id=?",(v['thumb_path'],aid))
+    formats.set_format(a['candidate_id'],'video')
+    db.exec_("DELETE FROM social_posts WHERE article_id=? AND status IN ('error','manual')",(aid,))
+    out=_video_out(aid); out['warnings']=warns; return out
+class CoverIn(BaseModel): second:float
+@app.post('/api/articles/{aid}/video/cover',dependencies=[Depends(require_auth)])
+def article_video_cover(aid:int,body:CoverIn):
+    try: v=videos.set_cover(aid,second=body.second)
+    except ValueError as e: raise HTTPException(400,str(e))
+    a=db.row('SELECT image_kind FROM articles WHERE id=?',(aid,))
+    if a and a.get('image_kind')=='video_cover': db.exec_('UPDATE articles SET image_local=? WHERE id=?',(v['thumb_path'],aid))
+    return _video_out(aid)
+@app.get('/api/articles/{aid}/video/thumb',dependencies=[Depends(require_auth)])
+def article_video_thumb(aid:int):
+    v=videos.get(aid)
+    if not v or not v.get('thumb_path') or not Path(v['thumb_path']).is_file(): raise HTTPException(404)
+    return FileResponse(v['thumb_path'],media_type='image/jpeg',headers={'Cache-Control':'no-store'})
+@app.delete('/api/articles/{aid}/video',dependencies=[Depends(require_auth)])
+def article_video_delete(aid:int):
+    a=db.row('SELECT image_kind,candidate_id FROM articles WHERE id=?',(aid,))
+    videos.remove(aid)
+    if a and a.get('image_kind')=='video_cover': db.exec_("UPDATE articles SET image_local=NULL,image_kind=NULL WHERE id=?",(aid,))
+    if a: formats.set_format(a['candidate_id'],'post')
+    return {'video':None}
+@app.get('/api/video/{vid}/stream')
+def video_stream(vid:int,exp:str='',sig:str=''):
+    if not videos.valid_sig(vid,exp,sig): raise HTTPException(403,'Enlace caducado')
+    v=db.row('SELECT path FROM videos WHERE id=?',(vid,))
+    if not v or not Path(v['path']).is_file(): raise HTTPException(404)
+    return FileResponse(v['path'],media_type=videos.EXTS.get(Path(v['path']).suffix.lower(),'video/mp4'))
 
 class FormatIn(BaseModel):
     format:str|None=None
@@ -560,7 +611,8 @@ def _drafting(brand=''):
                       WHERE c.status NOT IN ('archived','published') AND c.editorial_priority IN ('urgent','today','this_week','future')
                         AND (a.id IS NULL OR a.status='draft'
                              OR (a.status IN ('review_ready','approved') AND COALESCE(a.hidden,0)=0 AND a.scheduled_at IS NULL
-                                 AND NOT (COALESCE(a.render_path,'')!='' AND EXISTS (SELECT 1 FROM canva_designs d WHERE d.article_id=a.id AND d.exported=1))))""")
+                                 AND NOT (COALESCE(a.render_path,'')!='' AND EXISTS (SELECT 1 FROM canva_designs d WHERE d.article_id=a.id AND d.exported=1))
+                                 AND NOT EXISTS (SELECT 1 FROM videos v WHERE v.article_id=a.id)))""")
     rows=_bf(rows,brand)
     order={'urgent':0,'today':1,'this_week':2,'future':3}
     rows.sort(key=lambda r:(order.get(r['editorial_priority'],9),r.get('planned_at') or '9999'))
@@ -572,9 +624,9 @@ def _drafting(brand=''):
 def workflow(brand:str=''):
     """Cuántas piezas hay en cada fase del día."""
     drafting=_drafting(brand)
-    publish=_bf(db.rows("""SELECT a.id,a.brand FROM articles a JOIN canva_designs d ON d.article_id=a.id AND d.exported=1
+    publish=_bf(db.rows("""SELECT a.id,a.brand FROM articles a LEFT JOIN canva_designs d ON d.article_id=a.id
                            WHERE a.status IN ('review_ready','approved') AND COALESCE(a.hidden,0)=0 AND a.scheduled_at IS NULL
-                           AND COALESCE(a.render_path,'')!=''"""),brand)  # en la cola de Publicar (sin hora)
+                           AND ((d.exported=1 AND COALESCE(a.render_path,'')!='') OR EXISTS (SELECT 1 FROM videos v WHERE v.article_id=a.id))"""),brand)  # en la cola de Publicar (sin hora)
     published=len(_bf(db.rows("SELECT id,brand FROM articles WHERE status='published' AND updated_at>=date('now')"),brand))
     return {'sort':len(_sort_queue(brand)),'drafting':sum(1 for r in drafting if r['state']!='ready'),
             'errors':sum(1 for r in drafting if r['state']=='error'),'review':sum(1 for r in drafting if r['state']=='ready'),
@@ -960,7 +1012,8 @@ def to_publish(brand:str=''):
     rows=db.rows("""SELECT a.id,a.brand,COALESCE(NULLIF(a.headline,''),''||c.title) headline,a.section,a.status,a.image_local,a.publish_url,c.planned_at,c.editorial_priority,c.id candidate_id,c.format,c.carousel_state,
                       a.scheduled_at,a.scheduled_networks,a.schedule_error,a.updated_at,d.exported canva_exported FROM articles a LEFT JOIN candidates c ON c.id=a.candidate_id
                       LEFT JOIN canva_designs d ON d.article_id=a.id
-                      WHERE (a.status IN ('review_ready','approved') AND COALESCE(a.hidden,0)=0 AND d.exported=1 AND COALESCE(a.render_path,'')!='')
+                      WHERE (a.status IN ('review_ready','approved') AND COALESCE(a.hidden,0)=0
+                             AND ((d.exported=1 AND COALESCE(a.render_path,'')!='') OR EXISTS (SELECT 1 FROM videos v WHERE v.article_id=a.id)))
                          OR (a.status='published' AND a.updated_at>=datetime('now','-40 day') AND COALESCE(a.hidden,0)=0)""")
     rows=_bf(rows,brand)  # en Publicar solo lo revisado y con imagen final: lo «Sin revisar» o sin imagen sigue en Revisar
     for r in rows: r['has_photo']=bool(r.pop('image_local',None)); r['family']=stats._family(r.get('section'),r.get('headline'))
@@ -1226,6 +1279,9 @@ def edit_article(aid:int,body:EditArticle):
             v=norm_section(v)
         if k=='section_label':
             v=re.sub(r'\s+',' ',v).strip()[:40]
+        if k=='network_texts':
+            try: v=json.dumps({n:str(t)[:2200] for n,t in json.loads(v or '{}').items() if n in social_publish.NETWORKS},ensure_ascii=False)
+            except (ValueError,AttributeError): raise HTTPException(400,'Textos por red no válidos')
         if k=='body':
             v=v[:2200]
             fields.append('social_text=?'); vals.append(v)
@@ -1491,6 +1547,8 @@ def publish_loop():
         except Exception as e: db.log('schedule_error',str(e)[:250])
         try: social_publish.refresh_buffer_posts()
         except Exception as e: db.log('social_error','Buffer: '+str(e)[:200])
+        try: social_publish.check_processing()  # vídeos que las redes están procesando
+        except Exception as e: db.log('social_error','Vídeos: '+str(e)[:200])
         time.sleep(30)
 
 @app.post('/api/articles/{aid}/networks/{network}',dependencies=[Depends(require_auth)])
@@ -1555,9 +1613,11 @@ def public_media(name:str):
         return PlainTextResponse(social_publish.TIKTOK_VERIFY_CONTENT)  # verificación de la URL en TikTok
     if name.startswith('tiktok') and name.endswith('.txt') and (BASE_DIR/'static'/'verify'/name).is_file():
         return FileResponse(BASE_DIR/'static'/'verify'/name,media_type='text/plain')
-    path=social_publish.public_file(name.removesuffix('.jpg'))
+    token,ext=(name.rsplit('.',1)+[''])[:2]
+    path=social_publish.public_file(token)
     if not path: raise HTTPException(404)
-    return FileResponse(path,media_type='image/jpeg')
+    kind={'mp4':'video/mp4','m4v':'video/mp4','mov':'video/quicktime'}.get(ext.lower(),'image/jpeg')
+    return FileResponse(path,media_type=kind)
 
 @app.get('/api/networks',dependencies=[Depends(require_auth)])
 def networks_status(brand:str='infolinense'):
@@ -1801,6 +1861,8 @@ def scheduler_loop():
                 pipeline.queue_useful_pending()
         except Exception as e: db.log('scheduler_error',str(e)[:250])
         try: storage.cleanup(deep=storage.free_bytes()<storage.LOW)
+        except Exception as e: db.log('storage_error',str(e)[:250])
+        try: videos.cleanup()
         except Exception as e: db.log('storage_error',str(e)[:250])
         try: agenda.remind()
         except Exception as e: db.log('agenda_error',str(e)[:250])

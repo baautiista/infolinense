@@ -801,10 +801,21 @@ def publish(network, article):
 def _publish(network, article):
     if network not in NETWORKS:
         raise SocialError('Red desconocida')
-    done = db.row("SELECT * FROM social_posts WHERE article_id=? AND network=? AND status IN ('published','pending')", (article['id'], network))
-    if done:
-        return {'network': network, 'ok': True, 'url': done.get('url') or '',
-                'message': 'Enviada a Buffer; pendiente de confirmación de TikTok' if done['status'] == 'pending' else 'Ya estaba publicada'}
+    done = db.row("SELECT * FROM social_posts WHERE article_id=? AND network=? AND status IN ('published','pending','processing','publishing')", (article['id'], network))
+    if done:  # nunca se publica dos veces (también durante los reintentos)
+        msg = {'pending': 'Enviada a Buffer; pendiente de confirmación de TikTok', 'processing': '%s está procesando el vídeo' % NAMES[network],
+               'publishing': 'Publicándose ahora'}.get(done['status'], 'Ya estaba publicada')
+        return {'network': network, 'ok': True, 'url': done.get('url') or '', 'message': msg}
+    try:  # texto propio de esa red, si lo has escrito
+        texts = json.loads(article.get('network_texts') or '{}')
+        if (texts.get(network) or '').strip():
+            article = dict(article, body=texts[network].strip())
+    except (ValueError, TypeError):
+        pass
+    from . import video as _video
+    vid = _video.get(article['id'])
+    if vid and Path(vid['path']).is_file():
+        return _publish_video(network, article, vid)
     note = ''
     try:
         paths = article_images(article)
@@ -943,3 +954,137 @@ def ig_posts_for(url):
                       'published_at': m.get('timestamp') or '', 'image': m.get('thumbnail_url') or m.get('media_url') or '',
                       'outlet': bd.get('name') or ('@' + user)})
     return items
+
+
+
+# ---------- vídeo: Facebook (vídeo o Reel), Instagram (Reel) y TikTok ----------
+
+class ManualNeeded(SocialError):
+    pass
+
+
+def public_video(path, ttl=2 * 86400):
+    """Dirección pública temporal del vídeo para que la red lo descargue (sin copiarlo)."""
+    if not PUBLIC_BASE_URL.startswith('https://'):
+        raise SocialError('Falta PUBLIC_BASE_URL (https://…) en Railway: las redes necesitan descargar el vídeo')
+    token = secrets.token_urlsafe(24)
+    db.exec_('INSERT INTO public_media VALUES(?,?,?)', (token, str(path), int(time.time()) + ttl))
+    return PUBLIC_BASE_URL + '/p/' + token + Path(str(path)).suffix.lower()
+
+
+def _post_state(article_id, network, status, remote='', url='', message=''):
+    db.exec_('INSERT OR REPLACE INTO social_posts(article_id,network,status,remote_id,url,message,updated_at) VALUES(?,?,?,?,?,?,CURRENT_TIMESTAMP)',
+             (article_id, network, status, remote, url, message[:400]))
+
+
+def _ig_target():
+    direct = _instagram_direct()
+    if direct:
+        return direct['access_token'], direct.get('user_id') or 'me', IG_GRAPH
+    page = _meta()
+    if not (page.get('access_token') and page.get('instagram_id')):
+        raise SocialError('Instagram no está conectado. Conéctalo en Ajustes → Redes sociales.')
+    return page['access_token'], page['instagram_id'], None
+
+
+def _publish_video(network, article, v):
+    aid = article['id']
+    _post_state(aid, network, 'publishing', message='Publicando el vídeo')
+    try:
+        if network == 'facebook':
+            page = _meta()
+            if not page.get('access_token'):
+                raise SocialError('Facebook no está conectado')
+            token, pid = page['access_token'], page['id']
+            url = public_video(v['path'])
+            reel = v['orientation'] == 'vertical' and 3 <= (v['duration'] or 0) <= 90 and (v['width'] or 0) >= 540 and (v['height'] or 0) >= 960
+            if reel:
+                st = _graph('POST', '/%s/video_reels' % pid, data={'upload_phase': 'start', 'access_token': token})
+                vid = st['video_id']
+                up = st.get('upload_url') or 'https://rupload.facebook.com/video-upload/%s/%s' % (META_GRAPH_VERSION, vid)
+                r = requests.post(up, headers={'Authorization': 'OAuth ' + token, 'file_url': url}, timeout=180)
+                if not r.ok:
+                    raise SocialError('Facebook no pudo recibir el vídeo (%s)' % r.text[:150])
+                _graph('POST', '/%s/video_reels' % pid, data={'upload_phase': 'finish', 'video_id': vid, 'video_state': 'PUBLISHED',
+                                                              'description': caption(article, 60000), 'access_token': token})
+                link, kind = 'https://www.facebook.com/reel/%s' % vid, 'Reel'
+            else:
+                d = _graph('POST', '/%s/videos' % pid, base='https://graph-video.facebook.com/' + META_GRAPH_VERSION,
+                           data={'file_url': url, 'description': caption(article, 60000), 'title': (article.get('headline') or '')[:250],
+                                 'access_token': token})
+                vid = d['id']
+                link, kind = 'https://www.facebook.com/%s/videos/%s' % (pid, vid), 'vídeo'
+            _post_state(aid, network, 'processing', 'fbv:%s' % vid, link, 'Facebook está procesando el %s' % kind)
+            return {'network': network, 'ok': True, 'url': link, 'message': 'Facebook está procesando el %s; se publica solo en unos minutos' % kind}
+        if network == 'instagram':
+            token, ig, base = _ig_target()
+            data = {'media_type': 'REELS', 'video_url': public_video(v['path']), 'caption': caption(article, 2200),
+                    'share_to_feed': 'true', 'access_token': token}
+            if v.get('thumb_path') and Path(v['thumb_path']).is_file():
+                data['cover_url'] = public_image(v['thumb_path'])
+            container = _graph('POST', '/%s/media' % ig, base=base, data=data)['id']
+            _post_state(aid, network, 'processing', 'igc:%s' % container, '', 'Instagram está procesando el Reel')
+            return {'network': network, 'ok': True, 'url': '', 'message': 'Instagram está procesando el Reel; se publica solo en unos minutos'}
+        # TikTok: solo con la conexión directa (permiso video.publish). Por Buffer no se manda vídeo desde el panel.
+        if not (_account('tiktok') or {}).get('refresh_token'):
+            raise ManualNeeded('TikTok: el vídeo hay que subirlo a mano (la conexión por Buffer no admite vídeo desde el panel). Descárgalo en la noticia.')
+        info = _tiktok('/post/publish/creator_info/query/', {})
+        options = info.get('privacy_level_options') or ['SELF_ONLY']
+        privacy = TIKTOK_PRIVACY if TIKTOK_PRIVACY in options else options[0]
+        d = _tiktok('/post/publish/video/init/', {
+            'post_info': {'title': caption(article, 2200), 'privacy_level': privacy, 'disable_comment': False,
+                          'disable_duet': False, 'disable_stitch': False, 'video_cover_timestamp_ms': int((v.get('cover_second') or 1) * 1000)},
+            'source_info': {'source': 'PULL_FROM_URL', 'video_url': public_video(v['path'])}})
+        note = '' if privacy == 'PUBLIC_TO_EVERYONE' else ' (privado: TikTok solo deja publicar en público cuando aprueba la app)'
+        _post_state(aid, network, 'processing', 'ttv:%s' % (d.get('publish_id') or ''), '', 'TikTok está procesando el vídeo' + note)
+        return {'network': network, 'ok': True, 'url': '', 'message': 'TikTok está procesando el vídeo' + note}
+    except ManualNeeded as exc:
+        _post_state(aid, network, 'manual', message=str(exc))
+        return {'network': network, 'ok': False, 'manual': True, 'message': str(exc)}
+    except Exception as exc:
+        _post_state(aid, network, 'error', message=str(exc)[:400])
+        return {'network': network, 'ok': False, 'message': str(exc)[:300]}
+
+
+def check_processing():
+    """Revisa los vídeos que las redes están procesando: cuando terminan, se publican (Instagram) o se marcan publicados."""
+    db.exec_("""UPDATE social_posts SET status='error',message='Se cortó mientras se publicaba: pulsa reintentar'
+                WHERE status='publishing' AND updated_at<datetime('now','-15 minutes')""")
+    db.exec_("""UPDATE social_posts SET status='error',message='La red tardó más de un día en procesar el vídeo: reintenta'
+                WHERE status='processing' AND updated_at<datetime('now','-1 day')""")
+    done = 0
+    for p in db.rows("""SELECT p.*,a.brand FROM social_posts p JOIN articles a ON a.id=p.article_id WHERE p.status='processing'
+                        AND p.updated_at>=datetime('now','-1 day')"""):
+        rid = p.get('remote_id') or ''
+        try:
+            with use_brand(p.get('brand') or brands.DEFAULT):
+                if rid.startswith('igc:'):
+                    token, ig, base = _ig_target()
+                    st = _graph('GET', '/' + rid[4:], base=base, params={'fields': 'status_code,status', 'access_token': token})
+                    code = st.get('status_code')
+                    if code == 'FINISHED':
+                        media = _graph('POST', '/%s/media_publish' % ig, base=base, data={'creation_id': rid[4:], 'access_token': token})['id']
+                        link = ''
+                        try:
+                            link = _graph('GET', '/' + media, base=base, params={'fields': 'permalink', 'access_token': token}).get('permalink') or ''
+                        except SocialError:
+                            pass
+                        _post_state(p['article_id'], 'instagram', 'published', media, link, 'Reel publicado en Instagram'); done += 1
+                    elif code in ('ERROR', 'EXPIRED'):
+                        _post_state(p['article_id'], 'instagram', 'error', rid, '', 'Instagram no pudo procesar el vídeo (%s)' % (st.get('status') or code))
+                elif rid.startswith('fbv:'):
+                    page = _meta()
+                    st = _graph('GET', '/' + rid[4:], params={'fields': 'status', 'access_token': page.get('access_token')}).get('status') or {}
+                    if st.get('video_status') == 'ready':
+                        _post_state(p['article_id'], 'facebook', 'published', rid[4:], p.get('url') or '', 'Vídeo publicado en Facebook'); done += 1
+                    elif st.get('video_status') == 'error':
+                        _post_state(p['article_id'], 'facebook', 'error', rid, '', 'Facebook no pudo procesar el vídeo')
+                elif rid.startswith('ttv:'):
+                    st = _tiktok('/post/publish/status/fetch/', {'publish_id': rid[4:]})
+                    if st.get('status') == 'PUBLISH_COMPLETE':
+                        _post_state(p['article_id'], 'tiktok', 'published', rid[4:], '', 'Vídeo publicado en TikTok'); done += 1
+                    elif st.get('status') == 'FAILED':
+                        _post_state(p['article_id'], 'tiktok', 'error', rid, '', 'TikTok no publicó el vídeo: %s' % (st.get('fail_reason') or ''))
+        except SocialError as exc:
+            db.log('video_check_error', ('%s %s: %s' % (p['network'], p['article_id'], exc))[:250])
+    return done

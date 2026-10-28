@@ -13,7 +13,7 @@ DAYS = {'lunes': 0, 'martes': 1, 'miércoles': 2, 'miercoles': 2, 'jueves': 3, '
 KINDS = [('Pleno', r'pleno'), ('Deporte', r'partido|balona|torneo|campeonato|carrera|marat[oó]n|liga'),
          ('Fiesta', r'feria|velada|cabalgata|carnaval|procesi[oó]n|romer[ií]a|fiesta|verbena'),
          ('Cultura', r'concierto|festival|exposici[oó]n|teatro|cine|gala|presentaci[oó]n|recital|charla|conferencia|jornadas?|taller'),
-         ('Plazo', r'plazo|inscripci[oó]n|convocatoria|solicitud(es)?|matr[ií]cula|ayudas?'),
+         ('Plazo', r'plazo|licitaci[oó]n|inscripci[oó]n|convocatoria|solicitud(es)?|matr[ií]cula|ayudas?|exposici[oó]n\s+p[uú]blica|informaci[oó]n\s+p[uú]blica'),
          ('Servicio', r'corte\s+de|cierre|obras|huelga|manifestaci[oó]n|concentraci[oó]n|mercadillo|inauguraci[oó]n|apertura')]
 _KIND_RX = re.compile('|'.join('(?:%s)' % rx for _, rx in KINDS), re.I)
 _DATE = re.compile(r'\b(?:(lunes|martes|mi[eé]rcoles|jueves|viernes|s[aá]bado|domingo)\s*,?\s*)?(\d{1,2})\s+de\s+(%s)(?:\s+de\s+(\d{4}))?'
@@ -66,6 +66,30 @@ def find_date(text, ref=None):
     return best, hhmm
 
 
+_DEADLINE = re.compile(r'(?:plazo|fecha\s+l[ií]mite|presentaci[oó]n\s+de\s+(?:ofertas|solicitudes|alegaciones)|hasta)[^.;\n]{0,60}?'
+                       r'(\d{4}-\d{2}-\d{2}|\d{1,2}[/.-]\d{1,2}[/.-]\d{4}|\d{1,2}\s+de\s+(?:%s)(?:\s+de\s+\d{4})?)' % '|'.join(MONTHS), re.I)
+
+
+def deadline(text, ref=None):
+    """Fecha límite («plazo hasta 2026-11-20», «presentación de ofertas hasta el 3 de diciembre»), si es futura."""
+    ref = ref or datetime.now(TZ).date()
+    m = _DEADLINE.search(text or '')
+    if not m:
+        return None
+    raw = m.group(1)
+    try:
+        if re.fullmatch(r'\d{4}-\d{2}-\d{2}', raw):
+            d = date.fromisoformat(raw)
+        elif re.fullmatch(r'\d{1,2}[/.-]\d{1,2}[/.-]\d{4}', raw):
+            dd, mm, yy = re.split(r'[/.-]', raw)
+            d = date(int(yy), int(mm), int(dd))
+        else:
+            d, _ = find_date(raw, ref)
+    except (ValueError, TypeError):
+        return None
+    return d if d and ref <= d <= ref + timedelta(days=180) else None
+
+
 def from_candidate(cid):
     """Si la noticia anuncia algo con fecha (pleno, concierto, plazo…), va a la agenda."""
     _ensure()
@@ -80,8 +104,14 @@ def from_candidate(cid):
     except ValueError:
         ref = None
     today = datetime.now(TZ).date()
+    if db.row('SELECT 1 FROM events WHERE candidate_id=?', (cid,)):
+        return None
+    limit = deadline(text, today)
+    if limit:  # licitaciones, ayudas, alegaciones: el plazo va a la agenda para no llegar tarde
+        return db.exec_('INSERT INTO events(title,day,time,kind,url,candidate_id) VALUES(?,?,?,?,?,?)',
+                        (('Fin de plazo: ' + c['title'])[:200], limit.isoformat(), '', 'Plazo', c.get('url') or '', cid))
     d, hhmm = find_date(text, max(ref or today, today))
-    if not d or db.row('SELECT 1 FROM events WHERE candidate_id=?', (cid,)):
+    if not d:
         return None
     if db.row('SELECT 1 FROM events WHERE day=? AND active=1 AND lower(title)=lower(?)', (d.isoformat(), c['title'])):
         return None

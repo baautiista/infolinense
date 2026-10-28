@@ -1,8 +1,10 @@
-"""Aprende de lo que descartas («No sirve», Eliminar, Retirar) para no volver a enseñarlo.
+"""Aprende de lo que descartas, por CONTEXTO y no por palabras sueltas.
 
-1. Nombres propios del titular que nunca salen en noticias que sí te sirven (p. ej. «Castelldefels»):
-   las noticias nuevas que los traigan no entran.
-2. Titulares casi iguales a uno descartado (la misma noticia desde otro medio) tampoco entran.
+- Si descartas una noticia que NO es de La Línea, se aprenden los SITIOS de los que habla (Castelldefels, Lima…).
+  Esos sitios solo frenan noticias que no son de La Línea: «urbanismo en La Línea» sigue entrando aunque descartes
+  «urbanismo en Lima».
+- Si descartas una noticia que SÍ es de La Línea, no se aprende ninguna palabra: solo se recuerda esa historia para
+  no volver a enseñarla desde otro medio (salvo que haya un cambio importante; lo hace sources.find_decided).
 Desde Ajustes se ven y se pueden quitar.
 """
 import re
@@ -63,17 +65,25 @@ def _in_good_news(term):
 
 
 def learn_from(cid):
-    """Se llama al descartar una tarjeta: guarda sus nombres propios que nunca salen en lo que te sirve."""
+    """Se llama al descartar una tarjeta. Solo aprende sitios de noticias que no son de La Línea."""
+    from . import gazetteer, sources
     _ensure()
-    c = db.row('SELECT title FROM candidates WHERE id=?', (cid,))
+    c = db.row('SELECT title,excerpt FROM candidates WHERE id=?', (cid,))
     if not c:
         return []
+    title, excerpt = c['title'] or '', c.get('excerpt') or ''
+    if sources.local_lead(title, excerpt):
+        return []  # es de La Línea: no te interesaba esa historia, pero el tema sí puede interesarte otro día
+    found = gazetteer.places_in(title) + gazetteer.places_in(excerpt[:300])
+    if not found:  # sin nomenclátor: lugares por contexto («en X», «de X», «Ayuntamiento de X»)
+        found = [m.group(1) for m in gazetteer._PLACE_CTX.finditer(title)]
     learned = []
-    for term, label in proper_nouns(c['title']):
-        if _in_good_news(term):
+    for label in found:
+        term = _fold(label).strip()
+        if len(term) < 4 or term in _COMMON or _in_good_news(term):
             continue
         db.exec_('''INSERT INTO learned_terms(term,label,hits,example) VALUES(?,?,1,?)
-                    ON CONFLICT(term) DO UPDATE SET hits=hits+1,example=excluded.example''', (term, label, c['title'][:200]))
+                    ON CONFLICT(term) DO UPDATE SET hits=hits+1,example=excluded.example''', (term, label, title[:200]))
         learned.append(label)
     _cache['at'] = 0
     return learned
@@ -84,26 +94,33 @@ def _load():
         return _cache
     _ensure()
     _cache['terms'] = {r['term']: r['label'] for r in db.rows('SELECT term,label FROM learned_terms WHERE active=1')}
-    _cache['titles'] = [(_content(r['title']), r['title']) for r in db.rows(
-        """SELECT title FROM candidates WHERE editorial_priority='no_interest' AND created_at>=datetime('now','-90 day')
-           ORDER BY id DESC LIMIT 1500""")]
     _cache['at'] = time.time()
     return _cache
 
 
 def blocked(title, excerpt=''):
-    """Motivo si se parece a lo que descartas, o ''."""
+    """Motivo si habla de un sitio que descartas y NO es de La Línea; si es de La Línea, nunca bloquea."""
+    from . import sources
+    if sources.local_lead(title, excerpt):
+        return ''
     data = _load()
-    head = _fold(title)
+    head = _fold((title or '') + ' ' + (excerpt or '')[:300])
     for term, label in data['terms'].items():
         if re.search(r'\b%s\b' % re.escape(term), head):
             return 'Aprendido: descartas noticias de «%s»' % label
-    words = _content(title)
-    if len(words) >= 4:
-        for other, old in data['titles']:
-            if other and len(words & other) / len(words | other) >= 0.55:
-                return 'Aprendido: igual a una que descartaste («%s»)' % old[:80]
     return ''
+
+
+def reset_auto():
+    """Una vez (7.7): se olvidan las palabras aprendidas con la regla antigua y se vuelve a aprender por contexto."""
+    _ensure()
+    db.exec_("UPDATE learned_terms SET active=0 WHERE COALESCE(example,'')!='Añadido a mano'")
+    db.exec_("DELETE FROM learned_terms WHERE active=0 AND COALESCE(example,'')!='Añadido a mano'")
+    n = 0
+    for r in db.rows("SELECT id FROM candidates WHERE editorial_priority='no_interest' AND created_at>=datetime('now','-30 day') ORDER BY id"):
+        n += len(learn_from(r['id']))
+    _cache['at'] = 0
+    return n
 
 
 def terms():

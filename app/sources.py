@@ -708,7 +708,7 @@ def page_date(url):
     return ''
 
 
-BLOCKS = ['Ayuntamiento', 'Licitaciones y edictos', 'Otros medios', 'Nacionales adaptables']
+BLOCKS = ['Ayuntamiento', 'Licitaciones y edictos', 'Instituciones y empresas', 'Otros medios', 'Nacionales adaptables']
 
 
 def source_group(row):
@@ -723,6 +723,8 @@ def source_group(row):
         return 'Licitaciones y edictos'
     if 'lalinea.es' in blob or name.startswith('ayuntamiento'):
         return 'Ayuntamiento'
+    if name.startswith('primarias'):
+        return 'Instituciones y empresas'  # Junta, Diputación, Estado, Gibraltar, empresas: antes que los periódicos
     if (row.get('scope') or '') in ('nacional', 'internacional', 'regional') or 'nacional' in name:
         return 'Nacionales adaptables'
     return 'Otros medios'
@@ -887,8 +889,19 @@ def merge_duplicates(days=7):
                       FROM candidates c LEFT JOIN sources s ON s.id=c.source_id
                       WHERE c.status NOT IN ('archived','rejected','merged') AND c.created_at>=? ORDER BY c.id""", (since,))
     rows = [r for r in rows if not _TENDER.search(r['title'] or '') and r.get('social_type') in (None, '')]
-    rank = lambda r: (1 if r.get('article_id') else 0, 1 if (r.get('editorial_priority') or 'undecided') not in ('undecided', '') else 0, -r['id'])
     gone, merged = set(), 0
+    for r in rows:  # lo pendiente que ya decidiste desde otro medio: se une a la decidida (salvo cambio importante)
+        if r.get('article_id') or r.get('official_local') or (r.get('editorial_priority') or 'undecided') not in ('undecided', '') \
+                or r['status'] not in ('new', 'needs_config', 'researched') or r.get('update_of'):
+            continue
+        d = find_decided(r['title'], r.get('excerpt') or '')
+        if d and d['id'] != r['id'] and not important_change(d['title'], d.get('excerpt'), r['title'], r.get('excerpt')):
+            attach_link(d['id'], r['title'], r['url'], r.get('excerpt') or '', r.get('source_name') or '', r.get('outlet') or '', r.get('published_at') or '')
+            db.exec_('UPDATE candidate_links SET candidate_id=? WHERE candidate_id=?', (d['id'], r['id']))
+            db.exec_("UPDATE candidates SET status='merged',merged_into=? WHERE id=?", (d['id'], r['id']))
+            gone.add(r['id']); merged += 1
+    rows = [r for r in rows if r['id'] not in gone]
+    rank = lambda r: (1 if r.get('article_id') else 0, 1 if (r.get('editorial_priority') or 'undecided') not in ('undecided', '') else 0, -r['id'])
     for i, a in enumerate(rows):
         if a['id'] in gone: continue
         for b in rows[i + 1:]:
@@ -1007,6 +1020,74 @@ def adapt_check(title, excerpt=''):
     return True, ''
 
 
+def lead_text(title, excerpt):
+    """Lo que cuenta para saber de qué va una noticia: titular y comienzo. El resto del texto solo cuenta si nombra
+    a La Línea más de una vez (una mención de pasada en una noticia de otra ciudad no vale)."""
+    excerpt = excerpt or ''
+    lead = (title or '') + ' ' + excerpt[:450]
+    if len(_CITY_STRONG.findall(excerpt)) + len(re.findall(r'\bLa\s+L[ií]nea\b', excerpt)) >= 3:
+        lead += ' ' + excerpt
+    return lead
+
+
+def local_lead(title, excerpt=''):
+    """¿Es de La Línea por el contexto (titular o comienzo)?"""
+    return bool(exact_locality(title or '') or exact_locality(lead_text(title, excerpt)))
+
+
+_ctx = {'n': 0}
+CTX_LIMIT = 25  # comprobaciones con IA por búsqueda
+
+
+def ai_context_ok(title, excerpt):
+    """Caso dudoso (La Línea no está en el titular): la IA lee el contexto. Sin IA o sin cupo, vale."""
+    from . import ai
+    if not ai.AI_ENABLED or _ctx['n'] >= CTX_LIMIT:
+        return True
+    _ctx['n'] += 1
+    prompt = ('Noticia: «%s». %s\n¿Trata de La Línea de la Concepción (Cádiz, junto a Gibraltar) o le afecta de forma directa '
+              '(sus vecinos, su Ayuntamiento, sus calles, empresas, clubes o servicios)? Responde NO si es de otra ciudad, región o país '
+              'y La Línea solo sale de pasada o en una lista. Devuelve JSON {"ok": true|false}.') % (title, (excerpt or '')[:900])
+    try:
+        data, _, _ = ai.ask_json(ai.SYSTEM, prompt, max_tokens=60)
+        return bool(data.get('ok')) if isinstance(data, dict) and 'ok' in data else True
+    except Exception:
+        return True
+
+
+_CHANGE = re.compile(r'\b(adjudic\w*|aprueb\w*|aprobad\w*|licita\w*|firm\w*|inici\w*|comienz\w*|empiez\w*|termin\w*|finaliz\w*|'
+                     r'inaugur\w*|abre|abren|cierra|cierran|aplaz\w*|suspend\w*|cancel\w*|anul\w*|rectific\w*|recurs\w*|sentencia\w*|'
+                     r'conden\w*|absuel\w*|detenid\w*|fallec\w*|dimit\w*|dimisi[oó]n|ces[ae]\w*|nombr\w*|ampl[ií]\w*|prorrog\w*|'
+                     r'nueva\s+fecha|retras\w*|denuncia\w*|multa\w*|rechaz\w*|desestim\w*|estima\w*|paraliz\w*|reanud\w*|'
+                     r'ultim\w*|definitiv\w*|oficial\w*|confirm\w*|desmient\w*)\b', re.I)
+
+
+def important_change(old_title, old_excerpt, title, excerpt):
+    """¿La nueva versión trae algo importante que la vista no tenía? (un paso nuevo: se adjudica, se aprueba, se aplaza…,
+    o cifras y fechas nuevas)."""
+    old = (old_title or '') + ' ' + (old_excerpt or '')[:600]
+    new_words = {m.group(0).lower()[:6] for m in _CHANGE.finditer(title or '')}
+    old_words = {m.group(0).lower()[:6] for m in _CHANGE.finditer(old)}
+    if new_words - old_words:
+        return True
+    nums = lambda t: {n for n in re.findall(r'\d[\d.,]*', t or '') if not re.fullmatch(r'20\d\d', n) and len(n) >= 2}
+    return bool(nums(title) - nums(old))
+
+
+def find_decided(title, excerpt='', days=30):
+    """Noticia que ya pasó por tus manos (dijiste que sirve o que no, está en redacción o publicada) y cuenta lo mismo."""
+    if _TENDER.search(title or ''):
+        return None
+    since = (datetime.now(timezone.utc) - timedelta(days=days)).strftime('%Y-%m-%d %H:%M:%S')
+    for c in db.rows("""SELECT c.id,c.title,c.excerpt FROM candidates c WHERE c.created_at>=? AND c.status!='merged'
+                        AND (COALESCE(c.editorial_priority,'undecided') NOT IN ('undecided','') OR c.status='published'
+                             OR EXISTS (SELECT 1 FROM articles a WHERE a.candidate_id=c.id))
+                        ORDER BY c.id DESC LIMIT 600""", (since,)):
+        if story_match(title, excerpt, c['title'], c.get('excerpt')):
+            return c
+    return None
+
+
 def add_candidate(title, url, excerpt, source_name, source_id=None, published_at='', source_meta=None, local_angle='', outlet='', image=''):
     source_meta = source_meta or {'priority': 60, 'official': 0, 'local_scope': 0}
     title, excerpt = clean(title)[:260], clean(excerpt)[:4000]
@@ -1035,7 +1116,7 @@ def add_candidate(title, url, excerpt, source_name, source_id=None, published_at
     if not source_meta.get('local_scope'):
         if tender:
             if not tender_ok(title, excerpt): return None  # edictos y licitaciones de otros ayuntamientos, fuera
-        elif not place_ok(title + ' ' + excerpt, outlet if re.search(r'gibraltar|\.gi\b|chronicle|gbc', outlet or '', re.I) else ''):
+        elif not place_ok(lead_text(title, excerpt), outlet if re.search(r'gibraltar|\.gi\b|chronicle|gbc', outlet or '', re.I) else ''):
             angle = comarca_angle(url) if _COMARCA.search(title + ' ' + excerpt) else ''
             if not angle:
                 return None  # comarcal sin nada de La Línea, o de otro municipio
@@ -1048,16 +1129,31 @@ def add_candidate(title, url, excerpt, source_name, source_id=None, published_at
         return None  # titular de otro municipio (Algeciras, San Roque…) sin nada de La Línea
     if url and (db.row('SELECT 1 FROM candidates WHERE url=?', (url,)) or db.row('SELECT 1 FROM candidate_links WHERE url=?', (url,))):
         return None
+    checked_ctx = source_meta.get('local_scope') or local_angle.startswith('ENFOQUE') or tender
+    if not checked_ctx and not _CITY_STRONG.search(title):
+        from . import gazetteer
+        if gazetteer.places_in(title) and not exact_locality(title) and not gibraltar_topic(title):
+            return None  # el titular es de otro sitio (Castelldefels, Lima…)
+        if not exact_locality(title) and not gibraltar_topic(title) and not ai_context_ok(title, excerpt):
+            return None  # La Línea solo sale de pasada
     if not (source_meta.get('official') and source_meta.get('local_scope')):
         from . import learn
         if learn.blocked(title, excerpt):
-            return None  # se parece a lo que descartas («No sirve»)
+            return None  # sitio que descartas y la noticia no es de La Línea
     if similar_to_published(title) and not (source_meta.get('official') and source_meta.get('local_scope')): return None
     official_local = bool(source_meta.get('official') and source_meta.get('local_scope'))
     same = None if official_local else (find_tender(title) if tender else find_story(title, excerpt=excerpt))
     if same:  # la misma noticia desde otra fuente: se une a la que ya hay
         attach_link(same, title, url, excerpt, source_name, outlet, published_at)
         return None
+    update_of = None
+    decided = None if official_local or tender else find_decided(title, excerpt)
+    if decided:  # ya la viste y decidiste: no vuelve, salvo que haya un cambio importante
+        if not important_change(decided['title'], decided.get('excerpt'), title, excerpt):
+            attach_link(decided['id'], title, url, excerpt, source_name, outlet, published_at)
+            return None
+        update_of = decided['id']
+        local_angle = ('ACTUALIZACIÓN de una noticia que ya viste («%s»): cuenta solo lo nuevo. ' % clean(decided['title'])[:120]) + local_angle
     if not official_local and is_duplicate(title, url): return None
     score = heuristic_score(title, excerpt + ' ' + local_angle, source_meta)
     if tender:
@@ -1067,9 +1163,9 @@ def add_candidate(title, url, excerpt, source_name, source_id=None, published_at
     brand = brands.valid(source_meta.get('brand') or brands.DEFAULT)
     if brand == brands.DEFAULT:
         brand = brands.classify(title + ' ' + excerpt[:600]) or brand  # cofradías → El Cofrade Linense; carnaval → Carnavalinense
-    return db.exec_('''INSERT OR IGNORE INTO candidates(source_id,source_name,title,url,published_at,excerpt,score,relevance,status,local_angle,outlet,image_hint,brand)
-                       VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)''',
-                    (source_id, source_name, title, url, published_at, excerpt, score, relevance, 'new', local_angle, clean(outlet)[:120], image or '', brand))
+    return db.exec_('''INSERT OR IGNORE INTO candidates(source_id,source_name,title,url,published_at,excerpt,score,relevance,status,local_angle,outlet,image_hint,brand,update_of)
+                       VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
+                    (source_id, source_name, title, url, published_at, excerpt, score, relevance, 'new', local_angle[:900], clean(outlet)[:120], image or '', brand, update_of))
 
 
 def _archive_recovery_status(item, source):
@@ -1396,7 +1492,7 @@ def scan_all():
                        checked=0, total=0, started_at=time.time(), errors=[])
     try:
         added, errors = [], []
-        _deep['n'] = 0
+        _deep['n'] = 0; _ctx['n'] = 0
         active = db.rows('SELECT * FROM sources WHERE active=1 ORDER BY priority DESC')
         _scan_state['total'] = len(active)
         first = [s_ for s_ in active if is_priority(s_)]
@@ -1508,7 +1604,7 @@ def archive_off_topic():
         tender = bool(_TENDER.search(title))
         bad = (_OTHER_TOWNS.search(title) and not exact_locality(title) and not gibraltar_topic(title))
         if not r.get('local_scope'):
-            bad = bad or (not tender_ok(title, excerpt) if tender else not place_ok(title + ' ' + excerpt))
+            bad = bad or (not tender_ok(title, excerpt) if tender else not place_ok(lead_text(title, excerpt)))
         if bad:
             db.exec_("UPDATE candidates SET status='archived',reason='Fuera de La Línea' WHERE id=?", (r['id'],)); n += 1
     return n

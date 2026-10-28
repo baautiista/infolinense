@@ -8,7 +8,7 @@ const cache = { photos: {}, article: {} };
 
 const PRIO = [['urgent', 'Urgente'], ['today', 'Hoy'], ['this_week', 'Esta semana'], ['future', 'Más adelante']];  // (Mañana = esta semana, día siguiente)
 const PRIO_LABEL = Object.fromEntries(PRIO);
-const BLOCKS = ['Ayuntamiento', 'Licitaciones y edictos', 'Otros medios', 'Nacionales adaptables', 'Redes sociales'];
+const BLOCKS = ['Ayuntamiento', 'Licitaciones y edictos', 'Instituciones y empresas', 'Otros medios', 'Nacionales adaptables', 'Redes sociales'];
 const SECTIONS = [['OBRAS', '#0150FE', '#fff'], ['CIUDAD', '#4F9AFC', '#fff'], ['GIBRALTAR', '#7249E0', '#fff'], ['SUCESOS', '#D02132', '#fff'],
   ['CULTURA', '#E72E79', '#fff'], ['DEPORTES', '#00AB4F', '#fff'], ['COMERCIO', '#FF8E1A', '#fff'], ['MEDIO AMBIENTE', '#62DBD1', '#061E5C'],
   ['POLÍTICA', '#08176E', '#fff'], ['SOCIEDAD', '#2756CD', '#fff'], ['PATRIMONIO', '#B9831E', '#fff'], ['AGENDA', '#FDE206', '#061E5C']];
@@ -301,16 +301,22 @@ function drawSort(v = $('#view')) {
   if (n) armDeck(n);
 }
 function special(n) { const t = `${n.title} ${n.excerpt || ''} ${n.source_name || ''}`.toLowerCase(); if (n.source_kind === 'procurement' || /licitaci|contrataci|adjudicaci/.test(t)) return 'Licitación'; if (n.source_kind === 'edictos' || n.source_kind === 'bop' || /edicto/.test(t)) return 'Edicto'; if (/exclusiv/.test(t)) return 'Exclusiva'; return '' }
+// Actualización de algo ya visto; primicia = fuente oficial y ningún medio lo ha publicado todavía
+function extraFlags(n) {
+  const upd = n.update_of || String(n.local_angle || '').startsWith('ACTUALIZACIÓN');
+  const scoop = (n.source_official || /^Primarias|^Ayuntamiento|Licitaciones|Edictos|BOE|BOP/i.test(n.source_name || '')) && !(n.links || []).length;
+  return (upd ? '<span class="flag upd">Actualización</span>' : '') + (scoop ? '<span class="flag scoop">Primicia: ningún medio lo ha publicado</span>' : '');
+}
 function swipeCard(n) {
   const sp = special(n), img = n.image_hint && /^https?:/.test(n.image_hint) ? n.image_hint : '';
-  const text = n.local_angle && !n.local_angle.startsWith('ENFOQUE') ? n.local_angle : (n.excerpt && n.excerpt !== n.title ? n.excerpt.slice(0, 280) : '');
+  const text = n.local_angle && !n.local_angle.startsWith('ENFOQUE') && !n.local_angle.startsWith('ACTUALIZACIÓN') ? n.local_angle : (n.excerpt && n.excerpt !== n.title ? n.excerpt.slice(0, 280) : '');
   return `<article class="swipe front ${img ? '' : 'noimg'}" id="fc" data-id="${n.id}" tabindex="0" aria-label="${esc(n.title)}">
     <span class="stamp yes">SIRVE</span><span class="stamp no">NO SIRVE</span>
     ${img ? `<div class="pic"><img src="${safeUrl(img)}" alt="" referrerpolicy="no-referrer" draggable="false" onerror="this.parentElement.style.display='none';this.parentElement.nextElementSibling.style.display='flex'"></div>` : ''}
-    <div class="band" style="--bc:${brandOf(n.brand).color};${img ? 'display:none' : ''}"><div class="tag">${brandBadge(n.brand)}${sp ? `<span class="flag">${sp}</span>` : ''}${n.social_type ? `<span class="kind ${n.social_type}">${KIND[n.social_type] || ''}</span>` : ''}</div>
+    <div class="band" style="--bc:${brandOf(n.brand).color};${img ? 'display:none' : ''}"><div class="tag">${brandBadge(n.brand)}${sp ? `<span class="flag">${sp}</span>` : ''}${extraFlags(n)}${n.social_type ? `<span class="kind ${n.social_type}">${KIND[n.social_type] || ''}</span>` : ''}</div>
       <b>${esc(n.outlet || n.source_name || host(n.url))}</b><span>${n.date_iso ? ago(n.date_iso) : 'sin fecha'}${(n.links || []).length ? ` · y ${n.links.length} ${n.links.length === 1 ? 'fuente más' : 'fuentes más'}` : ''}</span></div>
     <div class="body">
-      ${img ? `<div class="meta">${brandBadge(n.brand)}${n.social_type ? `<span class="kind ${n.social_type}">${KIND[n.social_type] || ''}</span>` : ''}${sp ? `<span class="flag">${sp}</span>` : ''}<span class="src">${esc(n.outlet || n.source_name || host(n.url))}${(n.links || []).length ? ` +${n.links.length}` : ''}</span><span>${n.date_iso ? ago(n.date_iso) : 'sin fecha'}</span></div>` : ''}
+      ${img ? `<div class="meta">${brandBadge(n.brand)}${extraFlags(n)}${n.social_type ? `<span class="kind ${n.social_type}">${KIND[n.social_type] || ''}</span>` : ''}${sp ? `<span class="flag">${sp}</span>` : ''}<span class="src">${esc(n.outlet || n.source_name || host(n.url))}${(n.links || []).length ? ` +${n.links.length}` : ''}</span><span>${n.date_iso ? ago(n.date_iso) : 'sin fecha'}</span></div>` : ''}
       <h2>${esc(n.title)}</h2>
       ${text ? `<p class="angle">${esc(text)}</p>` : ''}
       ${(n.topics || []).length ? `<p class="topic-tags">${n.topics.map(t => `<span class="topic-tag">Sigues: ${esc(t)}</span>`).join('')}</p>` : ''}
@@ -1176,9 +1182,9 @@ async function settings(v) {
 </section>
     <section class="panel"><h2>Alertas al móvil</h2><p class="muted small">Avisos de noticias urgentes, fallos al publicar, novedades de los temas que sigues y la agenda. En iPhone, primero añade el panel a la pantalla de inicio (Compartir → «Añadir a pantalla de inicio») y ábrelo desde ahí.</p>
       <div id="pushBox"><p class="muted small">Cargando…</p></div></section>
-    <section class="panel"><h2>Lo que no quieres ver</h2><p class="muted small">Se aprende solo cuando marcas «No sirve» o eliminas una noticia: esas palabras o sitios ya no vuelven a salir. Quita la que no quieras.</p>
+    <section class="panel"><h2>Sitios que no te interesan</h2><p class="muted small">Se aprende por contexto: al descartar una noticia que NO es de La Línea, se guardan los sitios de los que habla (p. ej. Castelldefels, Lima). Solo frenan noticias de esos sitios: lo que sea de La Línea entra siempre, trate del tema que trate. Lo que descartas de La Línea no vuelve a salir desde otro medio, salvo que haya un cambio importante.</p>
       <div class="sources" id="learnList"></div>
-      <form id="addLearn" class="row wrap"><input name="label" placeholder="Palabra o sitio (p. ej. Castelldefels)" required><button class="btn small">Añadir</button></form></section>
+      <form id="addLearn" class="row wrap"><input name="label" placeholder="Sitio (p. ej. Castelldefels)" required><button class="btn small">Añadir</button></form></section>
     <section class="panel"><h2>Páginas y grupos de Facebook vigilados</h2><p class="muted small">Solo lo público. Se buscan quejas, propuestas y asociaciones.</p>
       <div class="sources" id="fbList"></div>
       <form id="addFb" class="stack"><input name="name" placeholder="Nombre (p. ej. AVV La Atunara)" required><input name="url" type="url" placeholder="https://www.facebook.com/groups/…" required><button class="btn small">Vigilar</button></form></section>

@@ -98,6 +98,7 @@ def init_db():
         'merged_into':'INTEGER',
         'plan_day':'TEXT',
         'manual_photo':'TEXT',
+        'update_of':'INTEGER',
         'brand':"TEXT NOT NULL DEFAULT 'infolinense'"
     }.items():
         if name not in existing_candidates: c.execute(f'ALTER TABLE candidates ADD COLUMN {name} {ddl}')
@@ -168,6 +169,13 @@ def init_db():
       ('Nacionales adaptables · Temas · economía',news('(economía OR PIB OR inflación OR "tipos de interés" OR BCE OR "Banco de España" OR salarios OR consumo OR comercio OR turismo OR hostelería) (site:elmundo.es OR site:elpais.com OR site:rtve.es OR site:antena3.com OR site:lasexta.com OR site:telecinco.es OR site:cuatro.com OR site:canalsur.es) when:1d'),'rss',64,0,0),
       ('Nacionales adaptables · Temas · medio ambiente',news('("medio ambiente" OR "ola de calor" OR sequía OR incendios OR contaminación OR reciclaje OR residuos OR "cambio climático" OR playas OR AEMET OR temporal) (site:elmundo.es OR site:elpais.com OR site:rtve.es OR site:antena3.com OR site:lasexta.com OR site:telecinco.es OR site:cuatro.com OR site:canalsur.es) when:1d'),'rss',64,0,0),
       ('Nacionales adaptables · Temas · servicios y día a día',news('(DGT OR ITV OR multas OR sanidad OR "listas de espera" OR colegios OR "curso escolar" OR huelga OR Renfe OR "cambio de hora" OR okupación OR estafas) (site:elmundo.es OR site:elpais.com OR site:rtve.es OR site:antena3.com OR site:lasexta.com OR site:telecinco.es OR site:cuatro.com OR site:canalsur.es) when:1d'),'rss',64,0,0),
+      ('Primarias · Contratación del Estado (todos los organismos)',news('"La Línea de la Concepción" (site:contrataciondelestado.es OR site:licitaciones.es OR site:contratosdelsectorpublico.es) when:10d'),'rss',93,1,0),
+      ('Primarias · Junta de Andalucía',news('"La Línea de la Concepción" (site:juntadeandalucia.es OR site:sspa.juntadeandalucia.es OR site:andaluciaesdigital.es) when:7d'),'rss',90,1,0),
+      ('Primarias · Diputación de Cádiz',news('("La Línea de la Concepción" OR "La Línea") (site:dipucadiz.es OR site:bopcadiz.es OR site:epicadiz.es OR site:aguasdecadiz.es) when:7d'),'rss',90,1,0),
+      ('Primarias · Gobierno de España y BOE',news('"La Línea de la Concepción" (site:boe.es OR site:lamoncloa.gob.es OR site:miteco.gob.es OR site:interior.gob.es OR site:transportes.gob.es OR site:hacienda.gob.es OR site:exteriores.gob.es OR site:sepe.es OR site:seg-social.es) when:10d'),'rss',90,1,0),
+      ('Primarias · Gobierno de Gibraltar (frontera y La Línea)',news('"La Línea" (site:gibraltar.gov.gi OR site:gbc.gi) when:5d'),'rss',84,1,0),
+      ('Primarias · Empresas y entes con obras o servicios en La Línea',news('"La Línea de la Concepción" (Arcgisa OR Endesa OR "Puerto Bahía de Algeciras" OR APBA OR ADIF OR Renfe OR "Red Eléctrica" OR Aqualia OR Mancomunidad OR "Área Sanitaria" OR "Hospital de La Línea" OR Correos OR Mercadona OR Lidl OR Carrefour) when:5d'),'rss',82,0,0),
+      ('Primarias · Plenos, convocatorias y plazos',news('"La Línea de la Concepción" (pleno OR "orden del día" OR convocatoria OR "plazo de presentación" OR "bases reguladoras" OR "período de exposición pública" OR "información pública") when:10d'),'rss',88,1,0),
       ('Nacionales adaptables · Campo de Gibraltar',news('"Campo de Gibraltar" when:2d'),'rss',72,0,0),
       ('Licitaciones · BOP y plataforma estatal',news('("La Línea de la Concepción" OR "Ayuntamiento de La Línea") (licitación OR adjudicación OR contrato OR obras) when:7d'),'rss',95,1,0),
       ('Facebook · publicaciones indexadas',news('"La Línea de la Concepción" site:facebook.com when:3d'),'rss',55,0,0),

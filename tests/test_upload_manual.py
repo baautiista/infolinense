@@ -758,3 +758,57 @@ class NewFeatures76Tests(unittest.TestCase):
         out = AESGCM(alerts._hkdf(salt, ikm, b'Content-Encoding: aes128gcm\x00', 16)).decrypt(alerts._hkdf(salt, ikm, b'Content-Encoding: nonce\x00', 12), b[21 + n:], None)
         self.assertEqual(out, b'hola\x02')
         self.assertTrue(alerts.URGENT.search('Incendio en la Atunara'))
+
+
+class Context77Tests(unittest.TestCase):
+    def test_passing_mention_rejected(self):
+        from app import sources
+        from datetime import datetime, timezone
+        now = datetime.now(timezone.utc).isoformat()
+        meta = {'name': 'Otros', 'priority': 60, 'official': 0, 'local_scope': 0}
+        ex = 'El ayuntamiento limeño aprueba el plan. ' + 'Texto largo sobre la ciudad. ' * 30 + 'Hubo un caso parecido en La Línea de la Concepción.'
+        self.assertIsNone(sources.add_candidate('Lima aprueba su nuevo plan de urbanismo', 'https://x.test/ctx1', ex, 'Otros', None, now, meta))
+        self.assertTrue(sources.add_candidate('La Línea de la Concepción aprueba su nuevo plan de urbanismo', 'https://x.test/ctx2', '', 'Otros', None, now, meta))
+
+    def test_decided_not_shown_again_unless_change(self):
+        from app import db, sources
+        from datetime import datetime, timezone
+        now = datetime.now(timezone.utc).isoformat()
+        meta = {'name': 'Otros', 'priority': 60, 'official': 0, 'local_scope': 1}
+        cid = sources.add_candidate('El Ayuntamiento de La Línea presenta el proyecto del nuevo mercado de abastos', 'https://x.test/dec1', '', 'A', None, now, meta)
+        db.exec_("UPDATE candidates SET editorial_priority='no_interest',status='archived' WHERE id=?", (cid,))
+        self.assertIsNone(sources.add_candidate('La Línea presenta el proyecto del nuevo mercado de abastos', 'https://x.test/dec2', '', 'B', None, now, meta))
+        self.assertTrue(db.row('SELECT 1 FROM candidate_links WHERE url=?', ('https://x.test/dec2',)))
+        new = sources.add_candidate('Aprobado el proyecto del nuevo mercado de abastos de La Línea por 2,4 millones', 'https://x.test/dec3', '', 'C', None, now, meta)
+        self.assertTrue(new)
+        self.assertEqual(db.row('SELECT update_of FROM candidates WHERE id=?', (new,))['update_of'], cid)
+
+    def test_learning_is_contextual(self):
+        from app import db, learn
+        cid = db.exec_("INSERT INTO candidates(title,url,status,editorial_priority) VALUES('Polémica por el urbanismo en Arequipa','https://x.test/lc1','archived','no_interest')")
+        learned = learn.learn_from(cid)
+        self.assertIn('Arequipa', learned)
+        self.assertNotIn('urbanismo', [x.lower() for x in learned])
+        self.assertTrue(learn.blocked('Nuevo plan en Arequipa'))
+        self.assertFalse(learn.blocked('Arequipa y La Línea de la Concepción firman un hermanamiento'))
+        cid2 = db.exec_("INSERT INTO candidates(title,url,status,editorial_priority) VALUES('Urbanismo de La Línea concede una licencia en Santa Margarita','https://x.test/lc2','archived','no_interest')")
+        self.assertEqual(learn.learn_from(cid2), [])
+        learn.remove('arequipa')
+
+    def test_deadline_to_agenda(self):
+        from datetime import date, timedelta
+        from app import agenda, db
+        d = date.today() + timedelta(days=20)
+        cid = db.exec_("INSERT INTO candidates(title,url,status,excerpt) VALUES(?,?,?,?)",
+                       ('Licitación del servicio de limpieza de playas de La Línea', 'https://x.test/dl1', 'new', 'Plazo hasta: %s' % d.isoformat()))
+        self.assertTrue(agenda.from_candidate(cid))
+        ev = db.row('SELECT * FROM events WHERE candidate_id=?', (cid,))
+        self.assertEqual(ev['day'], d.isoformat()); self.assertTrue(ev['title'].startswith('Fin de plazo'))
+
+    def test_gazetteer_context(self):
+        from app import gazetteer
+        gazetteer._names['set'] = {'castelldefels', 'nerja', 'rota', 'lima'}
+        self.assertEqual(gazetteer.places_in('El Ayuntamiento de Castelldefels aprueba'), ['Castelldefels'])
+        self.assertEqual(gazetteer.places_in('Rota de la plantilla en el club'), [])
+        self.assertEqual(gazetteer.places_in('Obras en La Línea'), [])
+        gazetteer._names['set'] = set()

@@ -15,7 +15,7 @@ from .auth import login, require_auth
 from starlette.concurrency import run_in_threadpool
 from .config import BASE_DIR, RENDER_DIR, UPLOAD_DIR, SCAN_INTERVAL_MINUTES, AUTO_PIPELINE, OPENAI_API_KEY, ADMIN_PASSWORD, JWT_SECRET, PUBLISH_MODE, CORS_ORIGINS, PUBLIC_BASE_URL, AUTO_PUBLISH
 
-VERSION='7.6.0'
+VERSION='7.7.0'
 app=FastAPI(title='InfoLinense Desk',version=VERSION)
 
 from fastapi.responses import JSONResponse as _JR
@@ -1818,12 +1818,14 @@ def mark_final_images():
 
 @app.on_event('startup')
 def startup():
-    try:  # una vez: aprende de lo que ya descartaste en el último mes
-        if not db.get_setting('learn_boot_747',''):
-            for r in db.rows("SELECT id FROM candidates WHERE editorial_priority='no_interest' AND created_at>=datetime('now','-30 day') ORDER BY id"):
-                learn.learn_from(r['id'])
-            db.set_setting('learn_boot_747','1'); sources.archive_off_topic()
-    except Exception as e: db.log('learn_error',str(e)[:200])
+    def _boot_learning():
+        try:
+            from . import gazetteer
+            gazetteer.load()  # nomenclátor de lugares (Wikidata), se guarda 30 días
+            if not db.get_setting('learn_reset_77',''):  # aprendizaje por contexto: se olvida la lista de palabras antigua
+                learn.reset_auto(); db.set_setting('learn_reset_77','1')
+        except Exception as e: db.log('learn_error',str(e)[:200])
+    threading.Thread(target=_boot_learning,daemon=True).start()
     threading.Thread(target=lambda: storage.cleanup(deep=storage.free_bytes()<storage.LOW),daemon=True).start()
     try: restore_final_covers()
     except Exception as e: db.log('cover_fix_error',str(e)[:250])

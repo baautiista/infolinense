@@ -773,3 +773,5 @@ label{color:var(--ink)}
 .st-h{font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:var(--muted);font-weight:800}
 @media(max-width:600px){.st-row{grid-template-columns:1fr repeat(4,44px);font-size:12.5px}}
 @media(min-width:1024px){body.editing .tabs{display:flex}}
+.flag.upd{background:var(--blue);color:#fff}
+.flag.scoop{background:var(--ink);color:var(--lime)}

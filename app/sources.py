@@ -1431,6 +1431,7 @@ def scan_all():
         archive_off_topic()
         added = [a for a in added if (db.row('SELECT status FROM candidates WHERE id=?', (a,)) or {}).get('status') != 'merged']
         archived = archive_stale()
+        after_new(added)
         db.log('scan', f'Escaneo: {len(added)} nuevas; {merged} unidas por repetidas; {archived} antiguas retiradas; {len(errors)} errores')
         _scan_state.update(added=len(added), errors=errors[:20])
         return {'added': added, 'errors': errors, 'sources_checked': len(active), 'busy': False}
@@ -1460,6 +1461,22 @@ def auto_ayto(ids):
                 pass
             n += 1
     return n
+
+
+def after_new(ids):
+    """Lo nuevo que sigue vivo tras los filtros: temas que sigues, agenda y avisos urgentes al móvil."""
+    from . import agenda, alerts, topics
+    alive = [i for i in ids or [] if (db.row('SELECT status FROM candidates WHERE id=?', (i,)) or {}).get('status') not in (None, 'archived', 'merged')]
+    for cid in alive:
+        for fn in (topics.check, agenda.from_candidate):
+            try:
+                fn(cid)
+            except Exception as exc:
+                db.log('after_new_error', str(exc)[:200])
+    try:
+        alerts.check_new(alive)
+    except Exception as exc:
+        db.log('alert_error', str(exc)[:200])
 
 
 def archive_off_topic():

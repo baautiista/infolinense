@@ -9,12 +9,13 @@ from fastapi.responses import FileResponse, RedirectResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from . import db, sources, pipeline, publishers, photos, canva, ai, planner, layout, social, social_publish, brands, ocr, storage, learn
+from . import db, sources, pipeline, publishers, photos, canva, ai, planner, layout, social, social_publish, brands, ocr, storage, learn, alerts, topics, agenda, stats
+from . import review as checks
 from .auth import login, require_auth
 from starlette.concurrency import run_in_threadpool
 from .config import BASE_DIR, RENDER_DIR, UPLOAD_DIR, SCAN_INTERVAL_MINUTES, AUTO_PIPELINE, OPENAI_API_KEY, ADMIN_PASSWORD, JWT_SECRET, PUBLISH_MODE, CORS_ORIGINS, PUBLIC_BASE_URL, AUTO_PUBLISH
 
-VERSION='7.5.0'
+VERSION='7.6.0'
 app=FastAPI(title='InfoLinense Desk',version=VERSION)
 
 from fastapi.responses import JSONResponse as _JR
@@ -197,6 +198,82 @@ def scan_status():
     # buscando = hay una búsqueda con el candado, o se acaba de pulsar «Buscar» y está arrancando
     st['busy']=bool(sources._scan_lock.locked() or (st['busy'] and time.time()-st.get('started_at',0)<10))
     return st
+# ---------- alertas al móvil ----------
+class PushIn(BaseModel):
+    subscription:dict
+    label:str=''
+@app.get('/api/push',dependencies=[Depends(require_auth)])
+def push_info(): return {'key':alerts.public_key(),'devices':alerts.devices(),'prefs':alerts.prefs(),'kinds':alerts.KINDS,
+                         'telegram':bool(os.getenv('TELEGRAM_BOT_TOKEN') and os.getenv('TELEGRAM_CHAT_ID'))}
+@app.post('/api/push/subscribe',dependencies=[Depends(require_auth)])
+def push_subscribe(body:PushIn):
+    try: alerts.subscribe(body.subscription,body.label)
+    except ValueError as e: raise HTTPException(400,str(e))
+    return {'ok':True,'devices':alerts.devices()}
+@app.post('/api/push/unsubscribe',dependencies=[Depends(require_auth)])
+def push_unsubscribe(body:dict): alerts.unsubscribe(str(body.get('endpoint') or '')); return {'ok':True}
+@app.post('/api/push/prefs',dependencies=[Depends(require_auth)])
+def push_prefs(body:dict): return alerts.set_prefs(body)
+@app.post('/api/push/test',dependencies=[Depends(require_auth)])
+def push_test():
+    n=alerts.notify('urgent','Prueba de InfoLinense Desk','Así te llegarán los avisos','/#sort',force=True)
+    if not n: raise HTTPException(400,'No hay ningún móvil apuntado. Pulsa «Activar en este dispositivo» primero.')
+    return {'sent':n}
+
+# ---------- temas que sigues ----------
+class TopicIn(BaseModel):
+    label:str=''
+    terms:str|list=''
+@app.get('/api/topics',dependencies=[Depends(require_auth)])
+def topics_list(): return {'items':topics.listing()}
+@app.get('/api/topics/suggest/{cid}',dependencies=[Depends(require_auth)])
+def topics_suggest(cid:int):
+    c=db.row('SELECT title FROM candidates WHERE id=?',(cid,))
+    if not c: raise HTTPException(404)
+    return {'terms':topics.suggest(c['title'])}
+@app.post('/api/topics',dependencies=[Depends(require_auth)])
+def topics_add(body:TopicIn):
+    try: topics.add(body.label,body.terms)
+    except ValueError as e: raise HTTPException(400,str(e))
+    return {'items':topics.listing()}
+@app.delete('/api/topics/{tid}',dependencies=[Depends(require_auth)])
+def topics_remove(tid:int): topics.remove(tid); return {'items':topics.listing()}
+@app.get('/api/topics/labels',dependencies=[Depends(require_auth)])
+def topics_labels(ids:str=''):
+    return {str(k):v for k,v in topics.labels_for([int(x) for x in ids.split(',') if x.isdigit()][:300]).items()}
+
+# ---------- agenda de la ciudad ----------
+class EventIn(BaseModel):
+    title:str
+    day:str
+    time:str=''
+    place:str=''
+    kind:str=''
+    url:str=''
+@app.get('/api/agenda',dependencies=[Depends(require_auth)])
+def agenda_list(days:int=60): return {'items':agenda.upcoming(min(max(days,1),180))}
+@app.post('/api/agenda',dependencies=[Depends(require_auth)])
+def agenda_add(e:EventIn):
+    if len(e.title.strip())<3: raise HTTPException(400,'Escribe qué es')
+    try: agenda.add(e.title,e.day,e.time,e.place,e.kind,e.url)
+    except ValueError: raise HTTPException(400,'Fecha no válida')
+    return {'items':agenda.upcoming()}
+@app.delete('/api/agenda/{eid}',dependencies=[Depends(require_auth)])
+def agenda_remove(eid:int): agenda.remove(eid); return {'items':agenda.upcoming()}
+
+# ---------- revisión automática ----------
+@app.get('/api/articles/{aid}/check',dependencies=[Depends(require_auth)])
+def article_check(aid:int,ai:int=0): return {'items':checks.check(aid,with_ai=bool(ai))}
+
+# ---------- estadísticas ----------
+@app.get('/api/stats',dependencies=[Depends(require_auth)])
+def stats_view(days:int=30,brand:str=''):
+    return {'items':stats.listing(min(max(days,1),120),brand),'best':stats.best_slots(60,brand),'refreshed_at':db.get_setting('stats_refreshed_at','')}
+@app.get('/api/stats/best',dependencies=[Depends(require_auth)])
+def stats_best(brand:str=''): return stats.best_slots(60,brand)
+@app.post('/api/stats/refresh',dependencies=[Depends(require_auth)])
+def stats_refresh(): return {'updated':stats.refresh()}
+
 class LearnIn(BaseModel):
     label:str
 @app.get('/api/learned',dependencies=[Depends(require_auth)])
@@ -877,7 +954,7 @@ def to_publish(brand:str=''):
                       WHERE (a.status IN ('review_ready','approved') AND COALESCE(a.hidden,0)=0 AND d.exported=1 AND COALESCE(a.render_path,'')!='')
                          OR (a.status='published' AND a.updated_at>=datetime('now','-40 day') AND COALESCE(a.hidden,0)=0)""")
     rows=_bf(rows,brand)  # en Publicar solo lo revisado y con imagen final: lo «Sin revisar» o sin imagen sigue en Revisar
-    for r in rows: r['has_photo']=bool(r.pop('image_local',None))
+    for r in rows: r['has_photo']=bool(r.pop('image_local',None)); r['family']=stats._family(r.get('section'),r.get('headline'))
     posts=social_publish.posts_for([r['id'] for r in rows])
     for r in rows: r['networks']=posts.get(r['id'],{})
     rows.sort(key=lambda r:(r['status']=='published',r.get('planned_at') or '9999'))
@@ -1392,6 +1469,10 @@ def publish_due():
             db.exec_("UPDATE articles SET scheduled_at=NULL,schedule_error=? WHERE id=?",(str(e.detail)[:400],a['id']))
         except Exception as e:
             db.exec_("UPDATE articles SET scheduled_at=NULL,schedule_error=? WHERE id=?",(('Error: '+str(e))[:400],a['id']))
+        failed=db.row("SELECT headline,schedule_error FROM articles WHERE id=? AND COALESCE(schedule_error,'')!=''",(a['id'],))
+        if failed:
+            try: alerts.notify('failed','No se publicó a su hora: '+(failed['headline'] or '')[:90],failed['schedule_error'][:200],'/#publish',key='failed:%s:%s'%(a['id'],a['scheduled_at']))
+            except Exception as e: db.log('alert_error',str(e)[:200])
     return done
 
 def publish_loop():
@@ -1590,7 +1671,18 @@ def brands_save(slug:str,b:BrandIn):
     except ValueError as e: raise HTTPException(400,str(e))
     return brands.public(slug)
 @app.get('/api/sources',dependencies=[Depends(require_auth)])
-def list_sources(): return db.rows('SELECT * FROM sources ORDER BY priority DESC')
+def list_sources():
+    rows=db.rows('SELECT * FROM sources ORDER BY priority DESC')
+    perf={r['source_id']:r for r in db.rows("""SELECT source_id,
+            SUM(CASE WHEN editorial_priority IN ('urgent','today','this_week','future') OR status='published' THEN 1 ELSE 0 END) useful,
+            SUM(CASE WHEN editorial_priority='no_interest' THEN 1 ELSE 0 END) discarded, COUNT(*) total
+            FROM candidates WHERE created_at>=datetime('now','-30 day') AND source_id IS NOT NULL GROUP BY source_id""")}
+    for r in rows:
+        p=perf.get(r['id']) or {}
+        r['useful_30'],r['discarded_30'],r['total_30']=p.get('useful') or 0,p.get('discarded') or 0,p.get('total') or 0
+        decided=r['useful_30']+r['discarded_30']
+        r['poor']=bool(r['active'] and r['discarded_30']>=8 and r['useful_30']<=max(1,decided//10) and not r.get('official'))
+    return rows
 def validate_source(s):
     url=urlparse(s.url.strip())
     host=(url.hostname or '').lower()
@@ -1651,6 +1743,14 @@ def render_file(aid:int):
     exported=db.row('SELECT exported FROM canva_designs WHERE article_id=?',(aid,))
     if not p.is_file() or not exported or not exported['exported']: raise HTTPException(404,'Exporta primero el diseño en Canva')
     return FileResponse(p,media_type='image/png',headers={'Cache-Control':'no-store'})
+@app.get('/sw.js')
+def service_worker(): return FileResponse(BASE_DIR/'static'/'sw.js',media_type='application/javascript',headers={'Service-Worker-Allowed':'/','Cache-Control':'no-cache'})
+@app.get('/manifest.webmanifest')
+def manifest(): return FileResponse(BASE_DIR/'static'/'manifest.webmanifest',media_type='application/manifest+json')
+@app.get('/icon-{size}.png')
+def app_icon(size:int):
+    if size not in (192,512): raise HTTPException(404)
+    return FileResponse(BASE_DIR/'static'/f'icon-{size}.png',media_type='image/png')
 app.mount('/static',StaticFiles(directory=BASE_DIR/'static'),name='static')
 @app.get('/')
 def index(): return FileResponse(BASE_DIR/'static'/'index.html')
@@ -1685,6 +1785,12 @@ def scheduler_loop():
         except Exception as e: db.log('scheduler_error',str(e)[:250])
         try: storage.cleanup(deep=storage.free_bytes()<storage.LOW)
         except Exception as e: db.log('storage_error',str(e)[:250])
+        try: agenda.remind()
+        except Exception as e: db.log('agenda_error',str(e)[:250])
+        try:  # cifras de Instagram y Facebook cada 3 horas
+            last=db.get_setting('stats_refreshed_at','')
+            if not last or (datetime.now(timezone.utc)-datetime.fromisoformat(last)).total_seconds()>3*3600: stats.refresh()
+        except Exception as e: db.log('stats_error',str(e)[:250])
         # De 12:45 a 15:15 el Ayuntamiento publica lo del día: se busca cada 10 minutos
         t=datetime.now(MADRID); m=t.hour*60+t.minute
         time.sleep(600 if 765<=m<=915 else max(15,SCAN_INTERVAL_MINUTES)*60)

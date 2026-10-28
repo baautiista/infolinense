@@ -88,13 +88,13 @@ function currentHash() { return view === 'editor' ? `editor/${editorId}` : view 
 function go(target, fromHash) {
   const [v, id] = target.split('/');
   if (view !== 'editor' && v === 'editor') editorFrom = view === 'settings' ? 'review' : view;
-  view = ['sort', 'writing', 'review', 'publish', 'settings', 'editor', 'upload'].includes(v) ? v : 'sort';
+  view = ['sort', 'writing', 'review', 'publish', 'settings', 'editor', 'upload', 'agenda', 'stats', 'topics'].includes(v) ? v : 'sort';
   document.body.classList.toggle('wide', view === 'review');
   document.body.classList.toggle('editing', view === 'editor');
   editorId = view === 'editor' ? Number(id) : null;
   if (!fromHash) location.hash = currentHash();
-  document.querySelectorAll('.tabs button').forEach(b => b.classList.toggle('on', b.dataset.view === (view === 'editor' ? editorFrom : view)));
-  $('#title').textContent = { sort: 'Ordenar', writing: 'Redacción', review: 'Revisar', publish: 'Publicar', settings: 'Ajustes', editor: 'Noticia', upload: 'Subir noticia' }[view];
+  document.querySelectorAll('.tabs button').forEach(b => b.classList.toggle('on', b.dataset.view === (view === 'editor' ? editorFrom : view === 'agenda' || view === 'topics' ? 'sort' : view === 'stats' ? 'publish' : view)));
+  $('#title').textContent = { sort: 'Ordenar', writing: 'Redacción', review: 'Revisar', publish: 'Publicar', settings: 'Ajustes', editor: 'Noticia', upload: 'Subir noticia', agenda: 'Agenda', stats: 'Estadísticas', topics: 'Temas' }[view];
   $('#backBtn').hidden = view !== 'editor';
   $('#scanBtn').hidden = view !== 'sort';
   render(); counts();
@@ -109,7 +109,7 @@ async function counts() {
 async function render() {
   blobUrls.forEach(URL.revokeObjectURL); blobUrls = [];
   const v = $('#view'); v.innerHTML = '<p class="empty">Cargando…</p>'; window.scrollTo(0, 0);
-  try { await ({ sort: sortView, writing: writingView, review: reviewView, publish: publishView, settings, editor, upload: uploadView }[view])(v) }
+  try { await ({ sort: sortView, writing: writingView, review: reviewView, publish: publishView, settings, editor, upload: uploadView, agenda: agendaView, stats: statsView, topics: topicsView }[view])(v) }
   catch (e) { if (token) v.innerHTML = `<p class="empty">${esc(e.message)}</p>` }
 }
 function nextPhase(label, target, note = '') { return `<div class="next"><p>${note}</p><button class="btn primary" onclick="go('${target}')">${label}</button></div>` }
@@ -146,12 +146,23 @@ const ownBrand = () => BRAND !== 'all' && BRAND !== 'infolinense';
 async function sortView(v) {
   const [q, srcs] = await Promise.all([api('/api/sort-queue'), ownBrand() ? api('/api/sources').catch(() => []) : Promise.resolve([])]);
   queue = q;
+  try {
+    const [labels, ag] = await Promise.all([queue.length ? api('/api/topics/labels?ids=' + queue.slice(0, 300).map(n => n.id).join(',')) : {}, api('/api/agenda?days=7')]);
+    queue.forEach(n => { n.topics = labels[n.id] || [] }); sortAgenda = ag.items || [];
+  } catch (e) { sortAgenda = [] }
   if (ownBrand()) {
     const names = srcs.filter(x => (x.brand || 'infolinense') === BRAND && x.active).map(x => x.name);
     queue.forEach(n => { n.group = names.includes(n.source_name) ? n.source_name : 'Otras fuentes' });
     groups = [...names, 'Otras fuentes'];
   } else groups = BLOCKS;
   drawSort(v);
+}
+let sortAgenda = [];
+// Franja de agenda en Ordenar: lo que llega esta semana (para preparar la previa) y acceso a temas y agenda
+function agendaStrip() {
+  const items = sortAgenda.slice(0, 6);
+  return `<section class="agenda-strip"><div class="as-head"><h2>Esta semana</h2><div class="row"><a class="btn small" href="#topics">Temas que sigues</a><a class="btn small lime" href="#agenda">Agenda</a></div></div>
+    ${items.length ? `<div class="as-list">${items.map(e => `<a class="as-item" href="#agenda"><b>${esc(dayTitle(e.day)[0])}${e.time ? ' · ' + esc(e.time) : ''}</b><span>${esc(e.title)}</span></a>`).join('')}</div>` : '<p class="muted small">Nada en la agenda estos días. Se rellena sola con las noticias que anuncian fechas.</p>'}</section>`;
 }
 function searchFold(value) { return String(value || '').toLocaleLowerCase('es').normalize('NFD').replace(/[\u0300-\u036f]/g, '') }
 function searchWidget() {
@@ -252,7 +263,7 @@ function drawSort(v = $('#view')) {
         <button class="round yes" id="yesBtn" aria-label="Sirve" title="Sirve (→)">✓</button></div>
       <p class="deck-hint">Desliza a la derecha si sirve y a la izquierda si no.</p>`
     : queue.length ? '' : `<p class="empty">Todo ordenado. Pulsa «Buscar» para traer noticias nuevas.</p>${nextPhase('Ir a Redacción', 'writing', 'Las marcadas te esperan en Redacción para que las rellenes.')}`}`;
-  v.insertAdjacentHTML('afterbegin', searchWidget() + gptWidget());
+  v.insertAdjacentHTML('afterbegin', agendaStrip() + searchWidget() + gptWidget());
   armGpt(v);
   const input = v.querySelector('#newsQuery');
   input.oninput = e => {
@@ -302,7 +313,8 @@ function swipeCard(n) {
       ${img ? `<div class="meta">${brandBadge(n.brand)}${n.social_type ? `<span class="kind ${n.social_type}">${KIND[n.social_type] || ''}</span>` : ''}${sp ? `<span class="flag">${sp}</span>` : ''}<span class="src">${esc(n.outlet || n.source_name || host(n.url))}${(n.links || []).length ? ` +${n.links.length}` : ''}</span><span>${n.date_iso ? ago(n.date_iso) : 'sin fecha'}</span></div>` : ''}
       <h2>${esc(n.title)}</h2>
       ${text ? `<p class="angle">${esc(text)}</p>` : ''}
-      <div class="foot"><a class="link" href="${safeUrl(n.url)}" target="_blank" rel="noopener noreferrer">Ver la fuente</a>
+      ${(n.topics || []).length ? `<p class="topic-tags">${n.topics.map(t => `<span class="topic-tag">Sigues: ${esc(t)}</span>`).join('')}</p>` : ''}
+      <div class="foot"><a class="link" href="${safeUrl(n.url)}" target="_blank" rel="noopener noreferrer">Ver la fuente</a><button class="link follow" type="button" onclick="followSheet(${n.id})">Seguir tema</button>
         ${(n.links || []).length ? `<span class="muted small">También: ${n.links.map(l => esc(l.outlet || l.source_name || host(l.url))).join(', ')}</span>` : ''}</div>
     </div></article>`;
 }
@@ -312,7 +324,7 @@ function armDeck(n) {
   const yes = card.querySelector('.stamp.yes'), no = card.querySelector('.stamp.no');
   let x0 = null, dx = 0, id = null;
   const paint = () => { card.style.transform = `translateX(${dx}px) rotate(${dx / 18}deg)`; yes.style.opacity = Math.max(0, Math.min(1, dx / 90)); no.style.opacity = Math.max(0, Math.min(1, -dx / 90)) };
-  card.onpointerdown = e => { if (e.target.closest('a')) return; x0 = e.clientX; id = e.pointerId; card.setPointerCapture(id); card.classList.add('dragging') };
+  card.onpointerdown = e => { if (e.target.closest('a,button')) return; x0 = e.clientX; id = e.pointerId; card.setPointerCapture(id); card.classList.add('dragging') };
   card.onpointermove = e => { if (x0 === null) return; dx = e.clientX - x0; paint() };
   const end = () => {
     if (x0 === null) return; x0 = null; card.classList.remove('dragging');
@@ -669,7 +681,8 @@ const nearSlot = t => GRID.reduce((best, g) => Math.abs(mins(g) - mins(t)) < Mat
 const mins = t => +t.slice(0, 2) * 60 + +t.slice(3, 5);
 function shortDay(iso) { const d = new Date(iso + 'T12:00:00Z'); return d.toLocaleDateString('es-ES', { weekday: 'short', day: 'numeric', timeZone: 'UTC' }) }
 async function publishView(v) {
-  const rows = await api('/api/to-publish');
+  const [rows, best] = await Promise.all([api('/api/to-publish'), api('/api/stats/best').catch(() => ({ overall: {}, by_section: {} }))]);
+  const predict = (r, t) => ((best.by_section || {})[r.family] || {})[t] || (best.overall || {})[t] || 1;
   const slugs = BRAND === 'all' ? [...new Set([netBrand(), ...rows.map(r => r.brand || 'infolinense')])] : [BRAND];
   const byBrand = {};
   await Promise.all(slugs.map(async b => { byBrand[b] = await api('/api/networks?brand=' + b).catch(() => ({})) }));
@@ -687,15 +700,19 @@ async function publishView(v) {
   const onDay = d => placed.filter(r => pubAt(r).startsWith(d));
   const picker = `<div class="netpick row wrap"><span class="muted small">${slugs.length > 1 ? 'Cada noticia sale en las cuentas de su medio:' : 'Sale a la vez en:'}</span><span class="pill-net on">Web</span>${available.map(n => `<label class="switch"><input type="checkbox" value="${n}" checked> ${NET_NAMES[n]}</label>`).join('')}
     ${offline.map(t => `<a class="switch off" href="#settings" title="Sin conectar">${esc(t)}: sin conectar</a>`).join('')}</div>`;
+  const statsLink = `<a class="btn small" href="#stats">Estadísticas</a>`;
   const modes = `<div class="seg pubmode" role="tablist">${[['day', 'Día'], ['week', 'Semana'], ['month', 'Mes']].map(([k, n]) => `<label><input type="radio" name="pubmode" value="${k}" ${pubMode === k ? 'checked' : ''}><span>${n}</span></label>`).join('')}</div>`;
+  const freeToday = GRID.filter(t => `${pubDay}T${t}` > now && !onDay(pubDay).some(x => Math.abs(mins(pubAt(x).slice(11, 16)) - mins(t)) <= 40));
   const qcard = r => {
-    const sug = r.planned_at && String(r.planned_at).slice(0, 16) > now ? String(r.planned_at).slice(0, 16) : '';
+    const smart = freeToday.map(t => [t, predict(r, t)]).sort((a, b) => b[1] - a[1])[0];
+    const sug = smart && smart[1] >= 1.1 ? `${pubDay}T${smart[0]}` : r.planned_at && String(r.planned_at).slice(0, 16) > now ? String(r.planned_at).slice(0, 16) : '';
+    const sugLabel = smart && smart[1] >= 1.1 ? `Mejor hora: ${smart[0]}` : sug ? whenText(sug) : '';
     return `<article class="q-card" draggable="true" data-aid="${r.id}" style="--bc:${brandOf(r.brand).color}">
       <div class="meta">${brandBadge(r.brand)}${secBadge(r.section, r.brand)}${r.editorial_priority === 'urgent' ? '<span class="flag">Urgente</span>' : ''}</div>
       <h3 class="go" data-go="#editor/${r.id}">${esc(r.headline)}</h3>
       ${r.schedule_error ? `<p class="error small">No salió a su hora: ${esc(r.schedule_error)}</p>` : ''}
       ${(r.brand || 'infolinense') !== 'infolinense' && noNets(r.brand) ? `<p class="error small">${esc(bname(r.brand))} sin redes. <a href="#settings">Conectar</a></p>` : ''}
-      <div class="q-actions"><button class="btn small primary" onclick="placeSheet(${r.id})">Elegir hora</button>${sug ? `<button class="btn small" onclick="placeAt(${r.id},'${sug.slice(0, 10)}','${sug.slice(11, 16)}')">${esc(whenText(sug))}</button>` : ''}<button class="btn small" onclick="publishNow(${r.id},this)">Publicar ya</button><button class="btn small danger icon" title="Eliminar" aria-label="Eliminar" onclick="removeArticle(${r.id})">×</button></div></article>`;
+      <div class="q-actions"><button class="btn small primary" onclick="placeSheet(${r.id})">Elegir hora</button>${sug ? `<button class="btn small ${sugLabel.startsWith('Mejor') ? 'lime' : ''}" onclick="placeAt(${r.id},'${sug.slice(0, 10)}','${sug.slice(11, 16)}')">${esc(sugLabel)}</button>` : ''}<button class="btn small" onclick="publishNow(${r.id},this)">Publicar ya</button><button class="btn small danger icon" title="Eliminar" aria-label="Eliminar" onclick="removeArticle(${r.id})">×</button></div></article>`;
   };
   const scard = r => {
     const done = r.status === 'published';
@@ -746,7 +763,7 @@ async function publishView(v) {
         return `<button class="mo-day ${d === today ? 'today' : ''} ${d.slice(0, 7) !== calMonth ? 'other' : ''} ${d < today ? 'past' : ''}" data-open="${d}"><span>${+d.slice(8, 10)}</span>${n ? `<b class="mo-n">${n}</b>` : ''}</button>`;
       }).join('')}</div><p class="muted small">El número es cuántas noticias hay programadas o publicadas ese día. Pulsa un día para organizarlo.</p>`;
   };
-  v.innerHTML = rows.length || pubMode !== 'day' ? `<div class="pub-top">${modes}${picker}</div>${pubMode === 'week' ? weekHtml() : pubMode === 'month' ? monthHtml() : dayHtml()}`
+  v.innerHTML = rows.length || pubMode !== 'day' ? `<div class="pub-top">${modes}${statsLink}${picker}</div>${pubMode === 'week' ? weekHtml() : pubMode === 'month' ? monthHtml() : dayHtml()}`
     : `<p class="empty">Aún no hay noticias listas para publicar. Llegan aquí cuando están revisadas y tienen imagen.</p>${nextPhase('Ir a Revisar', 'review')}`;
   v.querySelectorAll('[name=pubmode]').forEach(i => i.onchange = () => { pubMode = i.value; if (pubMode === 'month') calMonth = pubDay.slice(0, 7); render() });
   v.querySelectorAll('[data-dstep]').forEach(b => b.onclick = () => { pubDay = addDays(pubDay, +b.dataset.dstep); render() });
@@ -765,10 +782,13 @@ async function publishView(v) {
   if ($('#fillDay')) $('#fillDay').onclick = async e => {
     const b = e.target; b.disabled = true;
     const freeSlots = GRID.filter(t => !onDay(pubDay).some(r => Math.abs(mins(pubAt(r).slice(11, 16)) - mins(t)) <= 40) && `${pubDay}T${t}` > madridNow());
-    const todo = queue.slice(0, freeSlots.length); let ok = 0; const errs = [];
-    for (const [k, r] of todo.entries()) {
-      b.textContent = `Programando ${k + 1}/${todo.length}…`;
-      try { await placeAt(r.id, pubDay, freeSlots[k], true); ok++ } catch (er) { errs.push('«' + r.headline.slice(0, 40) + '»: ' + er.message) }
+    // franjas inteligentes: cada noticia (por orden de prioridad) a la franja libre donde mejor suele ir su sección
+    const left = [...freeSlots], plan = [];
+    for (const r of queue) { if (!left.length) break; const t = left.map(x => [x, predict(r, x)]).sort((a, c) => c[1] - a[1] || a[0].localeCompare(c[0]))[0][0]; left.splice(left.indexOf(t), 1); plan.push([r, t]) }
+    let ok = 0; const errs = [];
+    for (const [k, [r, t]] of plan.entries()) {
+      b.textContent = `Programando ${k + 1}/${plan.length}…`;
+      try { await placeAt(r.id, pubDay, t, true); ok++ } catch (er) { errs.push('«' + r.headline.slice(0, 40) + '»: ' + er.message) }
     }
     toast(`${ok} programadas` + (errs.length ? ' · ' + errs.slice(0, 2).join(' · ') : '')); render(); counts();
   };
@@ -944,12 +964,14 @@ async function editor(v) {
       <details class="alts" id="carousel"><summary>${a.carousel_suitable ? 'Carrusel recomendado' : 'Carrusel'}</summary><div id="carouselBox"><p class="muted small">${esc(a.carousel_reason || '')}</p><button class="btn small" onclick="carousel()">Preparar diapositivas</button></div></details>
     </section>
   </div>
+  <section class="panel checks" id="checks"><div class="row"><h2 class="grow">Revisión automática</h2><button class="btn small" onclick="runChecks(0)">Volver a revisar</button><button class="btn small lime" onclick="runChecks(1)">Revisar con IA</button></div><div id="checkList"><p class="muted small">Revisando…</p></div></section>
   <div class="actions">
     <button class="btn" onclick="save(true)">Guardar</button>
     <button class="btn" onclick="copyText()">Copiar</button>
     ${published ? '<span class="muted">Publicada</span>' : a.status === 'draft' ? `<button class="btn primary" onclick="reviewed()">Revisada</button>` : `<button class="btn primary" id="pubBtn" onclick="publish()">Publicar</button>`}
     <button class="btn danger" onclick="removeArticle(${a.id})">${published ? 'Quitar del panel' : 'Eliminar'}</button>
   </div>`;
+  setTimeout(() => runChecks(0), 0);
   const f = id => $(`#f-${id}`);
   const fit = () => {
     const B = brandOf(f('brand') ? f('brand').value : a.brand);
@@ -999,9 +1021,26 @@ window.syncCanva = async () => {
   try { await api(`/api/articles/${editorId}/canva/export`, { method: 'POST' }); toast('Imagen actualizada desde Canva'); render() }
   catch (e) { toast(e.message); b.disabled = false; b.textContent = 'Actualizar imagen desde Canva' }
 };
+let checkErrors = 0, checkForce = 0;
+window.runChecks = async ai => {
+  const box = $('#checkList'); if (!box) return;
+  box.innerHTML = `<p class="muted small">${ai ? 'La IA está revisando…' : 'Revisando…'}</p>`;
+  try {
+    if (ai) await saveArticle();
+    const r = await api(`/api/articles/${editorId}/check${ai ? '?ai=1' : ''}`);
+    checkErrors = r.items.filter(x => x.level === 'error').length;
+    box.innerHTML = r.items.length ? `<ul class="checklist">${r.items.map(x => `<li class="ck ${x.level}"><b>${esc(x.field)}</b> ${esc(x.message)}</li>`).join('')}</ul>` : '<p class="ok">Todo en orden: sin fallos detectados.</p>';
+  } catch (e) { box.innerHTML = `<p class="error small">${esc(e.message)}</p>` }
+};
 window.reviewed = async () => {
   try {
-    await saveArticle(); await api(`/api/articles/${editorId}/ready`, { method: 'POST' });
+    await saveArticle();
+    await runChecks(0);
+    if (checkErrors && checkForce !== editorId) {
+      checkForce = editorId; $('#checks').scrollIntoView({ behavior: 'smooth' });
+      return toast(`Hay ${checkErrors} ${checkErrors === 1 ? 'fallo' : 'fallos'}: corrígelos o pulsa «Revisada» otra vez`);
+    }
+    await api(`/api/articles/${editorId}/ready`, { method: 'POST' });
     const next = reviewIds.filter(x => x !== editorId)[0];
     reviewIds = reviewIds.filter(x => x !== editorId);
     toast('Revisada: pasa a Publicar'); counts();
@@ -1131,9 +1170,12 @@ async function settings(v) {
           ? `<button class="link error small" onclick="checkSource(${s.id},this)">Error · comprobar</button>`
           : officialContract ? `<button class="link small" onclick="checkSource(${s.id},this)">Comprobar</button>`
           : `<span class="muted small">${s.items_added ?? 0} nuevas</span>`}${officialContract ? `<span class="muted small">${s.items_seen ?? 0} leídos · ${s.items_added ?? 0} nuevas</span>` : ''}</div>
+        ${s.total_30 ? `<p class="srcperf small ${s.poor ? 'poor' : ''}">30 días: <b>${s.useful_30}</b> útiles · ${s.discarded_30} «No sirve»${s.poor ? ` · Casi todo lo descartas. <button class="link small" onclick="toggleSource(${s.id}).then(render)">Apagar esta fuente</button>` : ''}</p>` : ''}
         ${s.last_error ? `<p class="srcerr small"><span class="error">${esc(s.last_error.slice(0, 220))}</span><br><span class="muted">${esc(s.url.slice(0, 90))}</span></p>` : ''}`;
       }).join('') || '<p class="muted small">Ninguna todavía.</p>'}</div>
 </section>
+    <section class="panel"><h2>Alertas al móvil</h2><p class="muted small">Avisos de noticias urgentes, fallos al publicar, novedades de los temas que sigues y la agenda. En iPhone, primero añade el panel a la pantalla de inicio (Compartir → «Añadir a pantalla de inicio») y ábrelo desde ahí.</p>
+      <div id="pushBox"><p class="muted small">Cargando…</p></div></section>
     <section class="panel"><h2>Lo que no quieres ver</h2><p class="muted small">Se aprende solo cuando marcas «No sirve» o eliminas una noticia: esas palabras o sitios ya no vuelven a salir. Quita la que no quieras.</p>
       <div class="sources" id="learnList"></div>
       <form id="addLearn" class="row wrap"><input name="label" placeholder="Palabra o sitio (p. ej. Castelldefels)" required><button class="btn small">Añadir</button></form></section>
@@ -1144,6 +1186,7 @@ async function settings(v) {
   api('/api/social').then(d => { $('#fbList').innerHTML = d.watched.filter(x => (x.brand || 'infolinense') === SB).map(s => `<div class="srcrow"><label class="switch"><input type="checkbox" ${s.active ? 'checked' : ''} onchange="toggleSource(${s.id})"> ${esc(s.name)}</label></div>`).join('') || '<p class="muted small">Ninguna todavía.</p>' }).catch(() => { });
   const showLearn = d => { $('#learnList').innerHTML = d.items.map(t => `<div class="srcrow"><span title="${esc(t.example || '')}">${esc(t.label)}</span><button class="link small" data-unlearn="${esc(t.term)}">Quitar</button></div>`).join('') || '<p class="muted small">Nada todavía.</p>' };
   api('/api/learned').then(showLearn).catch(() => {});
+  drawPush();
   $('#learnList').onclick = async e => { const t = e.target.dataset.unlearn; if (!t) return; try { showLearn(await api('/api/learned/' + encodeURIComponent(t), { method: 'DELETE' })) } catch (er) { toast(er.message) } };
   $('#addLearn').onsubmit = async e => { e.preventDefault(); try { showLearn(await api('/api/learned', { method: 'POST', body: JSON.stringify(Object.fromEntries(new FormData(e.target))) })); e.target.reset(); toast('Ya no saldrán noticias con eso') } catch (er) { toast(er.message) } };
   $('#addFb').onsubmit = async e => { e.preventDefault(); const d = Object.fromEntries(new FormData(e.target)); try { await api('/api/sources', { method: 'POST', body: JSON.stringify({ ...d, kind: 'social', priority: 60, local_scope: true }) }); toast('Ahora se vigila'); render() } catch (er) { toast(er.message) } };
@@ -1187,3 +1230,102 @@ window.go = go; window.download = download; window.logout = logout; window.rende
 if (token) start(); else logout();
 
 document.addEventListener('click', e => { const g = e.target.closest('[data-go]'); if (g && !window.getSelection().toString()) location.hash = g.dataset.go });
+
+
+/* ---------- Temas que sigues ---------- */
+window.followSheet = async cid => {
+  let terms = [];
+  try { terms = (await api('/api/topics/suggest/' + cid)).terms } catch (e) { }
+  const sheet = document.createElement('div'); sheet.className = 'sheet-bg';
+  sheet.innerHTML = `<div class="sheet" role="dialog" aria-label="Seguir tema"><h2>Seguir tema</h2>
+    <p class="muted small">Te avisamos cuando salga algo nuevo con estas palabras (al menos dos de ellas).</p>
+    <label>Nombre del tema<input id="tpLabel" value="${esc(terms.slice(0, 2).join(' '))}"></label>
+    <label>Palabras clave, separadas por comas<input id="tpTerms" value="${esc(terms.join(', '))}"></label>
+    <div class="row"><button class="btn" id="tpNo">Cancelar</button><button class="btn primary" id="tpOk">Seguir</button></div></div>`;
+  document.body.appendChild(sheet);
+  sheet.onclick = e => { if (e.target === sheet) sheet.remove() };
+  sheet.querySelector('#tpNo').onclick = () => sheet.remove();
+  sheet.querySelector('#tpOk').onclick = async () => {
+    try { await api('/api/topics', { method: 'POST', body: JSON.stringify({ label: sheet.querySelector('#tpLabel').value, terms: sheet.querySelector('#tpTerms').value }) }); sheet.remove(); toast('Tema guardado: te avisaremos de novedades'); if (view === 'sort') render() }
+    catch (e) { toast(e.message) }
+  };
+};
+async function topicsView(v) {
+  const draw = d => {
+    v.innerHTML = `<section class="panel"><h2>Seguir un tema nuevo</h2><p class="muted small">Ej.: «obras calle Real» con palabras «obras, calle Real». También desde cualquier tarjeta de Ordenar con «Seguir tema».</p>
+      <form id="tpForm" class="stack"><input name="label" placeholder="Nombre del tema" required><input name="terms" placeholder="Palabras clave, separadas por comas" required><button class="btn primary">Seguir</button></form></section>
+      ${d.items.map(t => `<section class="panel topic"><div class="row"><h2 class="grow">${esc(t.label)}</h2>${t.new ? `<span class="count">${t.new}</span>` : ''}<button class="link small" data-untopic="${t.id}">Dejar de seguir</button></div>
+        <p class="muted small">Palabras: ${t.terms.map(esc).join(', ')}</p>
+        ${t.items.length ? `<ol class="tl">${t.items.map(i => `<li><span class="muted small">${esc(String(i.created_at || '').slice(0, 10))}</span> ${i.article_id ? `<a href="#editor/${i.article_id}">${esc(i.title)}</a>` : `<a href="${safeUrl(i.url)}" target="_blank" rel="noopener">${esc(i.title)}</a>`}${i.publish_url ? ' <span class="s-state pub">Publicada</span>' : ''}</li>`).join('')}</ol>` : '<p class="muted small">Aún nada nuevo.</p>'}</section>`).join('') || '<p class="empty">No sigues ningún tema todavía.</p>'}`;
+    v.querySelector('#tpForm').onsubmit = async e => { e.preventDefault(); try { draw(await api('/api/topics', { method: 'POST', body: JSON.stringify(Object.fromEntries(new FormData(e.target))) })); toast('Tema guardado') } catch (er) { toast(er.message) } };
+    v.querySelectorAll('[data-untopic]').forEach(b => b.onclick = async () => { try { draw(await api('/api/topics/' + b.dataset.untopic, { method: 'DELETE' })) } catch (er) { toast(er.message) } });
+  };
+  draw(await api('/api/topics'));
+}
+
+/* ---------- Agenda de la ciudad ---------- */
+async function agendaView(v) {
+  const draw = d => {
+    const byDay = {}; d.items.forEach(e => (byDay[e.day] = byDay[e.day] || []).push(e));
+    v.innerHTML = `<section class="panel"><h2>Añadir a la agenda</h2>
+      <form id="agForm" class="ag-form"><input name="title" placeholder="Qué es (p. ej. Pleno ordinario)" required><input name="day" type="date" min="${madridDate()}" required><input name="time" type="time"><input name="place" placeholder="Dónde"><button class="btn primary">Añadir</button></form>
+      <p class="muted small">También se rellena sola con las noticias que anuncian plenos, partidos, conciertos, plazos… con fecha. Te avisamos al móvil dos días antes.</p></section>
+      ${Object.keys(byDay).map(day => `<section class="ag-day"><h2>${esc(dayTitle(day)[0])} <span class="muted small">${esc(dayTitle(day)[1])}</span></h2>
+        ${byDay[day].map(e => `<article class="ag-item"><time>${esc(e.time || '—')}</time><div class="grow"><b>${esc(e.title)}</b><span class="muted small">${[e.kind, e.place, e.manual ? 'añadido a mano' : 'sacado de una noticia'].filter(Boolean).map(esc).join(' · ')}</span>
+          ${e.url && /^https?:/.test(e.url) ? `<a class="link small" href="${safeUrl(e.url)}" target="_blank" rel="noopener">Ver la fuente</a>` : ''}</div><button class="btn small danger icon" data-unev="${e.id}" aria-label="Quitar">×</button></article>`).join('')}</section>`).join('') || '<p class="empty">Nada en los próximos dos meses.</p>'}`;
+    v.querySelector('#agForm').onsubmit = async e => { e.preventDefault(); try { draw(await api('/api/agenda', { method: 'POST', body: JSON.stringify(Object.fromEntries(new FormData(e.target))) })); toast('Añadido a la agenda') } catch (er) { toast(er.message) } };
+    v.querySelectorAll('[data-unev]').forEach(b => b.onclick = async () => { try { draw(await api('/api/agenda/' + b.dataset.unev, { method: 'DELETE' })) } catch (er) { toast(er.message) } });
+  };
+  draw(await api('/api/agenda?days=60'));
+}
+
+/* ---------- Estadísticas ---------- */
+let statsDays = 30;
+async function statsView(v) {
+  const d = await api('/api/stats?days=' + statsDays);
+  const best = d.best || { overall: {}, by_section: {}, samples: 0 };
+  const top = Object.entries(best.overall).sort((a, b) => b[1] - a[1]);
+  const fmt = x => x >= 1.15 ? `<b class="up">${Math.round((x - 1) * 100)}% más</b>` : x <= .85 ? `<b class="down">${Math.round((1 - x) * 100)}% menos</b>` : 'normal';
+  v.innerHTML = `<div class="pub-top"><div class="seg">${[7, 30, 90].map(n => `<label><input type="radio" name="sd" value="${n}" ${statsDays === n ? 'checked' : ''}><span>${n} días</span></label>`).join('')}</div>
+      <button class="btn small" id="stRefresh">Actualizar cifras</button><span class="muted small">${d.refreshed_at ? 'Actualizado ' + esc(whenText(utcToMadrid(d.refreshed_at))) : 'Aún sin cifras'}</span></div>
+    <section class="panel"><h2>Mejores horas</h2>
+      ${best.samples < 4 ? `<p class="muted">Hacen falta más publicaciones con cifras para saber qué hora funciona mejor (llevamos ${best.samples}). Mientras tanto, «Rellenar huecos» usa el orden normal.</p>`
+        : `<div class="best">${top.map(([s, x]) => `<div class="best-slot"><time>${s}</time><span>${fmt(x)}</span></div>`).join('')}</div>
+           <p class="muted small">Comparado con lo normal de tus publicaciones. Por sección:</p>
+           <div class="best-sec">${Object.entries(best.by_section).map(([sec, slots]) => { const b = Object.entries(slots).sort((a, c) => c[1] - a[1])[0]; return `<span>${secBadge(sec, 'infolinense')} mejor a las <b>${b[0]}</b></span>` }).join('')}</div>`}</section>
+    <section class="panel"><h2>Noticias</h2>${d.items.length ? `<div class="st-table"><div class="st-row st-h"><span>Noticia</span><span>Me gusta</span><span>Coment.</span><span>Compart.</span><span>Alcance</span></div>
+      ${d.items.map(r => `<div class="st-row"><span><a href="#editor/${r.id}">${esc(r.headline)}</a><small class="muted">${esc(r.day)} · ${esc(r.slot)} · ${esc(r.networks || '')}</small></span><span>${r.likes || 0}</span><span>${r.comments || 0}</span><span>${r.shares || 0}</span><span>${r.reach || '—'}</span></div>`).join('')}</div>`
+      : '<p class="muted">Todavía no hay cifras. Se leen solas cada 3 horas de lo publicado en Instagram y Facebook.</p>'}
+      <p class="muted small">Visitas de la web: no se leen todavía (la web no da ese dato al panel).</p></section>`;
+  v.querySelectorAll('[name=sd]').forEach(i => i.onchange = () => { statsDays = +i.value; render() });
+  v.querySelector('#stRefresh').onclick = async e => { e.target.disabled = true; e.target.textContent = 'Leyendo…'; try { const r = await api('/api/stats/refresh', { method: 'POST' }); toast(r.updated + ' publicaciones actualizadas'); render() } catch (er) { toast(er.message); e.target.disabled = false } };
+}
+
+
+/* ---------- Alertas al móvil (Web Push) ---------- */
+const b64ToBytes = b => { const s = atob((b + '='.repeat((4 - b.length % 4) % 4)).replace(/-/g, '+').replace(/_/g, '/')); return Uint8Array.from(s, c => c.charCodeAt(0)) };
+async function pushReg() { if (!('serviceWorker' in navigator) || !('PushManager' in window)) return null; return navigator.serviceWorker.register('/sw.js', { scope: '/' }) }
+async function drawPush() {
+  const box = $('#pushBox'); if (!box) return;
+  let info; try { info = await api('/api/push') } catch (e) { box.innerHTML = `<p class="error small">${esc(e.message)}</p>`; return }
+  const supported = 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window;
+  let sub = null; try { const reg = supported && await navigator.serviceWorker.getRegistration('/'); sub = reg && await reg.pushManager.getSubscription() } catch (e) { }
+  box.innerHTML = `${!supported ? '<p class="error small">Este navegador no admite avisos. En iPhone, abre el panel desde el icono de la pantalla de inicio.</p>' : ''}
+    <div class="row wrap">${sub ? '<span class="s-state pub">Activadas en este dispositivo</span><button class="btn small" id="pushOff">Desactivar aquí</button>' : `<button class="btn primary small" id="pushOn" ${supported ? '' : 'disabled'}>Activar en este dispositivo</button>`}
+      <button class="btn small" id="pushTest">Enviar prueba</button><span class="muted small">${info.devices.length} ${info.devices.length === 1 ? 'dispositivo' : 'dispositivos'}${info.telegram ? ' · y Telegram' : ''}</span></div>
+    <div class="stack">${Object.entries(info.kinds).map(([k, n]) => `<label class="switch"><input type="checkbox" data-pk="${k}" ${info.prefs[k] ? 'checked' : ''}> ${esc(n)}</label>`).join('')}</div>`;
+  const on = $('#pushOn'), off = $('#pushOff');
+  if (on) on.onclick = async () => {
+    try {
+      if (await Notification.requestPermission() !== 'granted') return toast('Hay que permitir las notificaciones');
+      const reg = await pushReg(); await navigator.serviceWorker.ready;
+      const s = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64ToBytes(info.key) });
+      const label = /iPhone|iPad/.test(navigator.userAgent) ? 'iPhone' : /Android/.test(navigator.userAgent) ? 'Android' : 'Ordenador';
+      await api('/api/push/subscribe', { method: 'POST', body: JSON.stringify({ subscription: s.toJSON(), label }) });
+      toast('Avisos activados'); drawPush();
+    } catch (e) { toast('No se pudo activar: ' + e.message) }
+  };
+  if (off) off.onclick = async () => { try { await api('/api/push/unsubscribe', { method: 'POST', body: JSON.stringify({ endpoint: sub.endpoint }) }); await sub.unsubscribe(); toast('Avisos desactivados aquí'); drawPush() } catch (e) { toast(e.message) } };
+  $('#pushTest').onclick = async () => { try { const r = await api('/api/push/test', { method: 'POST' }); toast('Prueba enviada a ' + r.sent) } catch (e) { toast(e.message) } };
+  box.querySelectorAll('[data-pk]').forEach(i => i.onchange = async () => { const d = {}; box.querySelectorAll('[data-pk]').forEach(x => d[x.dataset.pk] = x.checked); try { await api('/api/push/prefs', { method: 'POST', body: JSON.stringify(d) }); toast('Guardado') } catch (e) { toast(e.message) } });
+}

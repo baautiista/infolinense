@@ -688,3 +688,73 @@ class AdaptElsewhereEventTests(unittest.TestCase):
         self.assertFalse(sources.adaptable_ok('Nuevas ayudas de la DANA para autónomos y empresas'))
         self.assertTrue(sources.adaptable_ok('La AEMET activa la alerta naranja por lluvias en Andalucía'))
         self.assertTrue(sources.adaptable_ok('El Gobierno aprueba nuevas ayudas al alquiler para jóvenes'))
+
+
+class NewFeatures76Tests(unittest.TestCase):
+    def test_agenda_dates(self):
+        from datetime import date
+        from app import agenda
+        ref = date(2026, 10, 28)
+        self.assertEqual(agenda.find_date('El pleno será el 5 de noviembre a las 10:00', ref), (date(2026, 11, 5), '10:00'))
+        self.assertEqual(agenda.find_date('Concierto el próximo sábado', ref)[0], date(2026, 10, 31))
+        self.assertEqual(agenda.find_date('Fue el 3 de octubre', ref), (None, ''))
+        self.assertEqual(agenda.kind_of('Pleno ordinario de noviembre'), 'Pleno')
+
+    def test_agenda_from_candidate(self):
+        from app import db, agenda
+        from datetime import datetime, timedelta
+        d = datetime.now() + timedelta(days=10)
+        months = ['enero','febrero','marzo','abril','mayo','junio','julio','agosto','septiembre','octubre','noviembre','diciembre']
+        cid = db.exec_("INSERT INTO candidates(title,url,status,excerpt) VALUES(?,?,?,?)",
+                       ('La Balona juega el partido decisivo', 'https://x.test/ag1', 'new', 'El partido será el %d de %s a las 18:00 en el Municipal' % (d.day, months[d.month - 1])))
+        self.assertTrue(agenda.from_candidate(cid))
+        self.assertTrue(any(e['candidate_id'] == cid for e in agenda.upcoming()))
+
+    def test_topics(self):
+        from app import db, topics
+        tid = topics.add('Obras calle Real', 'obras, calle Real')
+        cid = db.exec_("INSERT INTO candidates(title,url,status) VALUES('Nuevas obras en la calle Real esta semana','https://x.test/tp1','new')")
+        self.assertIn('Obras calle Real', topics.check(cid))
+        cid2 = db.exec_("INSERT INTO candidates(title,url,status) VALUES('Obras en el puerto','https://x.test/tp2','new')")
+        self.assertEqual(topics.check(cid2), [])
+        topics.remove(tid)
+
+    def test_review_checks(self):
+        from app import db, review
+        cid = db.exec_("INSERT INTO candidates(title,url,status,raw_text) VALUES('x','https://x.test/rv1','new','Se invierten 200.000 euros')")
+        aid = db.exec_("INSERT INTO articles(candidate_id,status,headline,subtitle,body) VALUES(?,?,?,?,?)",
+                       (cid, 'draft', 'La Atunarra recibe 300.000 euros para la playa', 'Obras de de mejora', 'El jueves 5 de noviembre de 2026 empiezan «las obras.'))
+        msgs = ' | '.join(x['message'] for x in review.check(aid))
+        self.assertIn('Atunara', msgs)
+        self.assertIn('300000', msgs)
+        self.assertIn('de de', msgs)
+        self.assertIn('sin cerrar', msgs)
+        self.assertNotIn('no jueves', msgs)
+
+    def test_stats_best_slots(self):
+        from app import db, stats
+        stats._ensure()
+        for i, (hh, score) in enumerate([('17:30', 50), ('17:20', 60), ('08:00', 5), ('08:10', 7)]):
+            cid = db.exec_("INSERT INTO candidates(title,url,status) VALUES(?,?,'published')", ('St %d' % i, 'https://x.test/st%d' % i))
+            aid = db.exec_("INSERT INTO articles(candidate_id,status,headline,section,updated_at) VALUES(?,?,?,?,datetime('now','start of day','+%d hours','+%d minutes'))"
+                           % (int(hh[:2]) - 1, int(hh[3:])), (cid, 'published', 'Titular %d' % i, 'CULTURA'))
+            db.exec_("INSERT INTO post_stats(article_id,network,likes,score) VALUES(?,?,?,?)", (aid, 'instagram', score, score))
+        best = stats.best_slots()
+        self.assertGreater(best['overall'].get('17:45', 0), best['overall'].get('08:30', 9))
+
+    def test_push_encrypt_roundtrip(self):
+        import os, struct
+        from cryptography.hazmat.primitives.asymmetric import ec
+        from cryptography.hazmat.primitives import serialization
+        from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+        from app import alerts
+        ua = ec.generate_private_key(ec.SECP256R1())
+        pub = ua.public_key().public_bytes(serialization.Encoding.X962, serialization.PublicFormat.UncompressedPoint)
+        auth = os.urandom(16)
+        b = alerts.encrypt(b'hola', alerts._b64(pub), alerts._b64(auth))
+        salt = b[:16]; rs, n = struct.unpack('!IB', b[16:21]); asp = b[21:21 + n]
+        shared = ua.exchange(ec.ECDH(), ec.EllipticCurvePublicKey.from_encoded_point(ec.SECP256R1(), asp))
+        ikm = alerts._hkdf(auth, shared, b'WebPush: info\x00' + pub + asp, 32)
+        out = AESGCM(alerts._hkdf(salt, ikm, b'Content-Encoding: aes128gcm\x00', 16)).decrypt(alerts._hkdf(salt, ikm, b'Content-Encoding: nonce\x00', 12), b[21 + n:], None)
+        self.assertEqual(out, b'hola\x02')
+        self.assertTrue(alerts.URGENT.search('Incendio en la Atunara'))

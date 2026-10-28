@@ -204,6 +204,10 @@ def scan():
                         added.append(cid)
     except Exception as exc:
         errors.append('Búsqueda con IA: ' + str(exc)[:200])
+    try:
+        sources.after_new(added)
+    except Exception as exc:
+        errors.append('Avisos: ' + str(exc)[:200])
     db.log('social_scan', f'Redes: {len(added)} publicaciones nuevas')
     return {'added': added, 'errors': errors}
 

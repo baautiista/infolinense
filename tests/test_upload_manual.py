@@ -840,3 +840,20 @@ class AuthorizedSocialTests(unittest.TestCase):
         self.assertIsNone(sources.add_candidate('Vecinos de La Línea de la Concepción piden arreglar la calle', 'https://www.facebook.com/paginaajena/posts/1', '', 'x', None, now, meta))
         db.exec_("INSERT OR IGNORE INTO sources(name,url,kind,priority,official,local_scope,active) VALUES('AVV Test','https://www.facebook.com/avvtestlinea','social',60,0,1,1)")
         self.assertTrue(sources.add_candidate('Vecinos de La Línea de la Concepción piden arreglar la calle Real', 'https://www.facebook.com/avvtestlinea/posts/2', '', 'x', None, now, meta))
+
+
+class FormatTests(unittest.TestCase):
+    def test_suggest_and_manual(self):
+        from app import db, formats
+        self.assertEqual(formats.suggest('Cortes de tráfico en la calle Real por las obras')[0], 'carousel')
+        self.assertEqual(formats.suggest('Fallece un vecino histórico')[0], 'post')
+        self.assertEqual(formats.suggest('Vídeo: así ha quedado el paseo')[0], 'video')
+        cid = db.exec_("INSERT INTO candidates(title,url,status) VALUES('Las obras de la Atunara se harán en tres fases','https://x.test/f1','new')")
+        formats.apply_suggestion(cid)
+        r = db.row('SELECT format,carousel_state,format_by FROM candidates WHERE id=?', (cid,))
+        self.assertEqual((r['format'], r['carousel_state'], r['format_by']), ('carousel', 'pendiente', 'sugerencia'))
+        formats.set_format(cid, 'post')
+        formats.from_draft(cid, True, 'muchas cifras')
+        self.assertEqual(db.row('SELECT format FROM candidates WHERE id=?', (cid,))['format'], 'post')  # lo manual manda
+        formats.set_format(cid, 'carousel', 'terminado')
+        self.assertEqual(db.row('SELECT carousel_state FROM candidates WHERE id=?', (cid,))['carousel_state'], 'terminado')

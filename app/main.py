@@ -9,7 +9,7 @@ from fastapi.responses import FileResponse, RedirectResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from . import db, sources, pipeline, publishers, photos, canva, ai, planner, layout, social, social_publish, brands, ocr, storage, learn, alerts, topics, agenda, stats
+from . import db, sources, pipeline, publishers, photos, canva, ai, planner, layout, social, social_publish, brands, ocr, storage, learn, alerts, topics, agenda, stats, formats
 from . import review as checks
 from .auth import login, require_auth
 from starlette.concurrency import run_in_threadpool
@@ -273,6 +273,15 @@ def stats_view(days:int=30,brand:str=''):
 def stats_best(brand:str=''): return stats.best_slots(60,brand)
 @app.post('/api/stats/refresh',dependencies=[Depends(require_auth)])
 def stats_refresh(): return {'updated':stats.refresh()}
+
+class FormatIn(BaseModel):
+    format:str|None=None
+    carousel_state:str|None=None
+@app.post('/api/candidates/{cid}/format',dependencies=[Depends(require_auth)])
+def candidate_format(cid:int,body:FormatIn):
+    if not db.row('SELECT id FROM candidates WHERE id=?',(cid,)): raise HTTPException(404)
+    try: return formats.set_format(cid,body.format,body.carousel_state)
+    except ValueError as e: raise HTTPException(400,str(e))
 
 class LearnIn(BaseModel):
     label:str
@@ -545,7 +554,7 @@ def _sort_queue(brand=''):
 
 def _drafting(brand=''):
     rows=db.rows("""SELECT c.id,c.brand,c.title,a.section,a.subtitle,a.section_label,a.image_local IS NOT NULL AND a.image_local!='' has_photo,c.source_name,c.outlet,c.editorial_priority,c.planned_at,c.work_state,c.work_step,c.work_error,
-                      a.id article_id,a.status article_status,a.headline,
+                      a.id article_id,a.status article_status,a.headline,c.format,c.format_reason,c.format_by,c.carousel_state,
                       (a.status IN ('review_ready','approved')) needs_image
                       FROM candidates c LEFT JOIN articles a ON a.candidate_id=c.id AND a.status!='rejected'
                       WHERE c.status NOT IN ('archived','published') AND c.editorial_priority IN ('urgent','today','this_week','future')
@@ -948,7 +957,7 @@ def mark_ready(aid:int):
 
 @app.get('/api/to-publish',dependencies=[Depends(require_auth)])
 def to_publish(brand:str=''):
-    rows=db.rows("""SELECT a.id,a.brand,COALESCE(NULLIF(a.headline,''),''||c.title) headline,a.section,a.status,a.image_local,a.publish_url,c.planned_at,c.editorial_priority,c.id candidate_id,
+    rows=db.rows("""SELECT a.id,a.brand,COALESCE(NULLIF(a.headline,''),''||c.title) headline,a.section,a.status,a.image_local,a.publish_url,c.planned_at,c.editorial_priority,c.id candidate_id,c.format,c.carousel_state,
                       a.scheduled_at,a.scheduled_networks,a.schedule_error,a.updated_at,d.exported canva_exported FROM articles a LEFT JOIN candidates c ON c.id=a.candidate_id
                       LEFT JOIN canva_designs d ON d.article_id=a.id
                       WHERE (a.status IN ('review_ready','approved') AND COALESCE(a.hidden,0)=0 AND d.exported=1 AND COALESCE(a.render_path,'')!='')
@@ -1072,7 +1081,7 @@ def review(brand:str=''):
     return _bf(db.rows("""SELECT a.*,c.title source_title,c.url source_url,c.score,c.source_name,d.url canva_url,d.exported canva_exported FROM articles a LEFT JOIN candidates c ON c.id=a.candidate_id LEFT JOIN canva_designs d ON d.article_id=a.id WHERE a.status IN ('review_ready','approved') ORDER BY a.id DESC"""),brand)
 @app.get('/api/articles/{aid}',dependencies=[Depends(require_auth)])
 def article(aid:int):
-    a=db.row('SELECT a.*,c.url source_url,c.score,c.source_name,c.outlet,c.planned_at FROM articles a LEFT JOIN candidates c ON c.id=a.candidate_id WHERE a.id=?',(aid,))
+    a=db.row('SELECT a.*,c.url source_url,c.score,c.source_name,c.outlet,c.planned_at,c.format,c.format_reason,c.format_by,c.carousel_state FROM articles a LEFT JOIN candidates c ON c.id=a.candidate_id WHERE a.id=?',(aid,))
     if not a: raise HTTPException(404)
     return a
 @app.get('/api/articles/{aid}/carousel',dependencies=[Depends(require_auth)])

@@ -157,7 +157,7 @@ async function sortView(v) {
   } else groups = BLOCKS;
   drawSort(v);
 }
-let sortAgenda = [];
+let sortAgenda = [], onlyCarousel = false;
 // Franja de agenda en Ordenar: lo que llega esta semana (para preparar la previa) y acceso a temas y agenda
 function agendaStrip() {
   const items = sortAgenda.slice(0, 6);
@@ -249,14 +249,15 @@ function drawSort(v = $('#view')) {
   const words = searchFold(queueSearch).trim().split(/\s+/).filter(Boolean);
   const filtered = queue.filter(n => {
     const text = searchFold([n.title, n.excerpt, n.source_name, n.outlet, n.local_angle].join(' '));
-    return words.every(word => text.includes(word));
+    return words.every(word => text.includes(word)) && (!onlyCarousel || n.format === 'carousel');
   });
+  const nCar = queue.filter(n => n.format === 'carousel').length;
   const count = g => filtered.filter(n => n.group === g).length;
   if (!block || !groups.includes(block) || !count(block)) block = groups.find(count) || groups[0];
   const items = filtered.filter(n => n.group === block);
   const n = items[0];
   const shown = ownBrand() ? [...groups.filter(count), ...groups.filter(g => !count(g))] : groups;  // primero las que tienen noticias
-  v.innerHTML = `<div class="chips scroll blocks">${shown.map(g => `<button class="chip ${g === block ? 'on' : ''}" data-g="${esc(g)}" ${count(g) ? '' : 'disabled'}>${esc(g)} <b>${count(g)}</b></button>`).join('')}</div>
+  v.innerHTML = `<div class="chips scroll blocks"><button class="chip ${onlyCarousel ? 'on' : ''}" id="onlyCar" ${nCar || onlyCarousel ? '' : 'disabled'}>Solo carruseles <b>${nCar}</b></button>${shown.map(g => `<button class="chip ${g === block ? 'on' : ''}" data-g="${esc(g)}" ${count(g) ? '' : 'disabled'}>${esc(g)} <b>${count(g)}</b></button>`).join('')}</div>
     ${n ? `<div class="deck" id="deck">${items[2] ? '<div class="swipe ghost g2"></div>' : ''}${items[1] ? '<div class="swipe ghost"></div>' : ''}${swipeCard(n)}</div>
       <div class="deck-actions"><button class="round no" id="noBtn" aria-label="No sirve" title="No sirve (←)">✕</button>
         <span class="deck-count">${items.length} ${items.length === 1 ? 'queda' : 'quedan'}</span>
@@ -292,6 +293,7 @@ function drawSort(v = $('#view')) {
     }
   };
   v.querySelectorAll('[data-g]').forEach(b => b.onclick = () => { block = b.dataset.g; drawSort(v) });
+  const oc = v.querySelector('#onlyCar'); if (oc) oc.onclick = () => { onlyCarousel = !onlyCarousel; drawSort(v) };
   if (!n && queueSearch.trim()) {
     v.querySelectorAll('.empty,.next').forEach(el => el.remove());
     const empty = document.createElement('p'); empty.className = 'empty';
@@ -301,6 +303,28 @@ function drawSort(v = $('#view')) {
   if (n) armDeck(n);
 }
 function special(n) { const t = `${n.title} ${n.excerpt || ''} ${n.source_name || ''}`.toLowerCase(); if (n.source_kind === 'procurement' || /licitaci|contrataci|adjudicaci/.test(t)) return 'Licitación'; if (n.source_kind === 'edictos' || n.source_kind === 'bop' || /edicto/.test(t)) return 'Edicto'; if (/exclusiv/.test(t)) return 'Exclusiva'; return '' }
+// Formato de la noticia: normal, carrusel o vídeo (+ estado de producción del carrusel)
+const FMT = { post: 'Normal', carousel: 'Carrusel', video: 'Vídeo' }, CSTATE = { pendiente: 'Pendiente', en_diseno: 'En diseño', terminado: 'Terminado' };
+function fmtBadge(r) {
+  const f = r.format || 'post'; if (f === 'post') return '';
+  return `<span class="fmt ${f}">${FMT[f]}${f === 'carousel' ? ' · ' + (CSTATE[r.carousel_state || 'pendiente']) : ''}</span>`;
+}
+function formatPicker(cid, r, compact) {
+  const f = r.format || 'post';
+  return `<div class="fmt-pick" data-fcid="${cid}">${Object.entries(FMT).map(([k, n]) => `<button type="button" class="fchip ${f === k ? 'on' : ''}" data-fmt="${k}">${n}</button>`).join('')}
+    ${f === 'carousel' ? `<select class="fstate" aria-label="Estado del carrusel">${Object.entries(CSTATE).map(([k, n]) => `<option value="${k}" ${(r.carousel_state || 'pendiente') === k ? 'selected' : ''}>${n}</option>`).join('')}</select>` : ''}
+    ${!compact && r.format_reason && r.format_by !== 'manual' ? `<span class="muted small">${r.format_by === 'ia' ? 'La IA recomienda' : 'Sugerido'}: ${esc(r.format_reason)}</span>` : ''}</div>`;
+}
+document.addEventListener('click', async e => {
+  const b = e.target.closest('.fmt-pick [data-fmt]'); if (!b) return;
+  e.stopPropagation(); const box = b.closest('.fmt-pick');
+  try { await api(`/api/candidates/${box.dataset.fcid}/format`, { method: 'POST', body: JSON.stringify({ format: b.dataset.fmt }) }); const n = queue.find(x => x.id === +box.dataset.fcid); if (n) { n.format = b.dataset.fmt; n.format_by = 'manual'; if (b.dataset.fmt === 'carousel' && !n.carousel_state) n.carousel_state = 'pendiente' } toast('Formato: ' + FMT[b.dataset.fmt]); view === 'sort' ? drawSort() : render() } catch (er) { toast(er.message) }
+}, true);
+document.addEventListener('change', async e => {
+  const sel = e.target.closest('.fmt-pick .fstate'); if (!sel) return;
+  const box = sel.closest('.fmt-pick');
+  try { await api(`/api/candidates/${box.dataset.fcid}/format`, { method: 'POST', body: JSON.stringify({ carousel_state: sel.value }) }); const n = queue.find(x => x.id === +box.dataset.fcid); if (n) n.carousel_state = sel.value; toast('Carrusel: ' + CSTATE[sel.value]) } catch (er) { toast(er.message) }
+});
 // Actualización de algo ya visto; primicia = fuente oficial y ningún medio lo ha publicado todavía
 function extraFlags(n) {
   const upd = n.update_of || String(n.local_angle || '').startsWith('ACTUALIZACIÓN');
@@ -319,6 +343,7 @@ function swipeCard(n) {
       ${img ? `<div class="meta">${brandBadge(n.brand)}${extraFlags(n)}${n.social_type ? `<span class="kind ${n.social_type}">${KIND[n.social_type] || ''}</span>` : ''}${sp ? `<span class="flag">${sp}</span>` : ''}<span class="src">${esc(n.outlet || n.source_name || host(n.url))}${(n.links || []).length ? ` +${n.links.length}` : ''}</span><span>${n.date_iso ? ago(n.date_iso) : 'sin fecha'}</span></div>` : ''}
       <h2>${esc(n.title)}</h2>
       ${text ? `<p class="angle">${esc(text)}</p>` : ''}
+      ${formatPicker(n.id, n)}
       ${(n.topics || []).length ? `<p class="topic-tags">${n.topics.map(t => `<span class="topic-tag">Sigues: ${esc(t)}</span>`).join('')}</p>` : ''}
       <div class="foot"><a class="link" href="${safeUrl(n.url)}" target="_blank" rel="noopener noreferrer">Ver la fuente</a><button class="link follow" type="button" onclick="followSheet(${n.id})">Seguir tema</button>
         ${(n.links || []).length ? `<span class="muted small">También: ${n.links.map(l => esc(l.outlet || l.source_name || host(l.url))).join(', ')}</span>` : ''}</div>
@@ -330,7 +355,7 @@ function armDeck(n) {
   const yes = card.querySelector('.stamp.yes'), no = card.querySelector('.stamp.no');
   let x0 = null, dx = 0, id = null;
   const paint = () => { card.style.transform = `translateX(${dx}px) rotate(${dx / 18}deg)`; yes.style.opacity = Math.max(0, Math.min(1, dx / 90)); no.style.opacity = Math.max(0, Math.min(1, -dx / 90)) };
-  card.onpointerdown = e => { if (e.target.closest('a,button')) return; x0 = e.clientX; id = e.pointerId; card.setPointerCapture(id); card.classList.add('dragging') };
+  card.onpointerdown = e => { if (e.target.closest('a,button,select')) return; x0 = e.clientX; id = e.pointerId; card.setPointerCapture(id); card.classList.add('dragging') };
   card.onpointermove = e => { if (x0 === null) return; dx = e.clientX - x0; paint() };
   const end = () => {
     if (x0 === null) return; x0 = null; card.classList.remove('dragging');
@@ -624,8 +649,9 @@ async function reviewView(v) {
     .sort((a, b) => String(a.planned_at || '9999').localeCompare(String(b.planned_at || '9999')));
   reviewIds = rows.map(r => r.article_id);
   const card = r => `<article class="rv-card" data-aid="${r.article_id}" style="--bc:${brandOf(r.brand).color}">
-      <div class="meta">${brandBadge(r.brand)}${r.section ? secBadge(r.section, r.brand) : ''}<span class="rv-time">${esc(whenLabel(r.planned_at))}</span>${r.editorial_priority === 'urgent' ? '<span class="flag">Urgente</span>' : ''}${r.needs_image ? '<span class="flag lime">Revisada · falta imagen</span>' : r.has_photo ? '' : '<span class="muted small">sin foto</span>'}</div>
+      <div class="meta">${brandBadge(r.brand)}${r.section ? secBadge(r.section, r.brand) : ''}<span class="rv-time">${esc(whenLabel(r.planned_at))}</span>${r.editorial_priority === 'urgent' ? '<span class="flag">Urgente</span>' : ''}${r.needs_image ? '<span class="flag lime">Revisada · falta imagen</span>' : r.has_photo ? '' : '<span class="muted small">sin foto</span>'}${fmtBadge(r)}</div>
       <h3 class="go" data-go="#editor/${r.article_id}">${esc(r.headline || r.title)}</h3>
+      ${r.format === 'carousel' ? formatPicker(r.id, r, true) : ''}
       ${r.subtitle ? `<p class="rv-sub">${esc(r.subtitle)}</p>` : ''}
       <div class="rv-actions"><button class="btn small primary" onclick="go('editor/${r.article_id}')">Revisar</button><button class="btn small danger icon" title="Eliminar" aria-label="Eliminar" onclick="removeArticle(${r.article_id})">Eliminar</button></div></article>`;
   v.innerHTML = rows.length ? `<div class="rv-intro"><p><b>${rows.length}</b> por revisar. Abre cada una, corrige texto, foto e imagen y pulsa «Revisada». Pasan a Publicar cuando tienen el texto revisado y la imagen final.</p><p class="muted small">El día y la hora de cada noticia se organizan en <a href="#publish">Publicar</a>.</p></div><div class="list">${rows.map(card).join('')}</div>`
@@ -714,8 +740,9 @@ async function publishView(v) {
     const sug = smart && smart[1] >= 1.1 ? `${pubDay}T${smart[0]}` : r.planned_at && String(r.planned_at).slice(0, 16) > now ? String(r.planned_at).slice(0, 16) : '';
     const sugLabel = smart && smart[1] >= 1.1 ? `Mejor hora: ${smart[0]}` : sug ? whenText(sug) : '';
     return `<article class="q-card" draggable="true" data-aid="${r.id}" style="--bc:${brandOf(r.brand).color}">
-      <div class="meta">${brandBadge(r.brand)}${secBadge(r.section, r.brand)}${r.editorial_priority === 'urgent' ? '<span class="flag">Urgente</span>' : ''}</div>
+      <div class="meta">${brandBadge(r.brand)}${secBadge(r.section, r.brand)}${r.editorial_priority === 'urgent' ? '<span class="flag">Urgente</span>' : ''}${fmtBadge(r)}</div>
       <h3 class="go" data-go="#editor/${r.id}">${esc(r.headline)}</h3>
+      ${r.format === 'carousel' && r.carousel_state !== 'terminado' ? '<p class="warn-line small">Texto listo · el carrusel aún no está terminado</p>' : ''}
       ${r.schedule_error ? `<p class="error small">No salió a su hora: ${esc(r.schedule_error)}</p>` : ''}
       ${(r.brand || 'infolinense') !== 'infolinense' && noNets(r.brand) ? `<p class="error small">${esc(bname(r.brand))} sin redes. <a href="#settings">Conectar</a></p>` : ''}
       <div class="q-actions"><button class="btn small primary" onclick="placeSheet(${r.id})">Elegir hora</button>${sug ? `<button class="btn small ${sugLabel.startsWith('Mejor') ? 'lime' : ''}" onclick="placeAt(${r.id},'${sug.slice(0, 10)}','${sug.slice(11, 16)}')">${esc(sugLabel)}</button>` : ''}<button class="btn small" onclick="publishNow(${r.id},this)">Publicar ya</button><button class="btn small danger icon" title="Eliminar" aria-label="Eliminar" onclick="removeArticle(${r.id})">×</button></div></article>`;
@@ -723,7 +750,7 @@ async function publishView(v) {
   const scard = r => {
     const done = r.status === 'published';
     return `<article class="s-card ${done ? 'done' : ''}" ${done ? '' : 'draggable="true"'} data-aid="${r.id}" style="--bc:${brandOf(r.brand).color}">
-      <div class="meta">${brandBadge(r.brand)}${secBadge(r.section, r.brand)}<span class="s-state ${done ? 'pub' : 'prog'}">${done ? 'Publicada' : 'Programada'}</span>${pubAt(r).slice(11, 16) && !GRID.includes(pubAt(r).slice(11, 16)) && GRID.includes(nearSlot(pubAt(r).slice(11, 16))) && Math.abs(mins(nearSlot(pubAt(r).slice(11, 16))) - mins(pubAt(r).slice(11, 16))) <= 40 ? `<span class="rv-time">${esc(pubAt(r).slice(11, 16))}</span>` : ''}</div>
+      <div class="meta">${brandBadge(r.brand)}${secBadge(r.section, r.brand)}${fmtBadge(r)}<span class="s-state ${done ? 'pub' : 'prog'}">${done ? 'Publicada' : 'Programada'}</span>${pubAt(r).slice(11, 16) && !GRID.includes(pubAt(r).slice(11, 16)) && GRID.includes(nearSlot(pubAt(r).slice(11, 16))) && Math.abs(mins(nearSlot(pubAt(r).slice(11, 16))) - mins(pubAt(r).slice(11, 16))) <= 40 ? `<span class="rv-time">${esc(pubAt(r).slice(11, 16))}</span>` : ''}</div>
       <h3 class="go" data-go="#editor/${r.id}">${esc(r.headline)}</h3>
       ${done ? `<div class="row wrap">${r.publish_url ? `<a class="net ok" href="${safeUrl(r.publish_url)}" target="_blank" rel="noopener">Web ✓</a>` : ''}${netStatus(r)}</div>`
         : `<div class="s-actions"><span class="muted small">${schedNets(r)}</span><button class="link small" onclick="publishNow(${r.id},this)">Publicar ya</button><button class="link small" onclick="placeSheet(${r.id})">Cambiar hora</button><button class="link small" onclick="unschedule(${r.id})">Quitar hora</button></div>`}</article>`;
@@ -970,6 +997,7 @@ async function editor(v) {
       <details class="alts" id="carousel"><summary>${a.carousel_suitable ? 'Carrusel recomendado' : 'Carrusel'}</summary><div id="carouselBox"><p class="muted small">${esc(a.carousel_reason || '')}</p><button class="btn small" onclick="carousel()">Preparar diapositivas</button></div></details>
     </section>
   </div>
+  <section class="panel"><h2>Formato</h2>${formatPicker(a.candidate_id, a)}</section>
   <section class="panel checks" id="checks"><div class="row"><h2 class="grow">Revisión automática</h2><button class="btn small" onclick="runChecks(0)">Volver a revisar</button><button class="btn small lime" onclick="runChecks(1)">Revisar con IA</button></div><div id="checkList"><p class="muted small">Revisando…</p></div></section>
   <div class="actions">
     <button class="btn" onclick="save(true)">Guardar</button>

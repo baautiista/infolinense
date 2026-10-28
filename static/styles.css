@@ -784,3 +784,10 @@ label{color:var(--ink)}
 .net-badge.facebook{background:#1877F2}.net-badge.instagram{background:#C13584}
 .mode{font-weight:800}.mode.pub{color:var(--green)}.mode.warn{color:#9A6B00}.mode.bad{color:var(--red)}
 .link.danger{color:var(--red)}
+.fmt{border-radius:999px;padding:2px 9px;font-size:11px;font-weight:800;text-transform:uppercase;letter-spacing:.03em}
+.fmt.carousel{background:#FFE7A3;color:#5C4200}.fmt.video{background:#1B1F3B;color:var(--lime)}
+.fmt-pick{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin:8px 0}
+.fchip{border:1.5px solid var(--line);background:#fff;border-radius:999px;padding:5px 12px;font:700 12.5px var(--f-ui);cursor:pointer;color:var(--ink)}
+.fchip.on{background:var(--ink);border-color:var(--ink);color:var(--lime)}
+.fstate{width:auto;padding:5px 10px;border-radius:999px;font-size:12.5px}
+.warn-line{color:#8A5A00;font-weight:700;margin:0 0 6px}

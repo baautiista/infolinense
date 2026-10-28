@@ -98,6 +98,11 @@ def draft_candidate(cid):
     from zoneinfo import ZoneInfo as _Z
     ref = str(c.get('planned_at') or '')[:10] or _dt.now(_Z('Europe/Madrid')).date().isoformat()  # día para el que se escribe
     db.exec_('UPDATE articles SET brand=?,section_label=?,time_ref=? WHERE id=?', (c.get('brand') or 'infolinense', draft.get('section_label') or '', ref, aid))
+    try:
+        from . import formats
+        formats.from_draft(cid, bool(draft.get('carousel_suitable')), draft.get('carousel_reason') or '')
+    except Exception:
+        pass
     db.exec_('UPDATE candidates SET status=?,section=? WHERE id=?', ('draft', draft.get('section', 'CIUDAD'), cid))
     db.log('pipeline', f'Candidata {cid} -> borrador')
     finish_article(aid)

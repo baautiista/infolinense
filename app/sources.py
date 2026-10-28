@@ -1590,7 +1590,8 @@ def after_new(ids):
     from . import agenda, alerts, topics
     alive = [i for i in ids or [] if (db.row('SELECT status FROM candidates WHERE id=?', (i,)) or {}).get('status') not in (None, 'archived', 'merged')]
     for cid in alive:
-        for fn in (topics.check, agenda.from_candidate):
+        from . import formats
+        for fn in (topics.check, agenda.from_candidate, formats.apply_suggestion):
             try:
                 fn(cid)
             except Exception as exc:

@@ -869,8 +869,9 @@ def to_publish(brand:str=''):
     rows=db.rows("""SELECT a.id,a.brand,COALESCE(NULLIF(a.headline,''),''||c.title) headline,a.section,a.status,a.image_local,a.publish_url,c.planned_at,c.editorial_priority,c.id candidate_id,
                       a.scheduled_at,a.scheduled_networks,a.schedule_error,d.exported canva_exported FROM articles a LEFT JOIN candidates c ON c.id=a.candidate_id
                       LEFT JOIN canva_designs d ON d.article_id=a.id
-                      WHERE a.status IN ('draft','review_ready','approved') OR (a.status='published' AND a.updated_at>=date('now') AND COALESCE(a.hidden,0)=0)""")
-    rows=_bf(rows,brand)
+                      WHERE (a.status IN ('review_ready','approved') AND COALESCE(a.hidden,0)=0 AND d.exported=1 AND COALESCE(a.render_path,'')!='')
+                         OR (a.status='published' AND a.updated_at>=date('now') AND COALESCE(a.hidden,0)=0)""")
+    rows=_bf(rows,brand)  # en Publicar solo lo revisado y con imagen final: lo «Sin revisar» o sin imagen sigue en Revisar
     for r in rows: r['has_photo']=bool(r.pop('image_local',None))
     posts=social_publish.posts_for([r['id'] for r in rows])
     for r in rows: r['networks']=posts.get(r['id'],{})

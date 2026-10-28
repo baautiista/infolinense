@@ -910,3 +910,52 @@ class VideoTests(unittest.TestCase):
             m = sp._publish('tiktok', art)
         self.assertTrue(m.get('manual'), m)
         video.remove(aid); shutil.rmtree(tmp)
+
+
+class EfemeridesTests(unittest.TestCase):
+    def test_save_dedup_verify_and_sources(self):
+        from app import efemerides as ef
+        a, new = ef.save('Se inaugura el Mercado de Abastos de La Línea', 1880, 3, 14, 'Inauguraciones', '', '', '', [{'name': 'Web A', 'url': 'https://a.test/x'}])
+        self.assertTrue(new)
+        b, new2 = ef.save('Inauguración del Mercado de Abastos', 1880, 3, 14, 'Inauguraciones', '', '', '', [{'name': 'Web B', 'url': 'https://b.test/y'}])
+        self.assertEqual(a, b); self.assertFalse(new2)
+        from app import db
+        self.assertEqual(db.row('SELECT status FROM efemerides WHERE id=?', (a,))['status'], 'verificada')  # dos fuentes distintas
+        c, _ = ef.save('Fundación de un club', 1912, 0, 0, 'Fundaciones')
+        self.assertEqual(db.row('SELECT status,precision FROM efemerides WHERE id=?', (c,))['status'], 'aproximada')
+
+    def test_wikipedia_and_wikidata_harvest(self):
+        from unittest import mock
+        from app import efemerides as ef, db
+        class R:
+            def __init__(self, data): self._d = data
+            def json(self): return self._d
+            def raise_for_status(self): pass
+        page = {'query': {'pages': {'1': {'title': 'La Línea de la Concepción', 'revisions': [{'revid': 77}],
+                 'extract': 'Historia. El 17 de enero de 1870 se constituye el municipio de La Línea. Otra frase sin fecha.'}}}}
+        with mock.patch.object(ef.requests, 'get', return_value=R(page)):
+            n = ef.harvest_wikipedia()
+        self.assertGreaterEqual(n, 1)
+        self.assertTrue(db.row("SELECT 1 FROM efemerides WHERE year=1870 AND month=1 AND day=17"))
+        with mock.patch.object(ef.requests, 'get', return_value=R(page)):
+            self.assertEqual(ef.harvest_wikipedia(), 0)  # misma revisión: no se reprocesa
+        rows = [{'x': {'value': 'http://www.wikidata.org/entity/Q123'}, 'xLabel': {'value': 'Persona Linense'}, 'xDescription': {'value': 'pintor'},
+                 'd': {'value': '+1901-05-02T00:00:00Z'}, 'p': {'value': '11'}, 'art': {'value': 'https://es.wikipedia.org/wiki/Persona'}}]
+        with mock.patch.object(ef, '_sparql', return_value=rows), mock.patch.object(ef, '_commons', return_value={}):
+            ef.harvest_wikidata()
+        r = db.row("SELECT * FROM efemerides WHERE title='Nace Persona Linense'")
+        self.assertEqual((r['year'], r['month'], r['day'], r['status']), (1901, 5, 2, 'verificada'))
+
+    def test_research_needs_web_ai(self):
+        from unittest import mock
+        from app import efemerides as ef, ai
+        with mock.patch.object(ai, 'AI_ENABLED', False):
+            self.assertEqual(ef.research()['added'], 0)
+
+    def test_action_creates_news(self):
+        from app import efemerides as ef, main, db
+        eid, _ = ef.save('Primera Velada de La Línea', 1900, 7, 20, 'Cultura y tradiciones', 'Se celebra la primera Velada', '', '', [{'name': 'X', 'url': 'https://x.test/v'}])
+        r = main.efem_action(eid, main.EfemAction(action='historica'))
+        c = db.row('SELECT * FROM candidates WHERE id=?', (r['candidate_id'],))
+        self.assertIn('Hace', c['title']); self.assertIn('NO las cites', c['local_angle'])
+        self.assertTrue(c['planned_at'])

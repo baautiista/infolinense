@@ -88,13 +88,13 @@ function currentHash() { return view === 'editor' ? `editor/${editorId}` : view 
 function go(target, fromHash) {
   const [v, id] = target.split('/');
   if (view !== 'editor' && v === 'editor') editorFrom = view === 'settings' ? 'review' : view;
-  view = ['sort', 'writing', 'review', 'publish', 'settings', 'editor', 'upload', 'agenda', 'stats', 'topics'].includes(v) ? v : 'sort';
+  view = ['sort', 'writing', 'review', 'publish', 'settings', 'editor', 'upload', 'agenda', 'stats', 'topics', 'efemerides'].includes(v) ? v : 'sort';
   document.body.classList.toggle('wide', view === 'review');
   document.body.classList.toggle('editing', view === 'editor');
   editorId = view === 'editor' ? Number(id) : null;
   if (!fromHash) location.hash = currentHash();
   document.querySelectorAll('.tabs button').forEach(b => b.classList.toggle('on', b.dataset.view === (view === 'editor' ? editorFrom : view === 'agenda' || view === 'topics' ? 'sort' : view === 'stats' ? 'publish' : view)));
-  $('#title').textContent = { sort: 'Ordenar', writing: 'Redacción', review: 'Revisar', publish: 'Publicar', settings: 'Ajustes', editor: 'Noticia', upload: 'Subir noticia', agenda: 'Agenda', stats: 'Estadísticas', topics: 'Temas' }[view];
+  $('#title').textContent = { sort: 'Ordenar', writing: 'Redacción', review: 'Revisar', publish: 'Publicar', settings: 'Ajustes', editor: 'Noticia', upload: 'Subir noticia', agenda: 'Agenda', stats: 'Estadísticas', topics: 'Temas', efemerides: 'Efemérides Linenses' }[view];
   $('#backBtn').hidden = view !== 'editor';
   $('#scanBtn').hidden = view !== 'sort';
   render(); counts();
@@ -109,7 +109,7 @@ async function counts() {
 async function render() {
   blobUrls.forEach(URL.revokeObjectURL); blobUrls = [];
   const v = $('#view'); v.innerHTML = '<p class="empty">Cargando…</p>'; window.scrollTo(0, 0);
-  try { await ({ sort: sortView, writing: writingView, review: reviewView, publish: publishView, settings, editor, upload: uploadView, agenda: agendaView, stats: statsView, topics: topicsView }[view])(v) }
+  try { await ({ sort: sortView, writing: writingView, review: reviewView, publish: publishView, settings, editor, upload: uploadView, agenda: agendaView, stats: statsView, topics: topicsView, efemerides: efemView }[view])(v) }
   catch (e) { if (token) v.innerHTML = `<p class="empty">${esc(e.message)}</p>` }
 }
 function nextPhase(label, target, note = '') { return `<div class="next"><p>${note}</p><button class="btn primary" onclick="go('${target}')">${label}</button></div>` }
@@ -1432,4 +1432,64 @@ function uploadVideo(file, a) {
   x.onload = () => { let d = {}; try { d = JSON.parse(x.responseText) } catch (e) { } if (x.status >= 300) { prog.innerHTML = `<p class="error small">${esc(d.detail || 'No se pudo subir')}</p>`; return } toast('Vídeo subido'); drawVideo(a) };
   x.onerror = () => { prog.innerHTML = '<p class="error small">Se cortó la subida. Inténtalo de nuevo.</p>' };
   x.send(fd);
+}
+
+
+/* ---------- Efemérides Linenses ---------- */
+let efMode = 'today', efQuery = { q: '', category: '', status: '', period: '', month: 0, day: 0 }, efCal = { year: 0, month: 0 };
+const EF_PERIODS = [['', 'Cualquier época'], ['1700-1869', 'Antes de 1870'], ['1870-1913', '1870-1913'], ['1914-1939', '1914-1939'], ['1940-1975', '1940-1975'], ['1976-1999', '1976-1999'], ['2000-2099', 'Desde 2000']];
+async function efemView(v) {
+  const today = new Date(madridDate() + 'T12:00:00Z');
+  if (!efCal.year) efCal = { year: today.getUTCFullYear(), month: today.getUTCMonth() + 1 };
+  const qs = efMode === 'search' ? '&' + new URLSearchParams(efQuery).toString() : '';
+  const [d, st, cal] = await Promise.all([efMode === 'calendar' ? Promise.resolve({ items: [] }) : api('/api/efemerides?mode=' + efMode + qs), api('/api/efemerides/stats'),
+    efMode === 'calendar' ? api(`/api/efemerides/calendar?year=${efCal.year}&month=${efCal.month}`) : Promise.resolve({})]);
+  const meta = d.categories ? d : await api('/api/efemerides?mode=today');
+  const STAT = meta.statuses || {}, EDIT = meta.editorial || {};
+  const tabs = [['today', 'Hoy'], ['tomorrow', 'Mañana'], ['week', '7 días'], ['month', 'Próximo mes'], ['calendar', 'Calendario'], ['search', 'Buscar']];
+  const card = e => `<article class="ef-card ${e.round ? 'round' : ''}" data-eid="${e.id}">
+      ${e.image_url ? `<figure><img src="${safeUrl(e.image_url)}" alt="" loading="lazy" referrerpolicy="no-referrer"><figcaption>${esc(e.image_source || '')}${e.image_license ? ' · ' + esc(e.image_license) : ''}</figcaption></figure>` : ''}
+      <div class="ef-body"><div class="meta"><span class="ef-date">${e.day ? e.day + '/' + e.month + '/' : e.month ? e.month + '/' : ''}${e.year}</span>${e.years > 0 ? `<span class="${e.round ? 'flag' : 'muted small'}">${e.years} años${e.round ? ' · aniversario redondo' : ''}</span>` : ''}<span class="ef-cat">${esc(e.category || '')}</span><span class="ef-st ${e.status}">${esc(STAT[e.status] || e.status)}</span>${e.editorial !== 'nueva' ? `<span class="muted small">${esc(EDIT[e.editorial] || '')}</span>` : ''}</div>
+        <h3>${esc(e.title)}</h3>${e.description && e.description !== e.title ? `<p class="small">${esc(e.description.slice(0, 400))}</p>` : ''}
+        <details class="ef-src"><summary class="small">Fuentes (${(e.sources || []).length}) · solo para verificar, no van en el texto</summary>${(e.sources || []).map(s => `<p class="small"><a href="${safeUrl(s.url)}" target="_blank" rel="noopener">${esc(s.name || s.url)}</a>${s.quote ? ` — «${esc(s.quote.slice(0, 220))}»` : ''}</p>`).join('')}
+          <p class="small"><a href="https://www.google.com/search?q=${encodeURIComponent('site:hemerotecadigital.bne.es OR site:prensahistorica.mcu.es "La Línea" ' + e.title.split(' ').slice(0, 6).join(' '))}" target="_blank" rel="noopener">Buscar en hemerotecas</a></p></details>
+        <div class="ef-actions"><button class="btn small primary" data-efa="noticia">Crear noticia</button>${e.day ? '<button class="btn small" data-efa="historica">Preparar para su aniversario</button>' : ''}<button class="btn small" data-efa="carrusel">Carrusel</button>${e.day ? '<button class="btn small" data-efa="calendario">Al calendario</button>' : ''}<button class="btn small" data-efa="guardar">Guardar</button><button class="btn small" data-efa="publicada">Publicada</button>
+          <select class="ef-status" aria-label="Verificación">${Object.entries(STAT).map(([k, n]) => `<option value="${k}" ${e.status === k ? 'selected' : ''}>${esc(n)}</option>`).join('')}</select></div></div></article>`;
+  const calHtml = () => {
+    const first = new Date(Date.UTC(efCal.year, efCal.month - 1, 1)), days = new Date(Date.UTC(efCal.year, efCal.month, 0)).getUTCDate(), pad = (first.getUTCDay() + 6) % 7;
+    const title = first.toLocaleDateString('es-ES', { month: 'long', year: 'numeric', timeZone: 'UTC' });
+    return `<div class="sum-head"><button class="btn small round" data-efm="-1" aria-label="Mes anterior">‹</button><h2>${esc(title)}</h2><button class="btn small round" data-efm="1" aria-label="Mes siguiente">›</button></div>
+      <div class="month">${['L', 'M', 'X', 'J', 'V', 'S', 'D'].map(x => `<b class="mo-wd">${x}</b>`).join('')}${'<span></span>'.repeat(pad)}${Array.from({ length: days }, (_, i) => { const c = cal[String(i + 1)]; return `<button class="mo-day ${c && c.round ? 'today' : ''}" data-efday="${i + 1}"><span>${i + 1}</span>${c ? `<b class="mo-n">${c.n}</b>` : ''}</button>` }).join('')}</div>
+      <p class="muted small">El número es cuántas efemérides hay ese día; en azul, los que tienen aniversario redondo este año. Pulsa un día para verlas.</p>`;
+  };
+  const searchHtml = () => `<form id="efSearch" class="ef-search"><input name="q" placeholder="Palabras (p. ej. Balona, Velada, mercado)" value="${esc(efQuery.q)}">
+      <select name="category"><option value="">Todas las categorías</option>${(meta.categories || []).map(c => `<option ${efQuery.category === c ? 'selected' : ''}>${esc(c)}</option>`).join('')}</select>
+      <select name="period">${EF_PERIODS.map(([k, n]) => `<option value="${k}" ${efQuery.period === k ? 'selected' : ''}>${n}</option>`).join('')}</select>
+      <select name="status"><option value="">Sin descartadas</option>${Object.entries(STAT).map(([k, n]) => `<option value="${k}" ${efQuery.status === k ? 'selected' : ''}>${esc(n)}</option>`).join('')}</select>
+      <input name="date" type="date" aria-label="Fecha (día y mes)"><button class="btn primary">Buscar</button></form>`;
+  v.innerHTML = `<div class="ef-top"><div class="seg">${tabs.map(([k, n]) => `<label><input type="radio" name="efm" value="${k}" ${efMode === k ? 'checked' : ''}><span>${n}</span></label>`).join('')}</div>
+      <div class="ef-stats small"><b>${st.total}</b> en el archivo · ${st.by_status.verificada || 0} verificadas · ${st.by_status.pendiente || 0} pendientes · IA este mes ${st.ai_month}/${st.ai_month_max}
+      <button class="btn small" id="efRun">Investigar ahora</button><button class="btn small" id="efAdd">Añadir a mano</button></div></div>
+    ${efMode === 'calendar' ? calHtml() : efMode === 'search' ? searchHtml() : ''}
+    ${efMode !== 'calendar' ? (d.items.length ? `<div class="ef-list">${d.items.map(card).join('')}</div>` : `<p class="empty">${efMode === 'search' ? 'Nada con esa búsqueda.' : 'No hay efemérides documentadas para estas fechas todavía. El archivo crece solo cada día.'}</p>`) : ''}`;
+  v.querySelectorAll('[name=efm]').forEach(i => i.onchange = () => { efMode = i.value; render() });
+  v.querySelectorAll('[data-efm]').forEach(b => b.onclick = () => { efCal.month += +b.dataset.efm; if (efCal.month < 1) { efCal.month = 12; efCal.year-- } if (efCal.month > 12) { efCal.month = 1; efCal.year++ } render() });
+  v.querySelectorAll('[data-efday]').forEach(b => b.onclick = () => { efMode = 'search'; efQuery = { q: '', category: '', status: '', period: '', month: efCal.month, day: +b.dataset.efday }; render() });
+  const f = v.querySelector('#efSearch'); if (f) f.onsubmit = e => { e.preventDefault(); const x = Object.fromEntries(new FormData(f)); const dt = x.date; delete x.date; efQuery = { ...x, month: dt ? +dt.slice(5, 7) : 0, day: dt ? +dt.slice(8, 10) : 0 }; render() };
+  v.querySelectorAll('.ef-card').forEach(c => {
+    const id = c.dataset.eid;
+    c.querySelectorAll('[data-efa]').forEach(b => b.onclick = async () => { b.disabled = true; try { const r = await api(`/api/efemerides/${id}/action`, { method: 'POST', body: JSON.stringify({ action: b.dataset.efa }) }); toast(r.message); render(); counts() } catch (e) { toast(e.message); b.disabled = false } });
+    c.querySelector('.ef-status').onchange = async e => { try { await api(`/api/efemerides/${id}`, { method: 'PUT', body: JSON.stringify({ status: e.target.value }) }); toast('Estado guardado') } catch (er) { toast(er.message) } };
+  });
+  $('#efRun').onclick = async e => { e.target.disabled = true; try { await api('/api/efemerides/research', { method: 'POST' }); toast('Investigando en segundo plano: Wikidata, Wikipedia y un lote con IA') } catch (er) { toast(er.message) } };
+  $('#efAdd').onclick = () => {
+    const sheet = document.createElement('div'); sheet.className = 'sheet-bg';
+    sheet.innerHTML = `<div class="sheet" role="dialog" aria-label="Añadir efeméride"><h2>Añadir efeméride</h2>
+      <label>Qué pasó<input id="eaT"></label><div class="row"><label>Año<input id="eaY" type="number" min="1500" max="${today.getUTCFullYear()}"></label><label>Mes<input id="eaM" type="number" min="0" max="12" value="0"></label><label>Día<input id="eaD" type="number" min="0" max="31" value="0"></label></div>
+      <label>Categoría<select id="eaC">${(meta.categories || []).map(c => `<option>${esc(c)}</option>`).join('')}</select></label><label>Descripción<textarea id="eaX" rows="3"></textarea></label>
+      <label>Fuente (enlace)<input id="eaU" type="url" placeholder="https://…"></label><p class="muted small">Sin fuente queda «pendiente de contrastar». Mes y día 0 si no se conocen.</p>
+      <div class="row"><button class="btn" id="eaNo">Cancelar</button><button class="btn primary" id="eaOk">Guardar</button></div></div>`;
+    document.body.appendChild(sheet); sheet.onclick = e => { if (e.target === sheet) sheet.remove() }; sheet.querySelector('#eaNo').onclick = () => sheet.remove();
+    sheet.querySelector('#eaOk').onclick = async () => { try { const r = await api('/api/efemerides', { method: 'POST', body: JSON.stringify({ title: $('#eaT').value, year: +$('#eaY').value, month: +$('#eaM').value, day: +$('#eaD').value, category: $('#eaC').value, description: $('#eaX').value, source_url: $('#eaU').value, source_name: 'Añadida a mano' }) }); sheet.remove(); toast(r.new ? 'Guardada' : 'Ya estaba: se ha unido a la existente'); render() } catch (e) { toast(e.message) } };
+  };
 }

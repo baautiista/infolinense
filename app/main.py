@@ -11,6 +11,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from . import db, sources, pipeline, publishers, photos, canva, ai, planner, layout, social, social_publish, brands, ocr, storage, learn, alerts, topics, agenda, stats, formats
 from . import video as videos
+from . import efemerides
 from . import review as checks
 from .auth import login, require_auth
 from starlette.concurrency import run_in_threadpool
@@ -324,6 +325,100 @@ def video_stream(vid:int,exp:str='',sig:str=''):
     v=db.row('SELECT path FROM videos WHERE id=?',(vid,))
     if not v or not Path(v['path']).is_file(): raise HTTPException(404)
     return FileResponse(v['path'],media_type=videos.EXTS.get(Path(v['path']).suffix.lower(),'video/mp4'))
+
+# ---------- Efemérides Linenses ----------
+@app.get('/api/efemerides',dependencies=[Depends(require_auth)])
+def efem_list(mode:str='today',q:str='',category:str='',status:str='',period:str='',month:int=0,day:int=0):
+    from datetime import timedelta as _td
+    today=datetime.now(MADRID).date()
+    if mode=='today': items=efemerides.on_day(today.month,today.day)
+    elif mode=='tomorrow': t=today+_td(days=1); items=efemerides.on_day(t.month,t.day)
+    elif mode=='week': items=efemerides.upcoming(7)
+    elif mode=='month': items=efemerides.upcoming(31)
+    else: items=efemerides.search(q,category,status,period,month,day)
+    return {'items':items,'categories':efemerides.CATEGORIES,'statuses':efemerides.STATUSES,'editorial':efemerides.EDITORIAL}
+@app.get('/api/efemerides/calendar',dependencies=[Depends(require_auth)])
+def efem_calendar(year:int=0,month:int=0): return efemerides.calendar(year or datetime.now(MADRID).year,month)
+@app.get('/api/efemerides/stats',dependencies=[Depends(require_auth)])
+def efem_stats(): return efemerides.stats()
+class EfemIn(BaseModel):
+    title:str
+    year:int
+    month:int=0
+    day:int=0
+    category:str=''
+    description:str=''
+    place:str=''
+    people:str=''
+    source_name:str=''
+    source_url:str=''
+@app.post('/api/efemerides',dependencies=[Depends(require_auth)])
+def efem_add(e:EfemIn):
+    if len(e.title.strip())<5 or not 1500<=e.year<=datetime.now(MADRID).year: raise HTTPException(400,'Revisa el título y el año')
+    srcs=[{'name':e.source_name,'url':e.source_url,'quote':''}] if e.source_url.startswith('http') else []
+    eid,new=efemerides.save(e.title,e.year,e.month,e.day,e.category,e.description,e.place,e.people,srcs,None,'manual')
+    return {'id':eid,'new':new}
+class EfemEdit(BaseModel):
+    status:str|None=None
+    editorial:str|None=None
+    title:str|None=None
+    description:str|None=None
+    category:str|None=None
+@app.put('/api/efemerides/{eid}',dependencies=[Depends(require_auth)])
+def efem_edit(eid:int,body:EfemEdit):
+    efemerides.ensure()
+    if not db.row('SELECT id FROM efemerides WHERE id=?',(eid,)): raise HTTPException(404)
+    d=body.model_dump(exclude_none=True)
+    if 'status' in d and d['status'] not in efemerides.STATUSES: raise HTTPException(400,'Estado no válido')
+    if 'editorial' in d and d['editorial'] not in efemerides.EDITORIAL: raise HTTPException(400,'Estado editorial no válido')
+    for k,v in d.items(): db.exec_(f'UPDATE efemerides SET {k}=?,last_review=CURRENT_TIMESTAMP WHERE id=?',(str(v)[:1500],eid))
+    return db.row('SELECT * FROM efemerides WHERE id=?',(eid,))
+class EfemAction(BaseModel): action:str
+@app.post('/api/efemerides/{eid}/action',dependencies=[Depends(require_auth)])
+def efem_action(eid:int,body:EfemAction):
+    efemerides.ensure()
+    e=db.row('SELECT * FROM efemerides WHERE id=?',(eid,))
+    if not e: raise HTTPException(404)
+    act=body.action
+    if act=='guardar':
+        db.exec_("UPDATE efemerides SET editorial='guardada' WHERE id=?",(eid,)); return {'ok':True,'message':'Guardada para más adelante'}
+    if act=='publicada':
+        db.exec_("UPDATE efemerides SET editorial='publicada' WHERE id=?",(eid,)); return {'ok':True,'message':'Marcada como publicada'}
+    nxt=efemerides.next_anniversary(e)
+    if act=='calendario':
+        if not nxt: raise HTTPException(400,'Sin día y mes exactos no se puede poner en el calendario')
+        agenda.add('Efeméride: '+e['title'][:150],nxt.isoformat(),'',e.get('place') or '','Efeméride','')
+        db.exec_("UPDATE efemerides SET editorial='calendario' WHERE id=?",(eid,)); return {'ok':True,'message':'Añadida a la agenda el '+nxt.strftime('%d/%m')}
+    if act not in ('noticia','historica','carrusel'): raise HTTPException(400,'Acción no válida')
+    if e['status']=='descartada': raise HTTPException(400,'Está descartada')
+    srcs=db.rows('SELECT name,url,quote FROM efemeride_sources WHERE efemeride_id=?',(eid,))
+    years=datetime.now(MADRID).year-(e['year'] or 0)
+    cid=e.get('candidate_id') if e.get('candidate_id') and db.row('SELECT 1 FROM candidates WHERE id=?',(e['candidate_id'],)) else None
+    if not cid:
+        angle=('EFEMÉRIDE LINENSE (%s): %s. Fecha: %s%s. %s Datos de las fuentes (SOLO para comprobar, NO las cites ni las nombres en el texto publicable): %s'
+               %(efemerides.STATUSES.get(e['status'],''),e['title'],e['event_date'],' (aproximada)' if e['precision']!='exacta' else '',
+                 'Se cumplen %d años.'%years if years>0 else '',' | '.join((x.get('quote') or x.get('name') or '')[:200]+' ('+x['url']+')' for x in srcs)[:1200]))
+        cid=db.exec_('''INSERT INTO candidates(source_name,outlet,title,url,published_at,excerpt,raw_text,score,relevance,status,editorial_priority,local_angle,brand)
+                        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)''',('Efemérides Linenses','Archivo InfoLinense',('Hace %d años: '%years if years>0 else '')+e['title'],
+                        'manual:efemeride-%s'%eid,datetime.now(timezone.utc).isoformat(),e.get('description') or e['title'],
+                        (e.get('description') or '')+'\n\n'+'\n'.join(x.get('quote') or '' for x in srcs),70,'medium','new','undecided',angle[:2000],'infolinense'))
+        db.exec_('UPDATE efemerides SET candidate_id=? WHERE id=?',(cid,eid))
+    if act=='carrusel':
+        formats.set_format(cid,'carousel'); db.exec_("UPDATE efemerides SET editorial='carrusel' WHERE id=?",(eid,))
+        return {'ok':True,'message':'Propuesta creada y marcada como carrusel (la tienes en Ordenar)','candidate_id':cid}
+    planned=None
+    if act=='historica' and nxt: planned=nxt.isoformat()+'T09:00:00'
+    triage_candidate(cid,TriageIn(priority='today' if not planned or nxt==datetime.now(MADRID).date() else 'future',planned_at=planned))
+    db.exec_("UPDATE efemerides SET editorial='propuesta' WHERE id=?",(eid,))
+    return {'ok':True,'message':'Noticia enviada a Redacción'+(' para el '+nxt.strftime('%d/%m') if planned else ''),'candidate_id':cid}
+@app.post('/api/efemerides/research',dependencies=[Depends(require_auth)])
+def efem_research():
+    def run():
+        try:
+            efemerides.harvest_wikidata(); efemerides.harvest_wikipedia(); efemerides.research(limit=5)
+        except Exception as e: db.log('efemerides_error',str(e)[:250])
+    threading.Thread(target=run,daemon=True).start()
+    return {'started':True}
 
 class FormatIn(BaseModel):
     format:str|None=None
@@ -1864,6 +1959,8 @@ def scheduler_loop():
         except Exception as e: db.log('storage_error',str(e)[:250])
         try: videos.cleanup()
         except Exception as e: db.log('storage_error',str(e)[:250])
+        try: efemerides.daily()
+        except Exception as e: db.log('efemerides_error',str(e)[:250])
         try: agenda.remind()
         except Exception as e: db.log('agenda_error',str(e)[:250])
         try:  # cifras de Instagram y Facebook cada 3 horas

@@ -17,7 +17,7 @@ from .auth import login, require_auth
 from starlette.concurrency import run_in_threadpool
 from .config import BASE_DIR, RENDER_DIR, UPLOAD_DIR, SCAN_INTERVAL_MINUTES, AUTO_PIPELINE, OPENAI_API_KEY, ADMIN_PASSWORD, JWT_SECRET, PUBLISH_MODE, CORS_ORIGINS, PUBLIC_BASE_URL, AUTO_PUBLISH
 
-VERSION='7.7.1'
+VERSION='7.8.0'
 app=FastAPI(title='InfoLinense Desk',version=VERSION)
 
 from fastapi.responses import JSONResponse as _JR
@@ -1994,6 +1994,9 @@ def mark_final_images():
 
 @app.on_event('startup')
 def startup():
+    for ensure in (videos._ensure, efemerides.ensure):  # tablas nuevas antes de la primera petición
+        try: ensure()
+        except Exception as e: db.log('startup_error',str(e)[:200])
     def _boot_learning():
         try:
             from . import gazetteer

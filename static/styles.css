@@ -813,7 +813,7 @@ input[type=range]{padding:0;border:0}
 .ef-list{display:grid;gap:12px}
 @media(min-width:1000px){.ef-list{grid-template-columns:repeat(2,minmax(0,1fr))}}
 .ef-card{background:#fff;border-radius:var(--r-lg);box-shadow:var(--lift);overflow:hidden;display:grid}
-.ef-card.round{box-shadow:inset 0 0 0 3px var(--lime),var(--lift)}
+.ef-card.rnd{box-shadow:inset 0 0 0 3px var(--lime),var(--lift)}
 .ef-card figure{margin:0;position:relative}
 .ef-card img{width:100%;max-height:220px;object-fit:cover;display:block}
 .ef-card figcaption{position:absolute;bottom:0;left:0;right:0;background:rgba(0,0,0,.55);color:#fff;font-size:11px;padding:3px 8px}
@@ -829,3 +829,12 @@ input[type=range]{padding:0;border:0}
 .ef-search{display:grid;gap:8px;margin-bottom:12px}
 @media(min-width:900px){.ef-search{grid-template-columns:2fr 1.2fr 1fr 1fr 1fr auto}}
 .ef-src summary{cursor:pointer;color:var(--muted)}
+/* todo el ancho en ordenador */
+@media(min-width:1000px){main{max-width:1180px;padding-left:24px;padding-right:24px}}
+@media(min-width:1400px){main{max-width:1480px}}
+.swipe .body{overflow-y:auto;overscroll-behavior:contain}
+.swipe .adapt{font-size:13px}
+@media(max-width:1023px){
+  .tabs{grid-template-columns:repeat(6,minmax(0,1fr))}
+  .tabs button{font-size:9px;letter-spacing:0;padding:8px 1px 7px;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+}

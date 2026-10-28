@@ -1447,7 +1447,7 @@ async function efemView(v) {
   const meta = d.categories ? d : await api('/api/efemerides?mode=today');
   const STAT = meta.statuses || {}, EDIT = meta.editorial || {};
   const tabs = [['today', 'Hoy'], ['tomorrow', 'Mañana'], ['week', '7 días'], ['month', 'Próximo mes'], ['calendar', 'Calendario'], ['search', 'Buscar']];
-  const card = e => `<article class="ef-card ${e.round ? 'round' : ''}" data-eid="${e.id}">
+  const card = e => `<article class="ef-card ${e.round ? "rnd" : ""}" data-eid="${e.id}">
       ${e.image_url ? `<figure><img src="${safeUrl(e.image_url)}" alt="" loading="lazy" referrerpolicy="no-referrer"><figcaption>${esc(e.image_source || '')}${e.image_license ? ' · ' + esc(e.image_license) : ''}</figcaption></figure>` : ''}
       <div class="ef-body"><div class="meta"><span class="ef-date">${e.day ? e.day + '/' + e.month + '/' : e.month ? e.month + '/' : ''}${e.year}</span>${e.years > 0 ? `<span class="${e.round ? 'flag' : 'muted small'}">${e.years} años${e.round ? ' · aniversario redondo' : ''}</span>` : ''}<span class="ef-cat">${esc(e.category || '')}</span><span class="ef-st ${e.status}">${esc(STAT[e.status] || e.status)}</span>${e.editorial !== 'nueva' ? `<span class="muted small">${esc(EDIT[e.editorial] || '')}</span>` : ''}</div>
         <h3>${esc(e.title)}</h3>${e.description && e.description !== e.title ? `<p class="small">${esc(e.description.slice(0, 400))}</p>` : ''}

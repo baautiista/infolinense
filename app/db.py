@@ -107,6 +107,9 @@ def init_db():
         'brand':"TEXT NOT NULL DEFAULT 'infolinense'"
     }.items():
         if name not in existing_candidates: c.execute(f'ALTER TABLE candidates ADD COLUMN {name} {ddl}')
+    c.execute('''CREATE TABLE IF NOT EXISTS videos(id INTEGER PRIMARY KEY AUTOINCREMENT, article_id INTEGER NOT NULL, position INTEGER NOT NULL DEFAULT 0,
+                path TEXT NOT NULL, filename TEXT, size INTEGER, duration REAL, width INTEGER, height INTEGER, orientation TEXT, codec TEXT,
+                thumb_path TEXT, cover_second REAL DEFAULT 1, created_at TEXT DEFAULT CURRENT_TIMESTAMP)''')
     existing_sources={r[1] for r in c.execute('PRAGMA table_info(sources)')}
     for name,ddl in {'network':'TEXT','access_mode':'TEXT'}.items():
         if name not in existing_sources: c.execute(f'ALTER TABLE sources ADD COLUMN {name} {ddl}')

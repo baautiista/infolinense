@@ -1,5 +1,6 @@
 """Source discovery: factual links for editorial review."""
 import difflib
+import json
 import html
 import re
 import threading
@@ -1002,25 +1003,55 @@ def adaptable_ok(title):
     return bool(_ADAPT_TOPIC.search(title)) and not _ADAPT_NO.search(title) and not _OTHER_TOWNS.search(title) and not foreign(title)
 
 
-def adapt_check(title, excerpt=''):
-    """Segunda opinión con IA (si hay): ¿afecta de verdad a los vecinos de La Línea? Devuelve (sí/no, cómo).
-    Si la IA no está o falla, vale lo que dicen las reglas."""
+ADAPT_DAILY_AI = 20  # tope de consultas de IA al día para adaptables (coste controlado)
+
+
+def adapt_review(title, excerpt='', url=''):
+    """Análisis estricto con IA de una noticia nacional: solo pasa si hay un vínculo CONCRETO y demostrable con La Línea.
+    Devuelve la ficha {por_que, enfoque, titular, comprobar[], comprobado[{dato,fuente}], estado} o None si no se adapta
+    (o si no hay IA: sin justificar, no se propone)."""
     from . import ai
     if not ai.AI_ENABLED:
-        return True, ''
-    prompt = ('Noticia nacional: «%s». %s\n¿Afecta de forma concreta a los vecinos de La Línea de la Concepción (Cádiz, Andalucía)? '
-              'Responde que SÍ solo si la medida, el cambio o el dato se aplica en toda España, en Andalucía o en la provincia de Cádiz '
-              '(p. ej. suben las pensiones, baja el paro, nuevo bono, cambia una norma de la DGT, alerta en Andalucía). '
-              'Responde que NO si es de otra comunidad o ciudad, de una catástrofe o ayudas para otra zona (DANA de Valencia, La Palma…), '
-              'de una empresa concreta, de bolsa, de pelea política sin medida, o si no cambia nada para un vecino. '
-              'Devuelve JSON {"ok": true|false, "como": "una frase: qué cambia para un vecino de La Línea"}.') % (title, (excerpt or '')[:600])
+        return None
+    key = 'adapt_ai_' + datetime.now(timezone.utc).strftime('%Y-%m-%d')
+    used = int(db.get_setting(key, '0') or 0)
+    if used >= ADAPT_DAILY_AI:
+        return None
+    db.set_setting(key, str(used + 1))
+    prompt = ('Eres el editor de InfoLinense (La Línea de la Concepción, Cádiz, junto a Gibraltar). Noticia NACIONAL: «%s». %s\nEnlace: %s\n'
+              'Decide si se puede convertir en una noticia LOCAL con una conexión CONCRETA, DEMOSTRABLE y periodísticamente relevante con La Línea. '
+              'Criterios válidos: norma nacional que afecta directamente a residentes o actividades de La Línea; ayudas aplicables al municipio; '
+              'decisión estatal con consecuencias verificables para la ciudad; medida sobre Gibraltar con repercusión real en La Línea; datos nacionales '
+              'que tienen estadística específica del municipio (paro registrado, renta, población, vivienda…); proyectos con relación comprobable con '
+              'instituciones, empresas o vecinos de La Línea. NO valen relaciones genéricas («afecta a todos los españoles», «también en La Línea hay '
+              'vivienda») ni especulativas. No inventes datos locales. Si puedes buscar en internet, busca el dato de La Línea y anótalo SOLO con su fuente '
+              'real (URL). Devuelve JSON {"ok": true|false, "por_que": "vínculo concreto con La Línea", "enfoque": "planteamiento local", '
+              '"titular": "posible titular centrado en La Línea", "comprobar": ["dato o documento local a verificar antes de publicar"], '
+              '"comprobado": [{"dato": "…", "fuente": "URL"}]}. Si no hay conexión suficiente, ok=false.') % (title, (excerpt or '')[:900], url)
     try:
-        data, _, _ = ai.ask_json(ai.SYSTEM, prompt, max_tokens=300)
-        if isinstance(data, dict) and 'ok' in data:
-            return bool(data.get('ok')), str(data.get('como') or '')[:300]
+        data, _, _ = ai.ask_json(ai.SYSTEM, prompt, web=True, max_tokens=900)
     except Exception:
-        pass
-    return True, ''
+        return None
+    if not isinstance(data, dict) or not data.get('ok') or len(str(data.get('por_que') or '')) < 25:
+        return None
+    checked = [c for c in (data.get('comprobado') or []) if isinstance(c, dict) and str(c.get('fuente') or '').startswith('http') and c.get('dato')]
+    todo = [str(x)[:200] for x in (data.get('comprobar') or []) if str(x).strip()][:6]
+    return {'por_que': str(data.get('por_que'))[:500], 'enfoque': str(data.get('enfoque') or '')[:400], 'titular': str(data.get('titular') or '')[:160],
+            'comprobar': todo, 'comprobado': [{'dato': str(c['dato'])[:250], 'fuente': str(c['fuente'])[:400]} for c in checked][:6],
+            'estado': 'confirmada' if checked and not todo else 'pendiente'}
+
+
+def adapt_angle(card):
+    lines = [ADAPT_ANGLE, 'Por qué se adapta: ' + card['por_que']]
+    if card.get('enfoque'):
+        lines.append('Enfoque: ' + card['enfoque'])
+    if card.get('titular'):
+        lines.append('Titular propuesto: ' + card['titular'])
+    if card.get('comprobado'):
+        lines.append('Datos comprobados: ' + '; '.join('%s (%s)' % (c['dato'], c['fuente']) for c in card['comprobado']))
+    if card.get('comprobar'):
+        lines.append('ANTES DE PUBLICAR hay que comprobar: ' + '; '.join(card['comprobar']) + '. Sin comprobarlo, no lo des como hecho.')
+    return ' '.join(lines)
 
 
 def social_authorized(url, meta=None):
@@ -1104,6 +1135,7 @@ def add_candidate(title, url, excerpt, source_name, source_id=None, published_at
     source_meta = source_meta or {'priority': 60, 'official': 0, 'local_scope': 0}
     title, excerpt = clean(title)[:260], clean(excerpt)[:4000]
     local_angle = clean(local_angle)[:800]
+    adapt_card = None
     if source_meta.get('kind') == 'social' and (source_meta.get('brand') or 'infolinense') == 'infolinense' \
             and other_place(title + ' ' + excerpt[:600]):
         return None  # publicación de redes sobre otro pueblo
@@ -1113,14 +1145,17 @@ def add_candidate(title, url, excerpt, source_name, source_id=None, published_at
         if not adaptable_ok(title) or not recent_enough(published_at):
             return None
         if source_id and (db.row("SELECT COUNT(*) n FROM candidates WHERE source_id=? AND created_at>=datetime('now','-1 day')",
-                                 (source_id,)) or {}).get('n', 0) >= 5:
-            return None  # pocas al día: lo local va primero
-        if url and db.row('SELECT 1 FROM candidates WHERE url=?', (url,)):
+                                 (source_id,)) or {}).get('n', 0) >= 3:
+            return None  # calidad antes que cantidad: pocas al día
+        if url and (db.row('SELECT 1 FROM candidates WHERE url=?', (url,)) or db.row('SELECT 1 FROM candidate_links WHERE url=?', (url,))):
             return None
-        ok, how = adapt_check(title, excerpt)
-        if not ok:
-            return None  # la IA ve que no cambia nada para La Línea
-        local_angle = ADAPT_ANGLE + ' Tema: ' + adapt_topic(title) + '.' + (' En La Línea: ' + how if how else '')
+        if find_story(title, excerpt=excerpt) or find_decided(title, excerpt):
+            return None  # la misma noticia nacional ya está (o ya la decidiste): no se gasta IA
+        card = adapt_review(title, excerpt, url)
+        if not card:
+            return None  # sin conexión local concreta y demostrable: fuera
+        adapt_card = card
+        local_angle = adapt_angle(card)
         source_meta = dict(source_meta, local_scope=1)  # ya filtrada: no se le pide «La Línea» en el texto
     elif str(source_meta.get('name') or source_name or '').startswith('Medios nacionales') and not exact_locality(title + ' ' + excerpt[:300]):
         return None  # mención de pasada a La Línea en un medio nacional
@@ -1177,9 +1212,10 @@ def add_candidate(title, url, excerpt, source_name, source_id=None, published_at
     brand = brands.valid(source_meta.get('brand') or brands.DEFAULT)
     if brand == brands.DEFAULT:
         brand = brands.classify(title + ' ' + excerpt[:600]) or brand  # cofradías → El Cofrade Linense; carnaval → Carnavalinense
-    return db.exec_('''INSERT OR IGNORE INTO candidates(source_id,source_name,title,url,published_at,excerpt,score,relevance,status,local_angle,outlet,image_hint,brand,update_of)
-                       VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
-                    (source_id, source_name, title, url, published_at, excerpt, score, relevance, 'new', local_angle[:900], clean(outlet)[:120], image or '', brand, update_of))
+    return db.exec_('''INSERT OR IGNORE INTO candidates(source_id,source_name,title,url,published_at,excerpt,score,relevance,status,local_angle,outlet,image_hint,brand,update_of,adapt_json)
+                       VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
+                    (source_id, source_name, title, url, published_at, excerpt, score, relevance, 'new', local_angle[:2000], clean(outlet)[:120], image or '', brand, update_of,
+                     json.dumps(adapt_card, ensure_ascii=False) if adapt_card else None))
 
 
 def _archive_recovery_status(item, source):
@@ -1605,7 +1641,7 @@ def after_new(ids):
 def archive_off_topic():
     """Retira del radar lo que no es de La Línea (ni de Gibraltar con interés) y nadie ha marcado."""
     n = 0
-    for r in db.rows("""SELECT c.id,c.title,c.excerpt,c.url,c.source_name,c.local_angle,c.brand,s.local_scope,s.official,s.kind FROM candidates c LEFT JOIN sources s ON s.id=c.source_id
+    for r in db.rows("""SELECT c.id,c.title,c.excerpt,c.url,c.source_name,c.local_angle,c.adapt_json,c.brand,s.local_scope,s.official,s.kind FROM candidates c LEFT JOIN sources s ON s.id=c.source_id
                         WHERE c.status IN ('new','researched','needs_config') AND c.editorial_priority IN ('undecided','')
                         AND c.social_type IS NULL"""):
         title, excerpt = r['title'] or '', r['excerpt'] or ''
@@ -1624,7 +1660,7 @@ def archive_off_topic():
         if not r.get('local_scope') and foreign(title + ' ' + excerpt[:600]):
             db.exec_("UPDATE candidates SET status='archived',reason='Fuera de La Línea' WHERE id=?", (r['id'],)); n += 1
             continue
-        if 'NACIONAL ADAPTADA' in str(r.get('local_angle') or '') and not adaptable_ok(title):
+        if 'NACIONAL ADAPTADA' in str(r.get('local_angle') or '') and (not adaptable_ok(title) or not r.get('adapt_json')):
             db.exec_("UPDATE candidates SET status='archived',reason='No se adapta a La Línea' WHERE id=?", (r['id'],)); n += 1
             continue
         if str(r.get('local_angle') or '').startswith('ENFOQUE') or (r.get('brand') or 'infolinense') != 'infolinense':

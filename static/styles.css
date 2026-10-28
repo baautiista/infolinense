@@ -802,3 +802,8 @@ label{color:var(--ink)}
 .net-texts label{margin-top:10px}
 .net.warnnet{background:#FFF1C9;color:#6B4E00}
 input[type=range]{padding:0;border:0}
+.adapt{background:var(--blue-soft);border-radius:var(--r-md);padding:10px 12px;margin:8px 0;font-size:14px;display:grid;gap:4px}
+.adapt p{margin:0}.adapt ul{margin:0 0 4px;padding-left:18px}
+.adapt-state{font-weight:800;font-size:12px;text-transform:uppercase;letter-spacing:.04em}
+.adapt-state.confirmada{color:var(--green)}.adapt-state.pendiente{color:#9A6B00}
+.adapt .btn{justify-self:start;margin-top:4px}

@@ -486,10 +486,19 @@ class AdaptableNationalTests(unittest.TestCase):
         from datetime import datetime, timezone
         now = datetime.now(timezone.utc).isoformat()
         meta = {'name': 'Nacionales adaptables · Temas · vivienda y precios', 'priority': 66, 'official': 0, 'local_scope': 0}
-        cid = sources.add_candidate('El precio de la luz sube mañana un 20%', 'https://elpais.com/x-luz-adapt-test', '',
-                                    meta['name'], None, now, meta)
+        from unittest import mock
+        card = {'por_que': 'La subida se aplica a la tarifa regulada que tienen miles de hogares de La Línea', 'enfoque': 'Cuánto pagará un hogar linense',
+                'titular': 'Así sube la factura de la luz en La Línea', 'comprobar': ['Número de hogares con PVPC en La Línea'], 'comprobado': [], 'estado': 'pendiente'}
+        self.assertIsNone(sources.add_candidate('El precio de la luz sube mañana un 15%', 'https://elpais.com/x-luz-adapt-noai', '', meta['name'], None, now, meta))  # sin IA: no se propone
+        with mock.patch.object(sources, 'adapt_review', return_value=card):
+            cid = sources.add_candidate('El precio de la luz sube mañana un 20%', 'https://elpais.com/x-luz-adapt-test', '',
+                                        meta['name'], None, now, meta)
         self.assertTrue(cid)
-        self.assertIn('NACIONAL ADAPTADA', db.row('SELECT local_angle FROM candidates WHERE id=?', (cid,))['local_angle'])
+        row = db.row('SELECT local_angle,adapt_json FROM candidates WHERE id=?', (cid,))
+        self.assertIn('NACIONAL ADAPTADA', row['local_angle']); self.assertIn('ANTES DE PUBLICAR', row['local_angle'])
+        self.assertIn('pendiente', row['adapt_json'])
+        with mock.patch.object(sources, 'adapt_review', return_value=None):
+            self.assertIsNone(sources.add_candidate('Suben los alquileres un 11% en un año', 'https://elpais.com/alq-adapt-test', '', meta['name'], None, now, meta))
         self.assertIsNone(sources.add_candidate('Gran Hermano arrasa en audiencia', 'https://telecinco.es/gh-adapt-test', '',
                                                 meta['name'], None, now, meta))
         nat = {'name': 'Medios nacionales', 'priority': 80, 'official': 0, 'local_scope': 0}

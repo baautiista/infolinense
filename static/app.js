@@ -303,6 +303,17 @@ function drawSort(v = $('#view')) {
   if (n) armDeck(n);
 }
 function special(n) { const t = `${n.title} ${n.excerpt || ''} ${n.source_name || ''}`.toLowerCase(); if (n.source_kind === 'procurement' || /licitaci|contrataci|adjudicaci/.test(t)) return 'Licitación'; if (n.source_kind === 'edictos' || n.source_kind === 'bop' || /edicto/.test(t)) return 'Edicto'; if (/exclusiv/.test(t)) return 'Exclusiva'; return '' }
+// Nacional adaptable: ficha con el vínculo local, el enfoque, lo comprobado y lo que falta por comprobar
+function adaptFicha(n) {
+  const c = jparse(n.adapt_json, null); if (!c) return '';
+  return `<div class="adapt"><p class="adapt-state ${c.estado}">${c.estado === 'confirmada' ? 'Adaptación confirmada' : 'Pendiente de investigación'}</p>
+    <p><b>Por qué se adapta a La Línea:</b> ${esc(c.por_que)}</p>
+    ${c.enfoque || c.titular ? `<p><b>Enfoque propuesto:</b> ${esc(c.enfoque || '')}${c.titular ? ` <i>«${esc(c.titular)}»</i>` : ''}</p>` : ''}
+    ${c.comprobado && c.comprobado.length ? `<p><b>Datos comprobados:</b></p><ul>${c.comprobado.map(x => `<li>${esc(x.dato)} <a href="${safeUrl(x.fuente)}" target="_blank" rel="noopener">fuente</a></li>`).join('')}</ul>` : ''}
+    ${c.comprobar && c.comprobar.length ? `<p><b>Hay que comprobar:</b></p><ul>${c.comprobar.map(x => `<li>${esc(x)}</li>`).join('')}</ul>` : ''}
+    <button type="button" class="btn small primary" onclick="sendAdapt(${n.id})">Enviar a Redacción</button></div>`;
+}
+window.sendAdapt = id => { flyOut(1); setTimeout(() => decide(id, 'today'), 220) };
 // Formato de la noticia: normal, carrusel o vídeo (+ estado de producción del carrusel)
 const FMT = { post: 'Normal', carousel: 'Carrusel', video: 'Vídeo' }, CSTATE = { pendiente: 'Pendiente', en_diseno: 'En diseño', terminado: 'Terminado' };
 function fmtBadge(r) {
@@ -342,7 +353,7 @@ function swipeCard(n) {
     <div class="body">
       ${img ? `<div class="meta">${brandBadge(n.brand)}${extraFlags(n)}${n.social_type ? `<span class="kind ${n.social_type}">${KIND[n.social_type] || ''}</span>` : ''}${sp ? `<span class="flag">${sp}</span>` : ''}<span class="src">${esc(n.outlet || n.source_name || host(n.url))}${(n.links || []).length ? ` +${n.links.length}` : ''}</span><span>${n.date_iso ? ago(n.date_iso) : 'sin fecha'}</span></div>` : ''}
       <h2>${esc(n.title)}</h2>
-      ${text ? `<p class="angle">${esc(text)}</p>` : ''}
+      ${n.adapt_json ? adaptFicha(n) : text ? `<p class="angle">${esc(text)}</p>` : ''}
       ${formatPicker(n.id, n)}
       ${(n.topics || []).length ? `<p class="topic-tags">${n.topics.map(t => `<span class="topic-tag">Sigues: ${esc(t)}</span>`).join('')}</p>` : ''}
       <div class="foot"><a class="link" href="${safeUrl(n.url)}" target="_blank" rel="noopener noreferrer">Ver la fuente</a><button class="link follow" type="button" onclick="followSheet(${n.id})">Seguir tema</button>

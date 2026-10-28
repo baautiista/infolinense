@@ -1060,7 +1060,7 @@ def social_authorized(url, meta=None):
     meta = meta or {}
     if meta.get('kind') == 'social' and meta.get('url') and social.same_account(url, meta['url']):
         return True
-    return any(social.same_account(url, r['url']) for r in db.rows("SELECT url FROM sources WHERE kind='social' AND active=1"))
+    return any(social.same_account(url, r['url']) for r in db.rows("SELECT url FROM sources WHERE kind='social' AND active=1 AND name!='Redes · quejas vecinales'"))
 
 
 def lead_text(title, excerpt):

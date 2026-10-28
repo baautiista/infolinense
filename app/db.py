@@ -191,13 +191,13 @@ def init_db():
       ('Primarias · Plenos, convocatorias y plazos',news('"La Línea de la Concepción" (pleno OR "orden del día" OR convocatoria OR "plazo de presentación" OR "bases reguladoras" OR "período de exposición pública" OR "información pública") when:10d'),'rss',88,1,0),
       ('Nacionales adaptables · Campo de Gibraltar',news('"Campo de Gibraltar" when:2d'),'rss',72,0,0),
       ('Licitaciones · BOP y plataforma estatal',news('("La Línea de la Concepción" OR "Ayuntamiento de La Línea") (licitación OR adjudicación OR contrato OR obras) when:7d'),'rss',95,1,0),
-      ('Facebook · publicaciones indexadas',news('"La Línea de la Concepción" site:facebook.com when:3d'),'rss',55,0,0),
-      ('Instagram · publicaciones indexadas',news('"La Línea de la Concepción" site:instagram.com when:3d'),'rss',55,0,0),
-      ('Facebook · Ayuntamiento', 'https://www.facebook.com/aytolalinea','social',74,1,0),
-      ('Instagram · Turismo local','https://www.instagram.com/oficinaturismolalinea/','social',67,1,0),
     ]
     for n,u,k,p,o,scope in defaults:
         c.execute('INSERT OR IGNORE INTO sources(name,url,kind,priority,official,local_scope) VALUES(?,?,?,?,?,?)',(n,u,k,p,o,scope))
+    # Facebook e Instagram: fuera todo lo que no hayas añadido tú (7.8.1): búsquedas genéricas y cuentas que puso el panel
+    c.execute("""DELETE FROM sources WHERE name IN ('Facebook · publicaciones indexadas','Instagram · publicaciones indexadas',
+                 'Facebook · Ayuntamiento','Instagram · Turismo local','Redes municipales (Turismo, Museo, Galería, Teatro, Palacio, Biblioteca)')""")
+    c.execute("UPDATE sources SET active=0 WHERE name='Redes · quejas vecinales'")
     # Facebook e Instagram: solo las cuentas que tú autorizas (7.8). Las búsquedas genéricas en esas redes quedan apagadas.
     c.execute("UPDATE sources SET active=0 WHERE kind!='social' AND (url LIKE '%facebook.com%' OR url LIKE '%instagram.com%')")
     c.execute("UPDATE sources SET network=CASE WHEN url LIKE '%instagram.com%' THEN 'instagram' ELSE 'facebook' END WHERE kind='social' AND network IS NULL")
@@ -262,7 +262,6 @@ def init_db():
       ('Prensa de Gibraltar (Chronicle, GBC, YGTV, Panorama, Insight, InfoGibraltar, Olive Press)',news('("La Linea" OR "La Línea" OR Spain OR frontier OR border) (site:chronicle.gi OR site:gbc.gi OR site:yourgibraltartv.com OR site:panorama.gi OR site:gibraltarinsight.com OR site:infogibraltar.com OR site:theolivepress.es) when:2d'),'rss',72,0,0),
       ('Gibraltar · Policía y Puerto',news('("La Linea" OR Spain OR Spanish) (site:police.gi OR site:gibraltarport.com) when:7d'),'rss',62,1,0),
       ('Cultura de La Línea (Museo Cruz Herrera, Manolo Alés, Teatro, Palacio de Congresos, Biblioteca)',news('("Museo Cruz Herrera" OR "Manolo Alés" OR "Teatro Paseo de la Velada" OR "Palacio de Congresos" OR "Biblioteca José Riquelme" OR "Biblioteca Municipal José Riquelme") "La Línea" when:7d'),'rss',84,1,1),
-      ('Redes municipales (Turismo, Museo, Galería, Teatro, Palacio, Biblioteca)',news('("Turismo La Línea" OR "Museo Cruz Herrera" OR "Manolo Alés" OR "Teatro Paseo de la Velada" OR "Palacio de Congresos de La Línea" OR "José Riquelme") (site:facebook.com OR site:instagram.com) when:7d'),'rss',70,1,1),
       ('Áreas municipales (Urbanismo, Infraestructuras, EMUSVIL, Medio Ambiente, Movilidad, Deportes, Festejos, Seguridad)',news('"La Línea" (Urbanismo OR Infraestructuras OR EMUSVIL OR "Medio Ambiente" OR Movilidad OR Deportes OR Festejos OR "Seguridad Ciudadana") Ayuntamiento when:3d'),'rss',82,1,0),
       ('Transparencia y publicaciones oficiales del Ayuntamiento',news('"La Línea de la Concepción" (transparencia OR "Junta de Gobierno" OR pleno OR decreto OR ordenanza) when:7d'),'rss',80,1,0),
       ('BOE · La Línea',news('"La Línea de la Concepción" site:boe.es when:7d'),'rss',80,1,0),

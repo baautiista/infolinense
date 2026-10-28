@@ -50,7 +50,7 @@ def _social_source_id():
     row = db.row('SELECT id FROM sources WHERE name=?', (SOURCE_NAME,))
     if row:
         return row['id']
-    return db.exec_("INSERT INTO sources(name,url,kind,priority,official,local_scope,active) VALUES(?,?,?,?,?,?,1)",
+    return db.exec_("INSERT INTO sources(name,url,kind,priority,official,local_scope,active) VALUES(?,?,?,?,?,?,0)",
                     (SOURCE_NAME, 'https://www.facebook.com/search/posts/?q=La%20L%C3%ADnea', 'social', 60, 0, 0))
 
 

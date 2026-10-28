@@ -17,7 +17,7 @@ from .auth import login, require_auth
 from starlette.concurrency import run_in_threadpool
 from .config import BASE_DIR, RENDER_DIR, UPLOAD_DIR, SCAN_INTERVAL_MINUTES, AUTO_PIPELINE, OPENAI_API_KEY, ADMIN_PASSWORD, JWT_SECRET, PUBLISH_MODE, CORS_ORIGINS, PUBLIC_BASE_URL, AUTO_PUBLISH
 
-VERSION='7.8.0'
+VERSION='7.8.1'
 app=FastAPI(title='InfoLinense Desk',version=VERSION)
 
 from fastapi.responses import JSONResponse as _JR
@@ -415,7 +415,7 @@ def efem_action(eid:int,body:EfemAction):
 def efem_research():
     def run():
         try:
-            efemerides.harvest_wikidata(); efemerides.harvest_wikipedia(); efemerides.research(limit=5)
+            efemerides.harvest_blogs(); efemerides.harvest_wikidata(); efemerides.harvest_wikipedia(); efemerides.research(limit=5)
         except Exception as e: db.log('efemerides_error',str(e)[:250])
     threading.Thread(target=run,daemon=True).start()
     return {'started':True}
@@ -1997,6 +1997,9 @@ def startup():
     for ensure in (videos._ensure, efemerides.ensure):  # tablas nuevas antes de la primera petición
         try: ensure()
         except Exception as e: db.log('startup_error',str(e)[:200])
+    try:  # fuera del panel lo de Facebook/Instagram que no viene de tus cuentas
+        sources.archive_off_topic(); social.cleanup()
+    except Exception as e: db.log('startup_error',str(e)[:200])
     def _boot_learning():
         try:
             from . import gazetteer

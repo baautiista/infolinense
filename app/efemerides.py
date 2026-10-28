@@ -4,6 +4,8 @@ De dónde salen (de más fiable y gratis a menos):
 1. Wikidata: personas nacidas o fallecidas en La Línea, entidades y edificios con fecha de fundación o inauguración,
    acontecimientos con fecha. Con imagen de Wikimedia Commons y su licencia.
 2. Wikipedia en español: frases con fecha completa de las páginas de historia de la ciudad (con la cita literal).
+2b. Hemeroteca local «La Línea en Blanco y Negro» (blog de Luis Javier Traverso y su radio de efemérides): fechas,
+   programas de efemérides del día y entradas sobre un año concreto, con la cita y el enlace a cada entrada.
 3. Investigación con IA y búsqueda web (solo si el proveedor busca de verdad en internet), en lotes pequeños con tope
    mensual. Sin enlace a la fuente, no se guarda nada.
 Nunca se inventa una efeméride para rellenar un día: lo dudoso queda «pendiente de contrastar».
@@ -238,6 +240,101 @@ def harvest_wikipedia():
     return total
 
 
+# ---------- 2b. Hemeroteca local: «La Línea en Blanco y Negro» (Luis Javier Traverso) y su radio de efemérides ----------
+
+BLOGS = [('La Línea en Blanco y Negro', 'https://lalineaenblancoynegro.blogspot.com'),
+         ('Radio La Línea en Blanco y Negro', 'https://radiolalineaenblancoynegro.blogspot.com')]
+BLOG_CREDIT = 'La Línea en Blanco y Negro (L. J. Traverso)'
+_NUM_DATE = re.compile(r'\b(\d{1,2})[-/.](\d{1,2})[-/.](1[6-9]\d\d|20[0-2]\d)\b')
+_YEAR_LINE = re.compile(r'^\s*(?:a[ñn]o\s+)?(1[6-9]\d\d|20[0-2]\d)\s*[-–—.:,)]\s*(.{15,400})$', re.M)
+_TITLE_DAY = re.compile(r'\b(\d{1,2})\s+de\s+(%s)\b' % '|'.join(MONTHS), re.I)
+_TITLE_YEAR = re.compile(r'\b(1[6-9]\d\d|20[0-2]\d)\b|\b1\.(9\d\d)\b')
+
+
+def _category(text):
+    return next((c for c, rx in _CAT_HINTS if re.search(rx, text or '', re.I)), 'Acontecimientos históricos')
+
+
+def _blog_text(html):
+    from bs4 import BeautifulSoup
+    soup = BeautifulSoup(html or '', 'html.parser')
+    img = next((i.get('src') for i in soup.find_all('img') if str(i.get('src') or '').startswith('http')), '')
+    for br in soup.find_all(['br', 'p', 'div', 'li']):
+        br.append('\n')
+    return re.sub(r'[ \t]+', ' ', soup.get_text()).strip(), img
+
+
+def harvest_blogs(max_posts=600):
+    """Lee todas las entradas de los blogs de historia local y saca efemérides con fecha, con la cita y el enlace a la entrada.
+    Cada entrada se procesa una vez (y otra vez solo si el autor la actualiza)."""
+    ensure()
+    total = 0
+    for name, base in BLOGS:
+        start, seen = 1, 0
+        while seen < max_posts:
+            try:
+                r = requests.get(base + '/feeds/posts/default', headers=UA, timeout=40,
+                                 params={'alt': 'json', 'max-results': 100, 'start-index': start})
+                r.raise_for_status()
+                entries = (r.json().get('feed') or {}).get('entry') or []
+            except Exception as exc:
+                db.log('efemerides_error', ('%s: %s' % (name, exc))[:250])
+                break
+            if not entries:
+                break
+            for e in entries:
+                seen += 1
+                eid_blog = (e.get('id') or {}).get('$t', '')
+                updated = (e.get('updated') or {}).get('$t', '')
+                key = 'blog:' + eid_blog
+                done = db.row('SELECT note FROM efemeride_runs WHERE source_key=?', (key,))
+                if done and done.get('note') == updated:
+                    continue
+                url = next((l.get('href') for l in e.get('link') or [] if l.get('rel') == 'alternate'), base)
+                title = (e.get('title') or {}).get('$t', '').strip()
+                text, img = _blog_text((e.get('content') or e.get('summary') or {}).get('$t', ''))
+                image = {'url': img, 'source': BLOG_CREDIT, 'license': 'Archivo del blog: consultar uso con su autor'} if img else None
+                src = lambda quote: [{'name': name, 'url': url, 'quote': quote[:600]}]
+                n = 0
+                # a) frases con fecha completa («el 17 de enero de 1870», «02-01-1970»)
+                for sent in re.split(r'(?<=[.!?])\s+|\n+', text):
+                    sent = sent.strip()
+                    if not (20 <= len(sent) <= 400):
+                        continue
+                    m = _DATE_SENT.search(sent)
+                    if m:
+                        y, mo, d = int(m.group(3)), MONTHS[m.group(2).lower()], int(m.group(1))
+                    else:
+                        m = _NUM_DATE.search(sent)
+                        if not m or not (1 <= int(m.group(2)) <= 12):
+                            continue
+                        y, mo, d = int(m.group(3)), int(m.group(2)), int(m.group(1))
+                    t = re.sub(r'^\s*(?:el\s+)?\d{1,2}(?:\s+de\s+\w+\s+de\s+|[-/.]\d{1,2}[-/.])\d{4},?\s*', '', sent).strip() or sent
+                    _, new = save(t[:1].upper() + t[1:160], y, mo, d, _category(sent), sent, 'La Línea de la Concepción', '', src(sent), None, 'blog', '', image)
+                    n += 1 if new else 0
+                # b) programas de efemérides del día: «1886 - Se inaugura…» con el día del titular
+                td = _TITLE_DAY.search(title)
+                if td:
+                    for m in _YEAR_LINE.finditer(text):
+                        line = m.group(2).strip()
+                        _, new = save(line[:1].upper() + line[1:160], int(m.group(1)), MONTHS[td.group(2).lower()], int(td.group(1)),
+                                      _category(line), line, 'La Línea de la Concepción', '', src(m.group(0).strip()), None, 'blog')
+                        n += 1 if new else 0
+                # c) entrada sobre un año concreto («Semana Santa Linense en 1961»): efeméride de fecha aproximada
+                ty = _TITLE_YEAR.search(title)
+                if not n and ty and not td:
+                    y = int(ty.group(1) or ('1' + ty.group(2)))
+                    _, new = save(title[:160], y, 0, 0, _category(title + ' ' + text[:300]), text[:600], 'La Línea de la Concepción', '',
+                                  src(text[:300]), 'aproximada', 'blog', '', image)
+                    n += 1 if new else 0
+                db.exec_('INSERT OR REPLACE INTO efemeride_runs(source_key,done_at,items,note) VALUES(?,CURRENT_TIMESTAMP,?,?)', (key, n, updated))
+                total += n
+            if len(entries) < 100:
+                break
+            start += 100
+    return total
+
+
 # ---------- 3. Investigación con IA (búsqueda web) ----------
 
 TOPICS = [(cat, decade) for decade in range(1870, 2030, 10) for cat in CATEGORIES]
@@ -271,7 +368,8 @@ def research(limit=5):
         if db.row('SELECT 1 FROM efemeride_runs WHERE source_key=?', (key,)):
             continue
         prompt = ('Investiga en internet acontecimientos DOCUMENTADOS de La Línea de la Concepción (Cádiz) de tipo «%s» entre %d y %d. '
-                  'Busca en hemerotecas (Biblioteca Nacional, Prensa Histórica), webs de historia local, asociaciones, hermandades, archivos y prensa. '
+                  'Busca primero en la hemeroteca local «La Línea en Blanco y Negro» (lalineaenblancoynegro.blogspot.com y radiolalineaenblancoynegro.blogspot.com) '
+                  'y después en webs de historia local, asociaciones, hermandades, archivos y prensa. '
                   'Solo hechos con fecha y con una fuente real que hayas visto (URL) y una cita breve de ella. No inventes nada; si no encuentras, '
                   'devuelve la lista vacía. JSON {"items":[{"titulo","descripcion","anio":1950,"mes":0,"dia":0,"lugar","personas",'
                   '"fuentes":[{"nombre","url","cita"}]}]} (mes y día 0 si no se conocen; máximo 8).') % (cat, decade, decade + 9)
@@ -311,6 +409,7 @@ def daily():
     if not last or (datetime.now(timezone.utc) - datetime.fromisoformat(last['done_at'].replace(' ', 'T') + '+00:00')).days >= 7:
         harvest_wikidata()
         harvest_wikipedia()
+        harvest_blogs()
     research(limit=DAILY_AI)
     try:
         from . import alerts

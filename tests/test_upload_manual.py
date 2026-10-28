@@ -959,3 +959,33 @@ class EfemeridesTests(unittest.TestCase):
         c = db.row('SELECT * FROM candidates WHERE id=?', (r['candidate_id'],))
         self.assertIn('Hace', c['title']); self.assertIn('NO las cites', c['local_angle'])
         self.assertTrue(c['planned_at'])
+
+
+class BlogHemerotecaTests(unittest.TestCase):
+    def test_blog_harvest(self):
+        from unittest import mock
+        from app import efemerides as ef, db
+        feed = {'feed': {'entry': [
+            {'id': {'$t': 'post-1'}, 'updated': {'$t': '2020-05-01'}, 'title': {'$t': 'Programa 26 Efemérides de La Línea de la Concepción el 1 de mayo'},
+             'link': [{'rel': 'alternate', 'href': 'https://radiolalineaenblancoynegro.blogspot.com/2020/05/p26.html'}],
+             'content': {'$t': '<p>1886 - Se inaugura el primer alumbrado público de gas en la calle Real.</p><p>1955 - Primera piedra de la barriada de San José.</p>'}},
+            {'id': {'$t': 'post-2'}, 'updated': {'$t': '2019-04-01'}, 'title': {'$t': 'Semana Santa Linense en 1961'},
+             'link': [{'rel': 'alternate', 'href': 'https://lalineaenblancoynegro.blogspot.com/2019/04/ss-1961.html'}],
+             'content': {'$t': '<p>Fotografías de la Semana Santa de 1961.</p><img src="https://blogger.test/foto.jpg"><p>El 23 de marzo de 1961 salió la cofradía del Cristo.</p>'}}]}}
+        class R:
+            def __init__(self, d): self.d = d
+            def json(self): return self.d
+            def raise_for_status(self): pass
+        empty = {'feed': {}}
+        calls = []
+        def get(url, **kw):
+            calls.append(url); return R(feed if 'radiolalinea' in url and len([c for c in calls if 'radiolalinea' in c]) == 1 or ('lalineaenblancoynegro' in url and 'radio' not in url and len([c for c in calls if 'radio' not in c]) == 1) else empty)
+        with mock.patch.object(ef.requests, 'get', side_effect=get):
+            n = ef.harvest_blogs()
+        self.assertGreaterEqual(n, 3)
+        self.assertTrue(db.row("SELECT 1 FROM efemerides WHERE year=1886 AND month=5 AND day=1"))
+        self.assertTrue(db.row("SELECT 1 FROM efemerides WHERE year=1961 AND month=3 AND day=23"))
+        src = db.row("SELECT url FROM efemeride_sources s JOIN efemerides e ON e.id=s.efemeride_id WHERE e.year=1886")
+        self.assertIn('blogspot.com', src['url'])
+        with mock.patch.object(ef.requests, 'get', side_effect=lambda url, **kw: R(feed)):
+            self.assertEqual(ef.harvest_blogs(max_posts=2), 0)  # ya procesadas: no se repiten

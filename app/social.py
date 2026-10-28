@@ -126,12 +126,60 @@ def _page_name(url):
     return path[0] if path else 'Facebook'
 
 
-def local_post(text, watched_page=False):
+def fb_account(url):
+    """Página o grupo de Facebook/Instagram al que pertenece un enlace: «aytocehegin», «groups/123», «id:100064…»."""
+    u = urlparse(url or '')
+    path = [p for p in u.path.split('/') if p]
+    q = parse_qs(u.query)
+    if path[:1] == ['groups'] and len(path) > 1:
+        return 'groups/' + path[1].lower()
+    if path[:1] in (['profile.php'], ['permalink.php'], ['story.php'], ['photo.php'], ['photo'], ['watch'], ['reel'], ['share']) or not path:
+        pid = (q.get('id') or [''])[0]
+        return ('id:' + pid) if pid else ''
+    return path[0].lower()
+
+
+def same_account(url, watched_url):
+    """¿El enlace es de esa página vigilada? (las búsquedas a veces devuelven publicaciones de otras páginas)."""
+    mine, want = fb_account(url), fb_account(watched_url)
+    if not want:
+        return False
+    if mine:
+        return mine == want
+    pid = want[3:] if want.startswith('id:') else ''
+    return bool(pid and pid in (url or ''))
+
+
+_OTHER_TOWN_HALL = re.compile(r'^(ayto|ayuntamiento|concello|ajuntament|alcaldia|policialocal)(?!.*linea)', re.I)
+
+
+def foreign_page(url, page_name=''):
+    """Página de otro pueblo: «aytocehegin», «Ayuntamiento de Rota»… (por su dirección o su nombre)."""
+    from . import gazetteer
+    acc = fb_account(url)
+    slug = re.sub(r'[^a-z]', '', gazetteer.fold(acc.split('/')[-1] if acc else ''))
+    name = gazetteer.fold(page_name or '')
+    if 'linea' in slug or 'linea' in name or 'linense' in slug or 'linense' in name:
+        return False
+    if slug and _OTHER_TOWN_HALL.match(slug):
+        return True
+    names = gazetteer._names['set'] or gazetteer.load()
+    for n in names:
+        if len(n) >= 5 and (n.replace(' ', '') in slug or re.search(r'\b%s\b' % re.escape(n), name)):
+            return True
+    return bool(sources.other_place(page_name or ''))
+
+
+def local_post(text, watched_page=False, url='', page_name=''):
     """¿Es de La Línea? En una página o grupo vigilado de La Línea basta con que no hable de otro sitio;
-    en el resto (búsquedas e IA) tiene que decir claramente La Línea de la Concepción."""
+    en el resto (búsquedas e IA) tiene que decir claramente La Línea de la Concepción y no ser de la página de otro pueblo."""
     if sources.foreign(text) or sources.other_place(text):
         return False
-    return True if watched_page else sources.strict_local(text)
+    if watched_page:
+        return True
+    if url and foreign_page(url, page_name):
+        return False
+    return sources.strict_local(text)
 
 
 def _add(item, sid, outlet, kind=None, watched_page=False):
@@ -139,8 +187,8 @@ def _add(item, sid, outlet, kind=None, watched_page=False):
     kind = kind or kind_of(text)
     if not kind:
         return None  # ventas, publicidad o noticias de medios compartidas
-    if not local_post(text, watched_page):
-        return None  # de otro pueblo (Nerja, Algeciras…) o sin nada claro de La Línea
+    if not local_post(text, watched_page, item.get('url') or '', outlet):
+        return None  # de otro pueblo (Nerja, Cehegín, Rota…) o sin nada claro de La Línea
     date = sources.parse_es_date(item.get('snippet', '')) or sources.parse_es_date(item.get('title', ''))
     cid = sources.add_candidate(item['title'], item['url'], item.get('snippet', ''), SOURCE_NAME, sid,
                                 date,  # fecha leída de la publicación; vacía si no se conoce
@@ -163,6 +211,8 @@ def scan():
         host = urlparse(src['url']).hostname or 'facebook.com'
         own = (src.get('brand') or 'infolinense') != 'infolinense'
         for item in web_search(f'site:{host}/{target}', days=3, limit=15):
+            if not same_account(item.get('url') or '', src['url']):
+                continue  # la búsqueda trajo una publicación de otra página (p. ej. de otro ayuntamiento)
             if own:  # página de una hermandad o agrupación: todo lo que publica es del medio (Cofrade, Carnaval)
                 date = sources.parse_es_date(item.get('snippet', '')) or sources.parse_es_date(item.get('title', ''))
                 cid = sources.add_candidate(item['title'], item['url'], item.get('snippet', ''), src['name'], src['id'], date,
@@ -214,12 +264,13 @@ def scan():
 
 def cleanup():
     """Retira del panel lo ya guardado que no es de La Línea (p. ej. de Nerja)."""
-    names = {(r['name'] or '').strip().lower() for r in watched()}
+    pages = watched()
     n = 0
-    for r in db.rows("""SELECT id,title,excerpt,outlet FROM candidates WHERE social_type IS NOT NULL
+    for r in db.rows("""SELECT id,title,excerpt,outlet,url FROM candidates WHERE social_type IS NOT NULL
                         AND status NOT IN ('archived','published') AND editorial_priority IN ('undecided','')"""):
         from . import learn
-        if learn.blocked(r['title'] or '') or not local_post((r['title'] or '') + ' ' + (r['excerpt'] or ''), (r.get('outlet') or '').strip().lower() in names):
+        mine = any(same_account(r.get('url') or '', p['url']) for p in pages)
+        if learn.blocked(r['title'] or '') or not local_post((r['title'] or '') + ' ' + (r['excerpt'] or ''), mine, r.get('url') or '', r.get('outlet') or ''):
             db.exec_("UPDATE candidates SET status='archived',reason='Fuera de La Línea' WHERE id=?", (r['id'],)); n += 1
     return n
 

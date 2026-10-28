@@ -572,7 +572,10 @@ def other_place(text):
         return False
     if _ELSEWHERE.search(text) or _OTHER_TOWNS.search(text):
         return True
-    return any(not re.search(r'la\s+l[ií]nea', m.group(2), re.I) for m in _TOWN_HALL.finditer(text))
+    if any(not re.search(r'la\s+l[ií]nea', m.group(2), re.I) for m in _TOWN_HALL.finditer(text)):
+        return True
+    from . import gazetteer
+    return bool(gazetteer.places_in(text))  # cualquier municipio de España o país del mundo (Cehegín, Rota, Lima…)
 
 
 def strict_local(text):
@@ -1295,6 +1298,8 @@ def read_source(source, remember_state=True):
             if account == 'profile.php' and pid and pid not in (it.get('url') or '') \
                     and not strict_local((it.get('title') or '') + ' ' + (it.get('snippet') or '')):
                 continue  # búsqueda por nombre: puede traer páginas de otros pueblos
+            if account != 'profile.php' and not social.same_account(it.get('url') or '', source['url']):
+                continue  # publicación de otra página (los buscadores a veces mezclan páginas parecidas)
             items.append({'title': it.get('title') or '', 'url': it['url'], 'excerpt': it.get('snippet') or it.get('title') or '',
                           'published_at': parse_es_date(it.get('snippet', '')) or parse_es_date(it.get('title', ''))})
         if not items:  # plan B: Google News

@@ -812,3 +812,20 @@ class Context77Tests(unittest.TestCase):
         self.assertEqual(gazetteer.places_in('Rota de la plantilla en el club'), [])
         self.assertEqual(gazetteer.places_in('Obras en La Línea'), [])
         gazetteer._names['set'] = set()
+
+
+class FacebookPlaceTests(unittest.TestCase):
+    def test_other_town_pages(self):
+        from app import social, gazetteer
+        gazetteer._names['set'] = {'cehegin', 'rota', 'nerja'}
+        self.assertTrue(social.foreign_page('https://www.facebook.com/aytocehegin/posts/123'))
+        self.assertFalse(social.foreign_page('https://www.facebook.com/aytolalinea/posts/1'))
+        self.assertTrue(social.foreign_page('https://www.facebook.com/someone/posts/1', 'Ayuntamiento de Rota'))
+        self.assertFalse(social.local_post('Vecinos denuncian baches en la calle Real de La Línea', False,
+                                           'https://www.facebook.com/aytocehegin/posts/9', 'aytocehegin'))
+        self.assertFalse(social.local_post('Corte de agua en Cehegín este martes'))
+        self.assertTrue(social.same_account('https://www.facebook.com/aytolalinea/posts/55', 'https://www.facebook.com/aytolalinea'))
+        self.assertFalse(social.same_account('https://www.facebook.com/aytocehegin/posts/55', 'https://www.facebook.com/aytolalinea'))
+        self.assertTrue(social.same_account('https://www.facebook.com/permalink.php?story_fbid=1&id=100064501760045',
+                                            'https://www.facebook.com/profile.php?id=100064501760045'))
+        gazetteer._names['set'] = set()

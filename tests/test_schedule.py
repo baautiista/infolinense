@@ -50,10 +50,10 @@ class ScheduleTests(unittest.TestCase):
         with self.assertRaises(HTTPException):
             main.schedule_article(self.aid, main.ScheduleIn(at='2020-01-01T10:00'))
         future = (datetime.now() + timedelta(days=1)).strftime('%Y-%m-%dT10:00')
-        # sin imagen de Canva se puede programar: se usa la imagen subida
+        # sin la imagen final (con titular) no se programa en redes: la foto limpia de la web nunca va a las redes
         with patch.object(sp, 'connected_networks', return_value=['instagram']):
-            r = main.schedule_article(self.aid, main.ScheduleIn(at=future, networks=['instagram']))
-        self.assertTrue(r['scheduled_at'])
+            with self.assertRaises(HTTPException):
+                main.schedule_article(self.aid, main.ScheduleIn(at=future, networks=['instagram']))
 
     def test_failed_scheduled_publish_is_reported(self):
         db.exec_("UPDATE articles SET scheduled_at=?,scheduled_networks='[]' WHERE id=?", (NOW, self.aid))

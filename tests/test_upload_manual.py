@@ -989,3 +989,22 @@ class BlogHemerotecaTests(unittest.TestCase):
         self.assertIn('blogspot.com', src['url'])
         with mock.patch.object(ef.requests, 'get', side_effect=lambda url, **kw: R(feed)):
             self.assertEqual(ef.harvest_blogs(max_posts=2), 0)  # ya procesadas: no se repiten
+
+
+class SocialNeverWebPhotoTests(unittest.TestCase):
+    def test_web_photo_never_goes_to_social(self):
+        import tempfile
+        from PIL import Image
+        from app import social_publish as sp
+        f = tempfile.mktemp(suffix='.jpg'); Image.new('RGB', (100, 100)).save(f)
+        with self.assertRaises(sp.SocialError):
+            sp.article_images({'id': 999991, 'render_path': '', 'image_local': f, 'image_kind': 'web_photo'})
+        self.assertEqual(sp.article_images({'id': 999992, 'render_path': '', 'image_local': f, 'image_kind': 'final_image'}), [f])
+
+    def test_text_edit_keeps_uploaded_final_image(self):
+        from app import db, main
+        cid = db.exec_("INSERT INTO candidates(title,url,status) VALUES('Final test','https://x.test/fin1','new')")
+        aid = db.exec_("INSERT INTO articles(candidate_id,status,headline,subtitle,render_path) VALUES(?,?,?,?,?)", (cid, 'approved', 'Titular', 'Entradilla', '/tmp/x.png'))
+        db.exec_("INSERT OR REPLACE INTO canva_designs(article_id,design_id,url,exported,content_hash) VALUES(?,'upload','',1,'upload')", (aid,))
+        main.edit_article(aid, main.EditArticle(headline='Titular\n', subtitle='Entradilla  cambiada'))
+        self.assertEqual(db.row('SELECT render_path FROM articles WHERE id=?', (aid,))['render_path'], '/tmp/x.png')

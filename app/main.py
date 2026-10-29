@@ -17,7 +17,7 @@ from .auth import login, require_auth
 from starlette.concurrency import run_in_threadpool
 from .config import BASE_DIR, RENDER_DIR, UPLOAD_DIR, SCAN_INTERVAL_MINUTES, AUTO_PIPELINE, OPENAI_API_KEY, ADMIN_PASSWORD, JWT_SECRET, PUBLISH_MODE, CORS_ORIGINS, PUBLIC_BASE_URL, AUTO_PUBLISH
 
-VERSION='7.8.1'
+VERSION='7.8.2'
 app=FastAPI(title='InfoLinense Desk',version=VERSION)
 
 from fastapi.responses import JSONResponse as _JR
@@ -1385,7 +1385,9 @@ def edit_article(aid:int,body:EditArticle):
         # La imagen de Canva solo se invalida si cambia algo que aparece en ella (titular, entradilla, sección).
         changes=body.model_dump(exclude_none=True)
         if 'section' in changes: changes['section']=norm_section(changes['section'])
-        image_changed=any(k in changes and (changes[k] or '')!=(original.get(k) or '') for k in ('headline','headline_size','subtitle','section','brand','section_label')) or any(
+        norm=lambda x: re.sub(r'\s+',' ',str(x or '')).strip()  # espacios o saltos de línea distintos no cambian la imagen
+        uploaded_final=bool(db.row("SELECT 1 FROM canva_designs WHERE article_id=? AND design_id='upload'",(aid,)))
+        image_changed=not uploaded_final and any(k in changes and norm(changes[k])!=norm(original.get(k)) for k in ('headline','headline_size','subtitle','section','brand','section_label')) or not uploaded_final and any(
             k in changes and abs(float(changes[k])-float(original.get(k) if original.get(k) is not None else default))>0.001
             for k,default in (('photo_zoom',1),('photo_x',50),('photo_y',50)))
         db.exec_(f"UPDATE articles SET {','.join(fields)}{',render_path=NULL' if image_changed else ''},updated_at=CURRENT_TIMESTAMP WHERE id=?",tuple(vals+[aid]))
@@ -1997,6 +1999,14 @@ def startup():
     for ensure in (videos._ensure, efemerides.ensure):  # tablas nuevas antes de la primera petición
         try: ensure()
         except Exception as e: db.log('startup_error',str(e)[:200])
+    try:  # imágenes terminadas subidas que se perdieron al guardar el texto (7.8.2): se recuperan
+        for r in db.rows("""SELECT a.id FROM articles a JOIN canva_designs d ON d.article_id=a.id AND d.design_id='upload'
+                            WHERE a.status NOT IN ('published','rejected') AND COALESCE(a.render_path,'')=''"""):
+            f=RENDER_DIR/f"article_{r['id']}.png"
+            if f.is_file():
+                db.exec_('UPDATE articles SET render_path=? WHERE id=?',(str(f),r['id']))
+                db.exec_('UPDATE canva_designs SET exported=1 WHERE article_id=?',(r['id'],))
+    except Exception as e: db.log('startup_error',str(e)[:200])
     try:  # fuera del panel lo de Facebook/Instagram que no viene de tus cuentas
         sources.archive_off_topic(); social.cleanup()
     except Exception as e: db.log('startup_error',str(e)[:200])

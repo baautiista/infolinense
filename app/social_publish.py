@@ -527,9 +527,11 @@ def article_images(article):
         return ([main] if main and Path(main).is_file() else []) + paths[:9]
     if article.get('render_path') and Path(article['render_path']).is_file():
         return [article['render_path']]
-    if article.get('image_local') and Path(article['image_local']).is_file():
-        return [article['image_local']]  # sin imagen de Canva: se publica la imagen que has subido tal cual
-    raise SocialError('Falta la imagen: sube una imagen o crea la de Canva antes de publicar en redes.')
+    if article.get('image_kind') == 'final_image' and article.get('image_local') and Path(article['image_local']).is_file():
+        return [article['image_local']]  # la «foto» guardada ES la imagen terminada (con titular y entradilla)
+    # Nunca se manda a las redes la foto limpia de la web (sin titular ni entradilla)
+    raise SocialError('Falta la imagen final con el titular (la de Canva). Créala o súbela antes de publicar en redes: '
+                      'la foto limpia de la web no se publica en redes.')
 
 
 # ---------- textos ----------

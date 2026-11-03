@@ -1,9 +1,9 @@
-import json, threading
+import json, threading, weakref
 from . import db, sources, ai, photos
 from .config import QUICK_SCORE_MAX, MIN_AUTO_SCORE, AUTO_DRAFTS_PER_SCAN, AUTO_DRAFT_USEFUL
 
 # One lock per candidate so two clicks on «Redactar» never create two drafts.
-_locks = {}
+_locks = weakref.WeakValueDictionary()  # held locks remain live; unused per-candidate locks are reclaimed
 _locks_guard = threading.Lock()
 
 

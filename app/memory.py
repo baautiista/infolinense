@@ -11,7 +11,7 @@ import threading
 import time
 
 _guard = threading.Lock()
-_last = 0.0
+_last = float('-inf')
 
 
 def maybe_trim(interval_minutes=None, *, now=None):

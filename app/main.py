@@ -13,6 +13,7 @@ from . import db, sources, pipeline, publishers, photos, canva, ai, planner, lay
 from . import video as videos
 from . import efemerides
 from . import review as checks
+from . import memory
 from .auth import login, require_auth
 from starlette.concurrency import run_in_threadpool
 from .config import BASE_DIR, RENDER_DIR, UPLOAD_DIR, SCAN_INTERVAL_MINUTES, AUTO_PIPELINE, OPENAI_API_KEY, ADMIN_PASSWORD, JWT_SECRET, PUBLISH_MODE, CORS_ORIGINS, PUBLIC_BASE_URL, AUTO_PUBLISH
@@ -92,6 +93,11 @@ def auth_login(body:LoginIn): return {'token':login(body.password)}
 @app.get('/api/health')
 def health():
     return {'ok':True,'version':VERSION,'auth_configured':bool(ADMIN_PASSWORD and JWT_SECRET),'openai_configured':bool(OPENAI_API_KEY),'claude_configured':bool(ai.ANTHROPIC_API_KEY),'ai_configured':ai.AI_ENABLED,'ai_provider':ai.ACTIVE_PROVIDER or None,'ai_fallback':[p for p in ai.provider_chain()[1:]],'draft_provider':ai.ACTIVE_PROVIDER or 'source_draft','draft_mode':'ai' if ai.AI_ENABLED else 'source_draft','web_search':{p:ai.web_enabled(p) for p in ai.provider_chain()},'publish_mode':PUBLISH_MODE,'auto_publish':bool(AUTO_PUBLISH and PUBLISH_MODE!='none'),'paid_ai_allowed':ai.AI_ALLOW_PAID,'ocr':ocr.available(),'disk_free_mb':storage.free_bytes()//(1024*1024)}
+
+@app.get('/api/system/memory',dependencies=[Depends(require_auth)])
+def memory_status():
+    """Read-only process RSS diagnostic; never includes credentials or user data."""
+    return {'resident_mb': memory.resident_memory_mb()}
 
 @app.get('/api/ai/check',dependencies=[Depends(require_auth)])
 def ai_check():
@@ -1646,6 +1652,7 @@ def publish_loop():
         except Exception as e: db.log('social_error','Buffer: '+str(e)[:200])
         try: social_publish.check_processing()  # vídeos que las redes están procesando
         except Exception as e: db.log('social_error','Vídeos: '+str(e)[:200])
+        memory.maybe_trim()
         time.sleep(30)
 
 @app.post('/api/articles/{aid}/networks/{network}',dependencies=[Depends(require_auth)])
@@ -1971,6 +1978,7 @@ def scheduler_loop():
         except Exception as e: db.log('stats_error',str(e)[:250])
         # De 12:45 a 15:15 el Ayuntamiento publica lo del día: se busca cada 10 minutos
         t=datetime.now(MADRID); m=t.hour*60+t.minute
+        memory.maybe_trim()
         time.sleep(600 if 765<=m<=915 else max(15,SCAN_INTERVAL_MINUTES)*60)
 def restore_final_covers():
     """Deshace la portada recortada de la 7.3.8: vuelve a ser la imagen terminada."""

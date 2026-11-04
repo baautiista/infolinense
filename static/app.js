@@ -710,8 +710,39 @@ window.discardCandidate = async (cid, aid) => {
 
 /* ---------- Fase 4: Publicar ---------- */
 const NET_NAMES = { web: 'Web', instagram: 'Instagram', facebook: 'Facebook', tiktok: 'TikTok' };
-function netPrefs(available) { return available }  // todas las redes conectadas, siempre
-function saveNetPrefs() { try { localStorage.setItem('nets', JSON.stringify([...document.querySelectorAll('.netpick input:checked')].map(i => i.value))) } catch (e) { } }
+const PUBLISH_PREFS_KEY = 'infolinense_publish_networks';
+let publishNetworkPrefs = (() => { try { return JSON.parse(localStorage.getItem(PUBLISH_PREFS_KEY) || '{}') || {} } catch (e) { return {} } })();
+const SOCIAL_NETS = ['instagram', 'facebook', 'tiktok'];
+function availableNetworks(state) { return SOCIAL_NETS.filter(n => state && state[n] && state[n].connected) }
+function selectedNetworks(id, available) {
+  const key = String(id);
+  return Object.prototype.hasOwnProperty.call(publishNetworkPrefs, key)
+    ? (publishNetworkPrefs[key] || []).filter(n => available.includes(n))
+    : [...available];
+}
+function rememberNetworks(id, selected) {
+  publishNetworkPrefs[String(id)] = selected;
+  try { localStorage.setItem(PUBLISH_PREFS_KEY, JSON.stringify(publishNetworkPrefs)) } catch (e) { }
+}
+function networkPicker(id, available) {
+  const chosen = selectedNetworks(id, available);
+  const choices = SOCIAL_NETS.map(n => available.includes(n)
+    ? '<label class="switch"><input type="checkbox" value="' + n + '"' + (chosen.includes(n) ? ' checked' : '') + '> ' + NET_NAMES[n] + '</label>'
+    : '<a class="switch off" href="#settings" title="Sin conectar">' + NET_NAMES[n] + ': sin conectar</a>').join('');
+  return '<div class="netpick row wrap" data-aid="' + id + '"><span class="muted small">Redes de esta noticia:</span>' + choices +
+    '<span class="muted small">Sin marcar ninguna: no se publica en redes.</span></div>';
+}
+function storySummary(r) {
+  if (r.story_error) return '<p class="error small">Falló la Story de Instagram: ' + esc(r.story_error) + '</p>';
+  if (r.story_scheduled_at) return '<p class="muted small">Story Instagram ' + (r.story_status === 'scheduled' ? 'programada' : r.story_status === 'publishing' ? 'enviándose' : 'enviada a Buffer') + ' · ' + whenText(r.story_scheduled_at) + '</p>';
+  if (r.story_status === 'published' && r.story_url) return '<a class="net ok" href="' + safeUrl(r.story_url) + '" target="_blank" rel="noopener">Story publicada ✓</a>';
+  return '';
+}
+function storyAction(r) {
+  return ['scheduled', 'publishing', 'pending'].includes(r.story_status)
+    ? '<button class="btn small" onclick="unscheduleStory(' + r.id + ',this)">Cancelar Story</button>'
+    : '<button class="btn small" onclick="scheduleStory(' + r.id + ',this)">Programar Story IG</button>';
+}
 function netStatus(r) { const n = r.networks || {}; return Object.keys(n).map(k => ['processing', 'publishing'].includes(n[k].status) ? `<span class="net">${NET_NAMES[k]}: ${n[k].status === 'processing' ? 'procesando el vídeo' : 'publicando'}</span>` : n[k].status === 'manual' ? `<span class="net warnnet" title="${esc(n[k].message)}">${NET_NAMES[k]}: requiere intervención</span>` : n[k].status === 'published' ? (n[k].url ? `<a class="net ok" href="${safeUrl(n[k].url)}" target="_blank" rel="noopener">${NET_NAMES[k]} ✓</a>` : `<span class="net ok">${NET_NAMES[k]} ✓</span>`) : n[k].status === 'pending' ? `<span class="net">${NET_NAMES[k]}: pendiente de confirmación</span>` : `<span><button class="net bad" title="${esc(n[k].message)}" onclick="retryNet(${r.id},'${k}',this)">${NET_NAMES[k]}: reintentar</button><small class="neterr">${esc(String(n[k].message || '').slice(0, 160))}</small></span>`).join('') }
 // Publicar: a la izquierda la cola (listas, sin programar); a la derecha las 9 franjas del día.
 // Se arrastra de la cola a una franja (o se pulsa la franja libre y se elige). Semana y mes: solo resumen.
@@ -730,19 +761,15 @@ async function publishView(v) {
   const byBrand = {};
   await Promise.all(slugs.map(async b => { byBrand[b] = await api('/api/networks?brand=' + b).catch(() => ({})) }));
   const NETS = ['instagram', 'facebook', 'tiktok'];
-  const available = NETS.filter(n => slugs.some(b => (byBrand[b][n] || {}).connected));
   const bname = b => (BRANDS.find(x => x.slug === b) || {}).short || b;
-  const offline = slugs.flatMap(b => NETS.filter(n => !(byBrand[b][n] || {}).connected).map(n => (slugs.length > 1 ? bname(b) + ' · ' : '') + NET_NAMES[n]));
   const noNets = b => !NETS.some(n => (byBrand[b] && byBrand[b][n] || {}).connected);
   const today = madridDate(), now = madridNow();
   if (!pubDay) pubDay = today;
   const queue = rows.filter(r => r.status !== 'published' && !r.scheduled_at)
     .sort((a, b) => ({ urgent: 0, today: 1 }[a.editorial_priority] ?? 2) - ({ urgent: 0, today: 1 }[b.editorial_priority] ?? 2) || String(a.planned_at || '9999').localeCompare(String(b.planned_at || '9999')));
   const placed = rows.filter(r => r.status === 'published' || r.scheduled_at);
-  PUB = { rows, queue, placed };
+  PUB = { rows, queue, placed, byBrand };
   const onDay = d => placed.filter(r => pubAt(r).startsWith(d));
-  const picker = `<div class="netpick row wrap"><span class="muted small">${slugs.length > 1 ? 'Cada noticia sale en las cuentas de su medio:' : 'Sale a la vez en:'}</span><span class="pill-net on">Web</span>${available.map(n => `<label class="switch"><input type="checkbox" value="${n}" checked> ${NET_NAMES[n]}</label>`).join('')}
-    ${offline.map(t => `<a class="switch off" href="#settings" title="Sin conectar">${esc(t)}: sin conectar</a>`).join('')}</div>`;
   const statsLink = `<a class="btn small" href="#stats">Estadísticas</a>`;
   const modes = `<div class="seg pubmode" role="tablist">${[['day', 'Día'], ['week', 'Semana'], ['month', 'Mes']].map(([k, n]) => `<label><input type="radio" name="pubmode" value="${k}" ${pubMode === k ? 'checked' : ''}><span>${n}</span></label>`).join('')}</div>`;
   const freeToday = GRID.filter(t => `${pubDay}T${t}` > now && !onDay(pubDay).some(x => Math.abs(mins(pubAt(x).slice(11, 16)) - mins(t)) <= 40));
@@ -750,13 +777,16 @@ async function publishView(v) {
     const smart = freeToday.map(t => [t, predict(r, t)]).sort((a, b) => b[1] - a[1])[0];
     const sug = smart && smart[1] >= 1.1 ? `${pubDay}T${smart[0]}` : r.planned_at && String(r.planned_at).slice(0, 16) > now ? String(r.planned_at).slice(0, 16) : '';
     const sugLabel = smart && smart[1] >= 1.1 ? `Mejor hora: ${smart[0]}` : sug ? whenText(sug) : '';
+    const netsForCard = availableNetworks(byBrand[r.brand || 'infolinense']);
     return `<article class="q-card" draggable="true" data-aid="${r.id}" style="--bc:${brandOf(r.brand).color}">
       <div class="meta">${brandBadge(r.brand)}${secBadge(r.section, r.brand)}${r.editorial_priority === 'urgent' ? '<span class="flag">Urgente</span>' : ''}${fmtBadge(r)}</div>
       <h3 class="go" data-go="#editor/${r.id}">${esc(r.headline)}</h3>
       ${r.format === 'carousel' && r.carousel_state !== 'terminado' ? '<p class="warn-line small">Texto listo · el carrusel aún no está terminado</p>' : ''}
       ${r.schedule_error ? `<p class="error small">No salió a su hora: ${esc(r.schedule_error)}</p>` : ''}
+      ${storySummary(r)}
       ${(r.brand || 'infolinense') !== 'infolinense' && noNets(r.brand) ? `<p class="error small">${esc(bname(r.brand))} sin redes. <a href="#settings">Conectar</a></p>` : ''}
-      <div class="q-actions"><button class="btn small primary" onclick="placeSheet(${r.id})">Elegir hora</button>${sug ? `<button class="btn small ${sugLabel.startsWith('Mejor') ? 'lime' : ''}" onclick="placeAt(${r.id},'${sug.slice(0, 10)}','${sug.slice(11, 16)}')">${esc(sugLabel)}</button>` : ''}<button class="btn small" onclick="publishNow(${r.id},this)">Publicar ya</button><button class="btn small danger icon" title="Eliminar" aria-label="Eliminar" onclick="removeArticle(${r.id})">×</button></div></article>`;
+      ${networkPicker(r.id, netsForCard)}
+      <div class="q-actions"><button class="btn small primary" onclick="placeSheet(${r.id})">Elegir hora</button>${sug ? `<button class="btn small ${sugLabel.startsWith('Mejor') ? 'lime' : ''}" onclick="placeAt(${r.id},'${sug.slice(0, 10)}','${sug.slice(11, 16)}')">${esc(sugLabel)}</button>` : ''}<button class="btn small" onclick="publishNow(${r.id},this)">Publicar ya</button>${storyAction(r)}<button class="btn small danger icon" title="Eliminar" aria-label="Eliminar" onclick="removeArticle(${r.id})">×</button></div></article>`;
   };
   const scard = r => {
     const done = r.status === 'published';
@@ -764,7 +794,8 @@ async function publishView(v) {
       <div class="meta">${brandBadge(r.brand)}${secBadge(r.section, r.brand)}${fmtBadge(r)}<span class="s-state ${done ? 'pub' : 'prog'}">${done ? 'Publicada' : 'Programada'}</span>${pubAt(r).slice(11, 16) && !GRID.includes(pubAt(r).slice(11, 16)) && GRID.includes(nearSlot(pubAt(r).slice(11, 16))) && Math.abs(mins(nearSlot(pubAt(r).slice(11, 16))) - mins(pubAt(r).slice(11, 16))) <= 40 ? `<span class="rv-time">${esc(pubAt(r).slice(11, 16))}</span>` : ''}</div>
       <h3 class="go" data-go="#editor/${r.id}">${esc(r.headline)}</h3>
       ${done ? `<div class="row wrap">${r.publish_url ? `<a class="net ok" href="${safeUrl(r.publish_url)}" target="_blank" rel="noopener">Web ✓</a>` : ''}${netStatus(r)}</div>`
-        : `<div class="s-actions"><span class="muted small">${schedNets(r)}</span><button class="link small" onclick="publishNow(${r.id},this)">Publicar ya</button><button class="link small" onclick="placeSheet(${r.id})">Cambiar hora</button><button class="link small" onclick="unschedule(${r.id})">Quitar hora</button></div>`}</article>`;
+        : `<div class="s-actions"><span class="muted small">${schedNets(r)}</span><button class="link small" onclick="publishNow(${r.id},this)">Publicar ya</button><button class="link small" onclick="placeSheet(${r.id})">Cambiar hora</button><button class="link small" onclick="unschedule(${r.id})">Quitar hora</button></div>`}
+      ${storySummary(r)}<div class="s-actions">${storyAction(r)}</div></article>`;
   };
   const dayHtml = () => {
     const list = onDay(pubDay);
@@ -807,7 +838,7 @@ async function publishView(v) {
         return `<button class="mo-day ${d === today ? 'today' : ''} ${d.slice(0, 7) !== calMonth ? 'other' : ''} ${d < today ? 'past' : ''}" data-open="${d}"><span>${+d.slice(8, 10)}</span>${n ? `<b class="mo-n">${n}</b>` : ''}</button>`;
       }).join('')}</div><p class="muted small">El número es cuántas noticias hay programadas o publicadas ese día. Pulsa un día para organizarlo.</p>`;
   };
-  v.innerHTML = rows.length || pubMode !== 'day' ? `<div class="pub-top">${modes}${statsLink}${picker}</div>${pubMode === 'week' ? weekHtml() : pubMode === 'month' ? monthHtml() : dayHtml()}`
+  v.innerHTML = rows.length || pubMode !== 'day' ? `<div class="pub-top">${modes}${statsLink}<span class="muted small">Elige las redes en cada noticia; la web sigue la configuración de cada medio.</span></div>${pubMode === 'week' ? weekHtml() : pubMode === 'month' ? monthHtml() : dayHtml()}`
     : `<p class="empty">Aún no hay noticias listas para publicar. Llegan aquí cuando están revisadas y tienen imagen.</p>${nextPhase('Ir a Revisar', 'review')}`;
   v.querySelectorAll('[name=pubmode]').forEach(i => i.onchange = () => { pubMode = i.value; if (pubMode === 'month') calMonth = pubDay.slice(0, 7); render() });
   v.querySelectorAll('[data-dstep]').forEach(b => b.onclick = () => { pubDay = addDays(pubDay, +b.dataset.dstep); render() });
@@ -815,6 +846,10 @@ async function publishView(v) {
   v.querySelectorAll('[data-wstep]').forEach(b => b.onclick = () => { pubDay = addDays(pubDay, +b.dataset.wstep); render() });
   v.querySelectorAll('[data-mstep]').forEach(b => b.onclick = () => { calMonth = addMonths(calMonth, +b.dataset.mstep); render() });
   v.querySelectorAll('[data-open]').forEach(b => b.onclick = () => { pubDay = b.dataset.open; pubMode = 'day'; render() });
+  v.querySelectorAll('.netpick[data-aid] input').forEach(input => {
+    input.onchange = () => rememberNetworks(input.closest('.netpick').dataset.aid,
+      [...input.closest('.netpick').querySelectorAll('input:checked')].map(x => x.value));
+  });
   v.querySelectorAll('.q-card,.s-card[draggable="true"]').forEach(c => { c.ondragstart = e => { e.dataTransfer.setData('text/plain', c.dataset.aid); c.classList.add('dragging') }; c.ondragend = () => c.classList.remove('dragging') });
   v.querySelectorAll('.slot[data-time]').forEach(z => {
     z.ondragover = e => { e.preventDefault(); z.classList.add('over') };
@@ -844,7 +879,7 @@ window.placeAt = async (aid, date, time, quiet) => {
   if (!quiet) toast('Programando…');
   try {
     await api(`/api/articles/${aid}/move`, { method: 'POST', body: JSON.stringify({ date, slot: slotOf(at), time }) });
-    const r = await api(`/api/articles/${aid}/schedule`, { method: 'POST', body: JSON.stringify({ at, networks: pickedNets() }) });
+    const r = await api(`/api/articles/${aid}/schedule`, { method: 'POST', body: JSON.stringify({ at, networks: pickedNets(aid) }) });
     if (!quiet) { toast('Programada: se publicará sola ' + whenText(r.scheduled_at)); render(); counts() }
   } catch (e) { if (quiet) throw e; toast(e.message); render() }
 };
@@ -898,7 +933,7 @@ window.scheduleAt = async (id, at, b) => {
   });
   if (!when) return;
   b.disabled = true; b.textContent = 'Programando…';
-  try { const r = await api(`/api/articles/${id}/schedule`, { method: 'POST', body: JSON.stringify({ at: when, networks: pickedNets() }) }); toast('Programada: se publicará sola ' + whenText(r.scheduled_at)); render(); counts() }
+  try { const r = await api(`/api/articles/${id}/schedule`, { method: 'POST', body: JSON.stringify({ at: when, networks: pickedNets(id) }) }); toast('Programada: se publicará sola ' + whenText(r.scheduled_at)); render(); counts() }
   catch (e) { toast(e.message); b.disabled = false; b.textContent = 'Programar' }
 };
 // Programar: la noticia se publica sola a esa hora (web + redes marcadas). Facebook personal se comparte a mano.
@@ -909,14 +944,53 @@ function schedNets(r) { let n = []; try { n = JSON.parse(r.scheduled_networks ||
 window.scheduleNow = async (id, b) => {
   const at = ($('#when-' + id) || {}).value; if (!at) return toast('Elige día y hora');
   b.disabled = true; b.textContent = 'Programando…';
-  try { const r = await api(`/api/articles/${id}/schedule`, { method: 'POST', body: JSON.stringify({ at, networks: pickedNets() }) }); toast('Programada: se publicará sola ' + whenText(r.scheduled_at)); render(); counts() }
+  try { const r = await api(`/api/articles/${id}/schedule`, { method: 'POST', body: JSON.stringify({ at, networks: pickedNets(id) }) }); toast('Programada: se publicará sola ' + whenText(r.scheduled_at)); render(); counts() }
   catch (e) { toast(e.message); b.disabled = false; b.textContent = 'Programar' }
 };
 window.unschedule = async id => { try { await api(`/api/articles/${id}/unschedule`, { method: 'POST' }); toast('Programación cancelada'); render() } catch (e) { toast(e.message) } };
+window.scheduleStory = async (id, b) => {
+  const previous = (PUB && PUB.rows || []).find(r => String(r.id) === String(id));
+  const when = await new Promise(res => {
+    const sheet = document.createElement('div'); sheet.className = 'sheet-bg';
+    sheet.innerHTML = `<div class="sheet" role="dialog" aria-label="Programar Story"><h2>Programar Story de Instagram</h2>
+      <p class="muted small">Se usará la imagen final de Canva de esta noticia.</p>
+      <label>Día y hora<input type="datetime-local" id="storyWhen" min="${madridNow()}" value="${defaultWhen(previous && previous.story_scheduled_at)}"></label>
+      <div class="row"><button class="btn" id="storyNo">Cancelar</button><button class="btn primary" id="storyOk">Programar Story</button></div></div>`;
+    document.body.appendChild(sheet);
+    const close = value => { sheet.remove(); res(value) };
+    sheet.onclick = e => { if (e.target === sheet) close('') };
+    sheet.querySelector('#storyNo').onclick = () => close('');
+    sheet.querySelector('#storyOk').onclick = () => { const value = sheet.querySelector('#storyWhen').value; if (!value || value <= madridNow()) return toast('Elige un día y una hora futuros'); close(value) };
+    setTimeout(() => sheet.querySelector('#storyWhen').focus(), 50);
+  });
+  if (!when) return;
+  b.disabled = true; b.textContent = 'Programando Story…';
+  try {
+    const r = await api(`/api/articles/${id}/story/schedule`, { method: 'POST', body: JSON.stringify({ at: when }) });
+    toast('Story de Instagram programada: ' + whenText(r.scheduled_at)); render();
+  } catch (e) { toast(e.message); b.disabled = false; b.textContent = 'Programar Story IG' }
+};
+window.unscheduleStory = async (id, b) => {
+  if (b) { b.disabled = true; b.textContent = 'Cancelando…' }
+  try { await api(`/api/articles/${id}/story/unschedule`, { method: 'POST' }); toast('Story cancelada'); render() }
+  catch (e) { toast(e.message); if (b) { b.disabled = false; b.textContent = 'Cancelar Story' } }
+};
 window.setTime = async (id, p, value) => { if (!value) return; try { await api(`/api/candidates/${id}/triage`, { method: 'POST', body: JSON.stringify({ priority: p, planned_at: value + ':00' }) }); toast('Hora fijada'); render() } catch (e) { toast(e.message) } };
-function pickedNets() { const boxes = [...document.querySelectorAll('.netpick input')]; if (!boxes.length || boxes.every(i => i.checked)) return null; return boxes.filter(i => i.checked).map(i => i.value) }
+function pickedNets(id) {
+  const picker = document.querySelector('.netpick[data-aid="' + id + '"]');
+  if (picker) {
+    const selected = [...picker.querySelectorAll('input:checked')].map(i => i.value);
+    rememberNetworks(id, selected);
+    return selected;
+  }
+  const key = String(id);
+  if (Object.prototype.hasOwnProperty.call(publishNetworkPrefs, key)) return publishNetworkPrefs[key] || [];
+  const row = PUB && (PUB.rows || []).find(r => String(r.id) === key);
+  if (row && PUB.byBrand) return selectedNetworks(id, availableNetworks(PUB.byBrand[row.brand || 'infolinense']));
+  return null;
+}
 function publishReport(r) { const lines = (r.results || []).filter(x => x.message).map(x => (x.ok ? '✓ ' : '') + x.message); toast(lines.join(' · ') || (r.published ? 'Publicada' : r.message || 'Aprobada')) }
-window.publishNow = async (id, b) => { b.disabled = true; b.textContent = 'Publicando…'; try { const r = await api(`/api/articles/${id}/publish`, { method: 'POST', body: JSON.stringify({ networks: pickedNets() }) }); publishReport(r); render(); counts() } catch (e) { toast(e.message); b.disabled = false; b.textContent = 'Publicar' } };
+window.publishNow = async (id, b) => { b.disabled = true; b.textContent = 'Publicando…'; try { const r = await api(`/api/articles/${id}/publish`, { method: 'POST', body: JSON.stringify({ networks: pickedNets(id) }) }); publishReport(r); render(); counts() } catch (e) { toast(e.message); b.disabled = false; b.textContent = 'Publicar' } };
 // Facebook personal: Meta no deja publicar en perfiles por programa, así que se comparte a mano.
 // 1.ª pulsación: prepara imagen y texto. 2.ª: abre el menú «Compartir» del móvil (o descarga la imagen y abre Facebook).
 const shareKits = {};
@@ -960,8 +1034,6 @@ function offerFacebook(id) {
   bar.querySelector('.link').onclick = () => bar.remove();
 }
 window.retryNet = async (id, net, b) => { b.disabled = true; b.textContent = 'Publicando…'; try { const r = await api(`/api/articles/${id}/networks/${net}`, { method: 'POST' }); toast((r.ok ? '✓ ' : '') + r.message); render() } catch (e) { toast(e.message); b.disabled = false } };
-window.saveNetPrefs = saveNetPrefs;
-
 /* ---------- Editor ---------- */
 function cw(c) { const W = { ' ': .26, '.': .28, ',': .28, ':': .28, ';': .28, '-': .36, "'": .25 }; if (c in W) return W[c]; if ('iljIJ1!¡íÍ'.includes(c)) return .33; if ('tf'.includes(c)) return .40; if ('mwMW'.includes(c)) return .92; if (c !== c.toLowerCase()) return .72; if (/[0-9]/.test(c)) return .62; return .60 }
 function lines(t) { let n = 0, cur = ''; for (const w of String(t || '').split(/\s+/).filter(Boolean)) { const x = (cur + ' ' + w).trim(); if ([...x].reduce((a, c) => a + cw(c), 0) * 74 <= 870 || !cur) cur = x; else { n++; cur = w } } return n + (cur ? 1 : 0) }
@@ -973,7 +1045,10 @@ window.aiWrite = async b => {
   catch (e) { toast(e.message); b.disabled = false; b.textContent = 'Redactar con IA' }
 };
 async function editor(v) {
-  const [a, kit] = await Promise.all([api(`/api/articles/${editorId}`), api(`/api/articles/${editorId}/kit`)]);
+  const [a, kit, car] = await Promise.all([api(`/api/articles/${editorId}`), api(`/api/articles/${editorId}/kit`), api(`/api/articles/${editorId}/carousel`).catch(() => ({ uploaded_count: 0 }))]);
+  const networkInfo = await api('/api/networks?brand=' + encodeURIComponent(a.brand || 'infolinense')).catch(() => ({}));
+  const editorNetworks = availableNetworks(networkInfo);
+  const editorNetPicker = networkPicker(editorId, editorNetworks);
   cache.article = a; cache.kit = kit;
   const options = jparse(a.headline_options_json, []), missing = jparse(a.missing_data_json, []), srcs = jparse(a.sources_json, []);
   const published = a.status === 'published';
@@ -1006,6 +1081,13 @@ async function editor(v) {
       <p class="muted small">La imagen de Canva lleva exactamente este titular y esta entradilla.</p>
       <label>Texto <span class="muted" id="count"></span><textarea id="f-body" rows="16" maxlength="2200">${esc(a.body)}</textarea></label>
       <details class="alts" id="carousel"><summary>${a.carousel_suitable ? 'Carrusel recomendado' : 'Carrusel'}</summary><div id="carouselBox"><p class="muted small">${esc(a.carousel_reason || '')}</p><button class="btn small" onclick="carousel()">Preparar diapositivas</button></div></details>
+      <details class="alts" id="uploadCarousel"><summary>Carrusel de fotos · hasta 20</summary>
+        <div class="stack"><p class="muted small">Sube fotos en el orden que quieres publicarlas. Instagram admite hasta 20; para 11–20 conecta su canal de Buffer en Ajustes. Facebook y TikTok usan como máximo las 10 primeras.</p>
+          <p class="muted small" id="carouselUploadCount">${car.uploaded_count ? car.uploaded_count + ' fotos subidas' : 'No has subido un carrusel de fotos.'}</p>
+          <label>Imágenes JPG, PNG o WEBP<input type="file" id="carouselFiles" accept="image/jpeg,image/png,image/webp" multiple></label>
+          <div class="row wrap"><button class="btn small primary" onclick="uploadCarouselFiles()">Subir carrusel</button><button class="link small" id="clearCarouselUpload" ${car.uploaded_count ? '' : 'hidden'} onclick="deleteCarouselUpload()">Quitar carrusel</button></div>
+        </div>
+      </details>
     </section>
   </div>
   <section class="panel"><h2>Formato</h2>${formatPicker(a.candidate_id, a)}</section>
@@ -1013,6 +1095,7 @@ async function editor(v) {
   <details class="panel net-texts"><summary><b>Texto por red</b> <span class="muted small">opcional: si lo dejas vacío, va el texto de la noticia</span></summary>
     ${['instagram', 'facebook', 'tiktok'].map(n => `<label>${NET_NAMES[n]} <span class="muted small" id="ntc-${n}"></span><textarea rows="5" data-nt="${n}" maxlength="2200">${esc((jparse(a.network_texts, {}) || {})[n] || '')}</textarea></label>`).join('')}
     <p class="muted small">Los hashtags del medio se añaden solos al final. Puedes poner más aquí.</p><button class="btn small" onclick="saveNetTexts()">Guardar textos</button></details>
+  <section class="panel"><h2>Redes de esta noticia</h2>${editorNetPicker}<p class="muted small">Las casillas solo controlan las redes sociales; la web sigue la configuración de este medio.</p></section>
   <section class="panel checks" id="checks"><div class="row"><h2 class="grow">Revisión automática</h2><button class="btn small" onclick="runChecks(0)">Volver a revisar</button><button class="btn small lime" onclick="runChecks(1)">Revisar con IA</button></div><div id="checkList"><p class="muted small">Revisando…</p></div></section>
   <div class="actions">
     <button class="btn" onclick="save(true)">Guardar</button>
@@ -1020,6 +1103,10 @@ async function editor(v) {
     ${published ? '<span class="muted">Publicada</span>' : a.status === 'draft' ? `<button class="btn primary" onclick="reviewed()">Revisada</button>` : `<button class="btn primary" id="pubBtn" onclick="publish()">Publicar</button>`}
     <button class="btn danger" onclick="removeArticle(${a.id})">${published ? 'Quitar del panel' : 'Eliminar'}</button>
   </div>`;
+  v.querySelectorAll('.netpick[data-aid] input').forEach(input => {
+    input.onchange = () => rememberNetworks(input.closest('.netpick').dataset.aid,
+      [...input.closest('.netpick').querySelectorAll('input:checked')].map(x => x.value));
+  });
   setTimeout(() => { runChecks(0); drawVideo(a) }, 0);
   const f = id => $(`#f-${id}`);
   const fit = () => {
@@ -1098,7 +1185,7 @@ window.reviewed = async () => {
 };
 window.publish = async () => {
   const b = $('#pubBtn'); b.disabled = true; b.textContent = 'Publicando…';
-  try { await saveArticle(); const r = await api(`/api/articles/${editorId}/publish`, { method: 'POST', body: JSON.stringify({ networks: pickedNets() }) }); publishReport(r); if (r.published && !fbDone(r)) offerFacebook(editorId); render() }
+  try { await saveArticle(); const r = await api(`/api/articles/${editorId}/publish`, { method: 'POST', body: JSON.stringify({ networks: pickedNets(editorId) }) }); publishReport(r); if (r.published && !fbDone(r)) offerFacebook(editorId); render() }
   catch (e) { toast(e.message); b.disabled = false; b.textContent = 'Publicar' }
 };
 window.autoPhoto = async () => {
@@ -1153,6 +1240,28 @@ window.carousel = async () => {
   } catch (e) { box.innerHTML = `<p class="error">${esc(e.message)}</p><button class="btn small" onclick="carousel()">Reintentar</button>` }
 };
 
+window.uploadCarouselFiles = async () => {
+  const input = $('#carouselFiles'), files = [...(input && input.files || [])];
+  if (!files.length) return toast('Selecciona las imágenes del carrusel');
+  if (files.length > 20) return toast('Elige como máximo 20 imágenes');
+  const button = $('#uploadCarousel button.primary'); button.disabled = true; button.textContent = 'Subiendo…';
+  const form = new FormData(); files.forEach(file => form.append('files', file, file.name));
+  try {
+    const result = await api(`/api/articles/${editorId}/carousel/upload`, { method: 'POST', body: form });
+    $('#carouselUploadCount').textContent = result.count + ' fotos subidas en este orden';
+    $('#clearCarouselUpload').hidden = false; input.value = '';
+    toast('Carrusel de ' + result.count + ' fotos subido');
+  } catch (e) { toast(e.message) }
+  finally { button.disabled = false; button.textContent = 'Subir carrusel' }
+};
+window.deleteCarouselUpload = async () => {
+  try {
+    await api(`/api/articles/${editorId}/carousel/upload`, { method: 'DELETE' });
+    $('#carouselUploadCount').textContent = 'No has subido un carrusel de fotos.';
+    $('#clearCarouselUpload').hidden = true; toast('Carrusel de fotos quitado');
+  } catch (e) { toast(e.message) }
+};
+
 /* ---------- Ajustes ---------- */
 let settingsBrand = null;
 async function settings(v) {
@@ -1196,7 +1305,12 @@ async function settings(v) {
       <div class="netrow"><b>Instagram</b>
         <p>${nets.instagram && nets.instagram.connected ? 'Conectado: @' + esc(nets.instagram.name || 'cuenta') + '. Se publica automático al pulsar «Publicar».' : nets.instagram_login ? 'Sin conectar.' : 'Faltan INSTAGRAM_APP_ID e INSTAGRAM_APP_SECRET en Railway.'}</p>
         ${nets.instagram_login ? `<div class="row wrap"><button class="btn small" id="igConn">${nets.instagram && nets.instagram.direct ? 'Volver a conectar' : 'Conectar Instagram'}</button>${nets.instagram && nets.instagram.direct ? '<button class="link" id="igOff">Desconectar</button>' : ''}</div>` : ''}
-        ${nets.instagram_callback ? `<details class="alts"><summary>Datos técnicos (ya configurados, no hace falta tocarlos)</summary><p class="muted small">Dirección de retorno para «Instagram → Configuración de la API con inicio de sesión de Instagram»: <code>${esc(nets.instagram_callback)}</code></p></details>` : ''}</div>
+        ${nets.instagram_callback ? `<details class="alts"><summary>Datos técnicos (ya configurados, no hace falta tocarlos)</summary><p class="muted small">Dirección de retorno para «Instagram → Configuración de la API con inicio de sesión de Instagram»: <code>${esc(nets.instagram_callback)}</code></p></details>` : ''}
+        <details class="alts"><summary>Instagram en Buffer · Stories y carruseles de 20</summary>
+          <p class="muted small">${nets.instagram && nets.instagram.stories_via_buffer ? 'Canal conectado' + (nets.instagram.name ? ': @' + esc(nets.instagram.name) : '') + '.' : 'Conecta Instagram en Buffer → Channels y añade aquí una clave API personal de Buffer. Si la clave de TikTok ya incluye un solo canal de Instagram, el panel intentará detectarlo al programar.'}</p>
+          <form id="bufferInstagram" class="stack"><input name="token" type="password" placeholder="Clave API personal de Buffer" autocomplete="off" required><input name="channel_id" placeholder="ID de canal (solo si hay varios Instagram)" autocomplete="off"><button class="btn small">${nets.instagram && nets.instagram.stories_via_buffer ? 'Actualizar canal de Stories' : 'Conectar Instagram para Stories'}</button></form>
+          ${nets.instagram && nets.instagram.stories_via_buffer ? '<button class="link" id="igStoryOff">Desconectar canal de Stories</button>' : ''}
+        </details></div>
       <div class="netrow"><b>Facebook</b>
         ${nets.facebook && nets.facebook.connected ? `<p>Página: ${esc(nets.facebook.name || 'conectada')}. Se publica automático.</p><div class="row wrap"><button class="btn small" id="fbCheck">Comprobar permisos</button><button class="link" id="metaOff">Desconectar página</button></div><div id="fbCheckOut"></div>
           <details class="alts"><summary>Pegar un token nuevo</summary><form id="metaTok" class="stack"><input name="token" placeholder="Token del Explorador de la API Graph" autocomplete="off"><button class="btn small">Conectar con este token</button></form></details>` : `<p>Sin conectar. Conecta la página de Facebook de ${esc(B.name)} (tienes que ser administrador). Tu perfil personal no se toca.</p>
@@ -1278,8 +1392,10 @@ async function settings(v) {
   if ($('#fbCheck')) $('#fbCheck').onclick = async () => { $('#fbCheckOut').innerHTML = '<p class="muted small">Comprobando…</p>'; try { const r = await api('/api/networks/facebook/check' + q); $('#fbCheckOut').innerHTML = `<p class="${r.ok ? '' : 'error'} small">${r.ok ? '✓ ' : ''}${esc(r.message || '')}</p>${r.scopes && r.scopes.length ? `<p class="muted small">Permisos: ${esc(r.scopes.join(', '))}</p>` : ''}` } catch (e) { $('#fbCheckOut').innerHTML = `<p class="error small">${esc(e.message)}</p>` } };
   if ($('#metaTok')) $('#metaTok').onsubmit = async e => { e.preventDefault(); const b = e.target.querySelector('button'); b.disabled = true; b.textContent = 'Conectando…'; try { const r = await api('/api/networks/meta/token' + q, { method: 'POST', body: JSON.stringify({ token: e.target.token.value }) }); toast('Conectado: ' + r.name + (r.instagram ? ' · @' + r.instagram : '')); render() } catch (er) { toast(er.message); b.disabled = false; b.textContent = 'Conectar con este token' } };
   if ($('#bufferTikTok')) $('#bufferTikTok').onsubmit = async e => { e.preventDefault(); const f = e.target, b = f.querySelector('button'); b.disabled = true; b.textContent = 'Comprobando…'; try { const r = await api('/api/networks/tiktok/buffer' + q, { method: 'POST', body: JSON.stringify(Object.fromEntries(new FormData(f))) }); toast('TikTok conectado mediante Buffer: ' + r.name); render() } catch (er) { toast(er.message); b.disabled = false; b.textContent = 'Conectar TikTok con Buffer' } };
+  if ($('#bufferInstagram')) $('#bufferInstagram').onsubmit = async e => { e.preventDefault(); const f = e.target, b = f.querySelector('button'); b.disabled = true; b.textContent = 'Comprobando…'; try { const r = await api('/api/networks/instagram/buffer' + q, { method: 'POST', body: JSON.stringify(Object.fromEntries(new FormData(f))) }); toast('Instagram conectado a Buffer para Stories: ' + r.name); render() } catch (er) { toast(er.message); b.disabled = false; b.textContent = 'Conectar Instagram para Stories' } };
   if ($('#igConn')) $('#igConn').onclick = () => conn('instagram');
   if ($('#igOff')) $('#igOff').onclick = () => off('instagram');
+  if ($('#igStoryOff')) $('#igStoryOff').onclick = async () => { try { await api('/api/networks/instagram/buffer' + q, { method: 'DELETE' }); toast('Canal de Stories desconectado'); render() } catch (e) { toast(e.message) } };
   if ($('#metaOff')) $('#metaOff').onclick = () => off('meta');
   if ($('#ttOff')) $('#ttOff').onclick = () => off('tiktok');
   if ($('#pagePick')) $('#pagePick').onchange = async e => { try { const r = await api('/api/networks/meta/page' + q, { method: 'POST', body: JSON.stringify({ page_id: e.target.value }) }); toast('Página: ' + r.name); render() } catch (er) { toast(er.message) } };

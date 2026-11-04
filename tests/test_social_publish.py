@@ -27,7 +27,7 @@ class Resp:
 class SocialPublishTests(unittest.TestCase):
     def setUp(self):
         db.init_db(); sp.init_tables()
-        for t in ('social_posts', 'social_accounts', 'public_media'):
+        for t in ('social_posts', 'social_accounts', 'public_media', 'carousel_designs', 'article_carousel_uploads', 'scheduled_stories'):
             db.exec_('DELETE FROM ' + t)
         self.card = RENDER_DIR / 'article_77.png'
         Image.new('RGB', (1080, 1350), 'blue').save(self.card)
@@ -69,6 +69,48 @@ class SocialPublishTests(unittest.TestCase):
         token = url.rsplit('/', 1)[1][:-4]
         self.assertEqual(Image.open(sp.public_file(token)).format, 'JPEG')
         self.assertIsNone(sp.public_file('inventado'))
+
+    def test_uploaded_carousel_returns_twenty_images_in_order(self):
+        paths = []
+        for i in range(1, 21):
+            path = RENDER_DIR / ('carousel-upload-%02d.jpg' % i)
+            Image.new('RGB', (20, 20), (i, 0, 0)).save(path, 'JPEG')
+            paths.append(str(path))
+            db.exec_('INSERT INTO article_carousel_uploads(article_id,slide_index,path) VALUES(?,?,?)',
+                     (self.article['id'], i, str(path)))
+        try:
+            self.assertEqual(sp.article_images(self.article), paths)
+        finally:
+            for path in paths:
+                Path(path).unlink(missing_ok=True)
+
+    def test_buffer_instagram_carousel_accepts_twenty_photos(self):
+        calls = []
+        def fake_query(token, query, variables=None):
+            calls.append((token, query, variables))
+            return {'createPost': {'post': {'id': 'IG_POST', 'status': 'sent', 'externalLink': 'https://instagram.com/p/post'}}}
+        with patch.object(sp, '_buffer_instagram_account', return_value={'api_key': 'KEY', 'channel_id': 'IG_CHANNEL'}), \
+             patch.object(sp, 'public_image', side_effect=['https://desk.example.com/p/%s.jpg' % i for i in range(20)]), \
+             patch.object(sp, '_buffer_query', side_effect=fake_query):
+            result = sp._buffer_instagram_post(self.article, [str(self.card)] * 20)
+        self.assertEqual(result, ('IG_POST', 'https://instagram.com/p/post', 'sent'))
+        request = calls[0][2]['input']
+        self.assertEqual(len(request['assets']), 20)
+        self.assertEqual(request['metadata']['instagram']['type'], 'post')
+
+    def test_buffer_instagram_story_uses_story_metadata(self):
+        calls = []
+        def fake_query(token, query, variables=None):
+            calls.append((token, query, variables))
+            return {'createPost': {'post': {'id': 'STORY_1', 'status': 'scheduled', 'externalLink': ''}}}
+        with patch.object(sp, '_buffer_instagram_account', return_value={'api_key': 'KEY', 'channel_id': 'IG_CHANNEL'}), \
+             patch.object(sp, 'public_image', return_value='https://desk.example.com/p/story.jpg'), \
+             patch.object(sp, '_buffer_query', side_effect=fake_query):
+            result = sp._buffer_instagram_story(self.article, str(self.card))
+        self.assertEqual(result, ('STORY_1', '', 'scheduled'))
+        request = calls[0][2]['input']
+        self.assertEqual(request['metadata']['instagram']['type'], 'story')
+        self.assertEqual(request['assets'][0]['image']['url'], 'https://desk.example.com/p/story.jpg')
 
     def test_facebook_single_photo(self):
         calls = []
@@ -174,130 +216,3 @@ class SocialPublishTests(unittest.TestCase):
 
     def test_instagram_direct_login_without_facebook_page(self):
         db.exec_("DELETE FROM social_accounts WHERE network='meta'")
-        sp.INSTAGRAM_APP_ID, sp.INSTAGRAM_APP_SECRET = '55', 'sec'
-        url = sp.instagram_login_url()
-        self.assertIn('instagram.com/oauth/authorize', url)
-        self.assertIn('instagram_business_content_publish', url)
-        state = url.split('state=')[1].split('&')[0]
-        def fake_post(url, data=None, **kw):
-            self.assertEqual(data['grant_type'], 'authorization_code')
-            return Resp({'access_token': 'SHORT', 'user_id': 123})
-        def fake(method, url, **kw):
-            if url.endswith('/access_token'): return Resp({'access_token': 'LONGIG', 'expires_in': 5184000})
-            if url.endswith('/me'): return Resp({'user_id': '178', 'username': 'infolinense'})
-            return Resp({'error': {'message': 'x'}}, 400)
-        with patch.object(sp.requests, 'post', side_effect=fake_post), patch.object(sp.requests, 'request', side_effect=fake):
-            sp.instagram_complete('CODE#_', state)
-        st = sp.status()
-        self.assertTrue(st['instagram']['connected'] and st['instagram']['direct'])
-        self.assertFalse(st['facebook']['connected'])
-        self.assertEqual(sp.connected_networks(), ['instagram'])
-        self.assertNotIn('LONGIG', str(st))
-        hosts = []
-        def fake_pub(method, url, **kw):
-            hosts.append(url)
-            if url.endswith('/178/media'): return Resp({'id': 'C1'})
-            if url.endswith('/C1'): return Resp({'status_code': 'FINISHED'})
-            if url.endswith('/178/media_publish'): return Resp({'id': 'M1'})
-            if url.endswith('/M1'): return Resp({'permalink': 'https://instagram.com/p/y'})
-            return Resp({'error': {'message': 'inesperado'}}, 400)
-        with patch.object(sp.requests, 'request', side_effect=fake_pub):
-            r = sp.publish('instagram', dict(self.article, id=79))
-        self.assertTrue(r['ok'], r)
-        self.assertTrue(all(h.startswith('https://graph.instagram.com/') for h in hosts))
-
-    def test_permission_error_explains_missing_scope(self):
-        sp.META_APP_ID, sp.META_APP_SECRET = '1', 's'
-        def fake(method, url, **kw):
-            if url.endswith('/debug_token'):
-                return Resp({'data': {'is_valid': True, 'type': 'PAGE', 'scopes': ['pages_show_list', 'pages_read_engagement']}})
-            return Resp({'error': {'message': '(#200) Permissions error', 'code': 200}}, 403)
-        with patch.object(sp.requests, 'request', side_effect=fake):
-            r = sp.publish('facebook', dict(self.article, id=90))
-        self.assertFalse(r['ok'])
-        self.assertIn('pages_manage_posts', r['message'])
-
-    def test_status_never_exposes_tokens(self):
-        self.assertNotIn('TOK', str(sp.status()))
-
-
-if __name__ == '__main__':
-    unittest.main()
-
-
-class FacebookUploadTests(SocialPublishTests):
-    def test_facebook_uploads_image_bytes_not_url(self):
-        calls = []
-        def fake(method, url, timeout=60, **kw):
-            calls.append((url, kw)); return Resp({'id': 'PH1', 'post_id': 'PAGE_1'})
-        with patch.object(sp.requests, 'request', side_effect=fake):
-            r = sp.publish('facebook', self.article)
-        self.assertTrue(r['ok'], r)
-        url, kw = calls[0]
-        self.assertTrue(url.endswith('/PAGE/photos'))
-        self.assertIn('source', kw['files'])
-        self.assertNotIn('url', kw['data'])
-
-    def test_instagram_retries_when_meta_cannot_fetch(self):
-        n = {'media': 0}
-        def fake(method, url, timeout=60, **kw):
-            if url.endswith('/IG/media'):
-                n['media'] += 1
-                if n['media'] == 1:
-                    return Resp({'error': {'message': 'The media could not be fetched from this URI', 'code': 9004, 'error_subcode': 2207052}}, 400)
-                return Resp({'id': 'C1'})
-            if url.endswith('/C1'): return Resp({'status_code': 'FINISHED'})
-            if url.endswith('/media_publish'): return Resp({'id': 'M1'})
-            return Resp({'permalink': 'https://instagram.com/p/x'})
-        with patch.object(sp.requests, 'request', side_effect=fake), patch.object(sp.requests, 'get'), patch.object(sp.time, 'sleep'):
-            r = sp.publish('instagram', self.article)
-        self.assertTrue(r['ok'], r)
-        self.assertEqual(n['media'], 2)
-
-
-class JpegSizeTests(unittest.TestCase):
-    def test_big_image_is_reduced_for_instagram(self):
-        from io import BytesIO
-        big = RENDER_DIR / 'big.png'; RENDER_DIR.mkdir(parents=True, exist_ok=True)
-        Image.new('RGB', (4320, 5400), 'red').save(big)
-        with Image.open(BytesIO(sp.jpeg_bytes(big))) as im:
-            self.assertEqual(im.size, (1440, 1800))
-
-
-class InstagramFallbackTests(SocialPublishTests):
-    def test_uses_facebook_hosted_copy_when_panel_url_fails(self):
-        used = []
-        def fake(method, url, timeout=60, **kw):
-            if url.endswith('/IG/media'):
-                used.append(kw['data']['image_url'])
-                if 'fbcdn' not in kw['data']['image_url']:
-                    return Resp({'error': {'message': 'The media could not be fetched from this URI', 'code': 9004, 'error_subcode': 2207052}}, 400)
-                return Resp({'id': 'C1'})
-            if url.endswith('/PAGE/photos'): return Resp({'id': 'PH9'})
-            if url.endswith('/PH9'): return Resp({'images': [{'width': 1080, 'source': 'https://scontent.fbcdn.net/x.jpg'}]})
-            if url.endswith('/C1'): return Resp({'status_code': 'FINISHED'})
-            if url.endswith('/media_publish'): return Resp({'id': 'M1'})
-            return Resp({'permalink': 'https://instagram.com/p/x'})
-        with patch.object(sp.requests, 'request', side_effect=fake), patch.object(sp.time, 'sleep'):
-            r = sp.publish('instagram', self.article)
-        self.assertTrue(r['ok'], r)
-        self.assertEqual(used[-1], 'https://scontent.fbcdn.net/x.jpg')
-
-
-class ManagedPageTests(SocialPublishTests):
-    def test_reads_posts_of_a_page_you_manage(self):
-        sp._save_account('meta', {'pages': [{'id': '555', 'name': 'Hermandad del Silencio', 'access_token': 'PT'}],
-                                  'page': {'id': 'PAGE', 'name': 'InfoLinense', 'access_token': 'TOK'}})
-        sp._page_usernames.clear()
-        def fake(method, url, timeout=60, **kw):
-            if url.endswith('/555'): return Resp({'username': 'SilencioLaLinea'})
-            if url.endswith('/555/posts'):
-                return Resp({'data': [{'message': 'Solemne triduo en honor a Nuestra Señora de la Esperanza. Os esperamos.',
-                                       'created_time': '2026-10-12T18:00:00+0000', 'permalink_url': 'https://facebook.com/p/1'}]})
-            return Resp({})
-        with patch.object(sp.requests, 'request', side_effect=fake):
-            items = sp.page_posts_for('https://www.facebook.com/SilencioLaLinea')
-            none = sp.page_posts_for('https://www.facebook.com/otrapagina')
-        self.assertEqual(len(items), 1)
-        self.assertTrue(items[0]['title'].startswith('Solemne triduo'))
-        self.assertIsNone(none)

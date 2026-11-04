@@ -136,6 +136,30 @@ def _buffer_account():
     return {}
 
 
+def _buffer_instagram_account():
+    """Canal de Instagram de Buffer para las Stories; reutiliza la clave de TikTok si coincide."""
+    saved = _account('buffer_instagram') or {}
+    if saved.get('api_key') and saved.get('channel_id'):
+        return saved
+    tiktok = _buffer_account()
+    token = tiktok.get('api_key') or (BUFFER_API_KEY if _is_default() else '')
+    if not token:
+        return {}
+    account = _buffer_query(token, 'query { account { organizations { id } } }').get('account') or {}
+    choices = []
+    for org in account.get('organizations') or []:
+        result = _buffer_query(token, 'query($id: OrganizationId!) { channels(input: { organizationId: $id }) { id name displayName service } }',
+                               {'id': org['id']})
+        choices.extend(c for c in result.get('channels') or [] if str(c.get('service', '')).lower() == 'instagram')
+    if len(choices) != 1:
+        return {}
+    selected = choices[0]
+    saved = {'api_key': token, 'channel_id': selected['id'],
+             'name': selected.get('displayName') or selected.get('name') or ''}
+    _save_account('buffer_instagram', saved)
+    return saved
+
+
 def _meta():
     """Página de Facebook e Instagram en uso: la conectada con el botón o la puesta a mano en Railway."""
     acc = _account('meta') or {}
@@ -162,7 +186,8 @@ def status():
         'facebook': {'connected': bool(meta.get('access_token')), 'name': meta.get('name') or ''},
         'instagram': {'connected': bool((_account('instagram') or {}).get('access_token')) or bool(meta.get('access_token') and meta.get('instagram_id')),
                       'name': (_account('instagram') or {}).get('username') or meta.get('instagram_username') or '',
-                      'direct': bool((_account('instagram') or {}).get('access_token'))},
+                      'direct': bool((_account('instagram') or {}).get('access_token')),
+                      'stories_via_buffer': bool((_account('buffer_instagram') or {}).get('channel_id'))},
         'instagram_login': bool(INSTAGRAM_APP_ID and INSTAGRAM_APP_SECRET and PUBLIC_BASE_URL),
         'instagram_callback': PUBLIC_BASE_URL + '/api/networks/instagram/callback' if PUBLIC_BASE_URL else '',
         'pages': [{'id': p['id'], 'name': p.get('name') or '', 'instagram': p.get('instagram_username') or ''}
@@ -517,6 +542,13 @@ def public_file(token):
 
 def article_images(article):
     """Imagen de la noticia; si hay carrusel exportado, todas sus diapositivas en orden."""
+    uploads = db.rows('SELECT slide_index,path FROM article_carousel_uploads WHERE article_id=? ORDER BY slide_index',
+                      (article['id'],))
+    if uploads:
+        paths = [row['path'] for row in uploads[:20]]
+        if any(not Path(path).is_file() for path in paths):
+            raise SocialError('Falta una o varias fotos del carrusel. Vuelve a subirlas antes de publicar.')
+        return paths
     slides = db.rows('SELECT slide_index,design_id FROM carousel_designs WHERE article_id=? AND exported=1 ORDER BY slide_index',
                      (article['id'],))
     paths = [RENDER_DIR / ('article_%s_carousel_%s.png' % (article['id'], s['slide_index'])) for s in slides]
@@ -524,7 +556,8 @@ def article_images(article):
     uploaded = any(s.get('design_id') == 'upload' for s in slides)  # imágenes subidas en la Lanzadera: van todas
     if len(paths) >= 2 or (uploaded and paths):
         main = article.get('render_path') or ''
-        return ([main] if main and Path(main).is_file() else []) + paths[:9]
+        cover = [main] if main and Path(main).is_file() else []
+        return cover + paths[:max(0, 20 - len(cover))]
     if article.get('render_path') and Path(article['render_path']).is_file():
         return [article['render_path']]
     if article.get('image_kind') == 'final_image' and article.get('image_local') and Path(article['image_local']).is_file():
@@ -729,6 +762,31 @@ def connect_buffer_tiktok(token, channel_id=''):
     return {'name': saved['name']}
 
 
+def connect_buffer_instagram(token, channel_id=''):
+    """Vincula un canal de Instagram de Buffer para programar Stories automáticamente."""
+    token = (token or '').strip()
+    if not token:
+        raise SocialError('Pega tu clave API personal de Buffer.')
+    account = _buffer_query(token, 'query { account { organizations { id } } }').get('account') or {}
+    choices = []
+    for org in account.get('organizations') or []:
+        result = _buffer_query(token, 'query($id: OrganizationId!) { channels(input: { organizationId: $id }) { id name displayName service } }',
+                               {'id': org['id']})
+        choices.extend(c for c in result.get('channels') or [] if str(c.get('service', '')).lower() == 'instagram')
+    if not choices:
+        raise SocialError('Conecta primero tu cuenta profesional de Instagram en Buffer → Channels.')
+    selected = next((c for c in choices if c.get('id') == channel_id), None) if channel_id else None
+    if not selected and len(choices) == 1:
+        selected = choices[0]
+    if not selected:
+        names = ', '.join('%s (%s)' % (c.get('displayName') or c.get('name'), c['id']) for c in choices)
+        raise SocialError('Indica el ID del canal de Instagram en Buffer: ' + names[:250])
+    saved = {'api_key': token, 'channel_id': selected['id'],
+             'name': selected.get('displayName') or selected.get('name') or ''}
+    _save_account('buffer_instagram', saved)
+    return {'name': saved['name']}
+
+
 def _buffer_tiktok_post(article, urls):
     account = _buffer_account()
     if not account:
@@ -750,33 +808,132 @@ def _buffer_tiktok_post(article, urls):
     return post['id'], post.get('externalLink') or '', post.get('status') or 'scheduled'
 
 
+def story_image(article):
+    """La Story usa la imagen de Canva; si falta, la primera imagen del carrusel subido."""
+    render = article.get('render_path') or ''
+    if render and Path(render).is_file():
+        return render
+    images = article_images(article)
+    if not images:
+        raise SocialError('Falta una imagen para la Story. Crea la imagen en Canva o sube fotos al carrusel.')
+    return images[0]
+
+
+def _buffer_instagram_post(article, paths):
+    """Buffer accepts 20 items in Instagram carousels; the direct Instagram API flow stays at 10."""
+    account = _buffer_instagram_account()
+    if not account:
+        raise SocialError('Para publicar más de 10 fotos en Instagram, conecta el canal de Instagram a Buffer en Ajustes → Instagram.')
+    assets = [{'image': {'url': public_image(path)}} for path in paths[:20]]
+    result = _buffer_query(account['api_key'], '''mutation($input: CreatePostInput!) {
+      createPost(input: $input) {
+        ... on PostActionSuccess { post { id status externalLink } }
+        ... on MutationError { message }
+      }
+    }''', {'input': {'text': caption(article, 2200), 'channelId': account['channel_id'],
+                     'schedulingType': 'automatic', 'mode': 'shareNow',
+                     'metadata': {'instagram': {'type': 'post'}}, 'assets': assets}})
+    output = result.get('createPost') or {}
+    if not (output.get('post') or {}).get('id'):
+        raise SocialError('Buffer: ' + (output.get('message') or 'no confirmó el carrusel de Instagram')[:250])
+    post = output['post']
+    return post['id'], post.get('externalLink') or '', post.get('status') or 'scheduled'
+
+
+def _buffer_instagram_story(article, path):
+    account = _buffer_instagram_account()
+    if not account:
+        raise SocialError('Para programar Stories, conecta Instagram en Buffer → Channels y vincula su clave en Ajustes → Instagram → Stories.')
+    url = public_image(path)
+    result = _buffer_query(account['api_key'], '''mutation($input: CreatePostInput!) {
+      createPost(input: $input) {
+        ... on PostActionSuccess { post { id status externalLink } }
+        ... on MutationError { message }
+      }
+    }''', {'input': {'text': caption(article, 2200), 'channelId': account['channel_id'],
+                     'schedulingType': 'automatic', 'mode': 'shareNow',
+                     'metadata': {'instagram': {'type': 'story'}},
+                     'assets': [{'image': {'url': url}}]}})
+    output = result.get('createPost') or {}
+    if not (output.get('post') or {}).get('id'):
+        raise SocialError('Buffer: ' + (output.get('message') or 'no confirmó la Story')[:250])
+    post = output['post']
+    return post['id'], post.get('externalLink') or '', post.get('status') or 'scheduled'
+
+
+def publish_story(article, path):
+    with use_brand(article.get('brand') or brands.DEFAULT):
+        return _buffer_instagram_story(article, path)
+
+
+def delete_buffer_story(remote_id):
+    account = _buffer_instagram_account()
+    if not account:
+        raise SocialError('No se pudo recuperar el canal de Instagram de Buffer para cancelar la Story.')
+    result = _buffer_query(account['api_key'], '''mutation($input: DeletePostInput!) {
+      deletePost(input: $input) { ... on DeletePostSuccess { id } ... on MutationError { message } }
+    }''', {'input': {'id': remote_id}})
+    output = result.get('deletePost') or {}
+    if output.get('message'):
+        raise SocialError('Buffer: ' + output['message'][:250])
+    if not output.get('id'):
+        raise SocialError('Buffer no confirmó la cancelación de la Story.')
+    return True
+
+
+def refresh_buffer_stories():
+    """Confirma el resultado de las Stories enviadas a Buffer."""
+    rows = db.rows("SELECT id,remote_id FROM scheduled_stories WHERE status='pending' AND remote_id!='' LIMIT 10")
+    for row in rows:
+        story = db.row('SELECT brand FROM scheduled_stories WHERE id=?', (row['id'],)) or {}
+        try:
+            with use_brand(story.get('brand') or brands.DEFAULT):
+                account = _buffer_instagram_account()
+            if not account:
+                continue
+            result = _buffer_query(account['api_key'], '''query($id: PostId!) {
+              post(input: { id: $id }) { status externalLink error { message } }
+            }''', {'id': row['remote_id']})
+            post = result.get('post') or {}
+            if post.get('status') == 'sent':
+                db.exec_("UPDATE scheduled_stories SET status='published',url=?,error=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=? AND status='pending'",
+                         (post.get('externalLink') or '', row['id']))
+            elif post.get('status') == 'error':
+                message = (post.get('error') or {}).get('message') or 'Buffer no pudo publicar la Story'
+                db.exec_("UPDATE scheduled_stories SET status='error',error=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND status='pending'",
+                         (message[:400], row['id']))
+        except SocialError as exc:
+            db.log('social_error', 'Buffer Stories: ' + str(exc)[:200])
+
+
 def refresh_buffer_posts():
-    """Confirma el envío real; nunca confunde aceptado por Buffer con publicado en TikTok."""
-    rows = db.rows("SELECT article_id,remote_id FROM social_posts WHERE network='tiktok' AND status='pending' AND remote_id LIKE 'buffer:%' AND updated_at<=datetime('now','-2 minutes') LIMIT 10")
+    """Confirma el envío real en TikTok o Instagram mediante Buffer."""
+    rows = db.rows("SELECT article_id,network,remote_id FROM social_posts WHERE network IN ('tiktok','instagram') AND status='pending' AND remote_id LIKE 'buffer:%' AND updated_at<=datetime('now','-2 minutes') LIMIT 10")
     for row in rows:
         article = db.row('SELECT brand FROM articles WHERE id=?', (row['article_id'],)) or {}
-        with use_brand(article.get('brand') or brands.DEFAULT):
-            account = _buffer_account()
-        if not account:
-            continue
         try:
+            with use_brand(article.get('brand') or brands.DEFAULT):
+                account = _buffer_instagram_account() if row['network'] == 'instagram' else _buffer_account()
+            if not account:
+                continue
             result = _buffer_query(account['api_key'], '''query($id: PostId!) {
               post(input: { id: $id }) { status externalLink error { message } }
             }''', {'id': row['remote_id'][7:]})
             post = result.get('post') or {}
             state = post.get('status')
+            network_name = NAMES[row['network']]
             if state == 'sent':
-                db.exec_("UPDATE social_posts SET status='published',url=?,message=?,updated_at=CURRENT_TIMESTAMP WHERE article_id=? AND network='tiktok' AND status='pending'",
-                         (post.get('externalLink') or '', 'Publicada en TikTok mediante Buffer', row['article_id']))
+                db.exec_("UPDATE social_posts SET status='published',url=?,message=?,updated_at=CURRENT_TIMESTAMP WHERE article_id=? AND network=? AND status='pending'",
+                         (post.get('externalLink') or '', 'Publicada en %s mediante Buffer' % network_name, row['article_id'], row['network']))
             elif state == 'error':
-                msg = (post.get('error') or {}).get('message') or 'Buffer no pudo publicar en TikTok'
-                db.exec_("UPDATE social_posts SET status='error',message=?,updated_at=CURRENT_TIMESTAMP WHERE article_id=? AND network='tiktok' AND status='pending'",
-                         (msg[:400], row['article_id']))
+                msg = (post.get('error') or {}).get('message') or 'Buffer no pudo publicar en %s' % network_name
+                db.exec_("UPDATE social_posts SET status='error',message=?,updated_at=CURRENT_TIMESTAMP WHERE article_id=? AND network=? AND status='pending'",
+                         (msg[:400], row['article_id'], row['network']))
             else:
-                db.exec_("UPDATE social_posts SET updated_at=CURRENT_TIMESTAMP WHERE article_id=? AND network='tiktok' AND status='pending'", (row['article_id'],))
+                db.exec_("UPDATE social_posts SET updated_at=CURRENT_TIMESTAMP WHERE article_id=? AND network=? AND status='pending'", (row['article_id'], row['network']))
         except SocialError:
             # Una caída temporal al consultar no debe recrear ni duplicar el post.
-            db.exec_("UPDATE social_posts SET updated_at=CURRENT_TIMESTAMP WHERE article_id=? AND network='tiktok' AND status='pending'", (row['article_id'],))
+            db.exec_("UPDATE social_posts SET updated_at=CURRENT_TIMESTAMP WHERE article_id=? AND network=? AND status='pending'", (row['article_id'], row['network']))
 
 
 def _tiktok_post(article, urls):
@@ -805,7 +962,7 @@ def _publish(network, article):
         raise SocialError('Red desconocida')
     done = db.row("SELECT * FROM social_posts WHERE article_id=? AND network=? AND status IN ('published','pending','processing','publishing')", (article['id'], network))
     if done:  # nunca se publica dos veces (también durante los reintentos)
-        msg = {'pending': 'Enviada a Buffer; pendiente de confirmación de TikTok', 'processing': '%s está procesando el vídeo' % NAMES[network],
+        msg = {'pending': 'Enviada a Buffer; pendiente de confirmación de ' + NAMES[network], 'processing': '%s está procesando el vídeo' % NAMES[network],
                'publishing': 'Publicándose ahora'}.get(done['status'], 'Ya estaba publicada')
         return {'network': network, 'ok': True, 'url': done.get('url') or '', 'message': msg}
     try:  # texto propio de esa red, si lo has escrito
@@ -822,12 +979,20 @@ def _publish(network, article):
     try:
         paths = article_images(article)
         if network == 'facebook':
-            remote, url = _facebook(article, paths)
+            remote, url = _facebook(article, paths[:10])
         elif network == 'instagram':
-            urls = [public_image(p) for p in paths]
-            remote, url = _instagram(article, urls, paths)
+            if len(paths) > 10:
+                remote, url, state = _buffer_instagram_post(article, paths[:20])
+                if state != 'sent':
+                    message = 'Enviada a Buffer; pendiente de confirmación de Instagram'
+                    db.exec_('INSERT OR REPLACE INTO social_posts(article_id,network,status,remote_id,url,message,updated_at) VALUES(?,?,?,?,?,?,CURRENT_TIMESTAMP)',
+                             (article['id'], network, 'pending', 'buffer:' + str(remote), url, message))
+                    return {'network': network, 'ok': True, 'url': url, 'message': message}
+            else:
+                urls = [public_image(p) for p in paths[:10]]
+                remote, url = _instagram(article, urls, paths)
         else:
-            remote, url, state = _buffer_tiktok_post(article, [public_image(p) for p in paths])
+            remote, url, state = _buffer_tiktok_post(article, [public_image(p) for p in paths[:10]])
             if state != 'sent':
                 db.exec_('INSERT OR REPLACE INTO social_posts(article_id,network,status,remote_id,url,message,updated_at) VALUES(?,?,?,?,?,?,CURRENT_TIMESTAMP)',
                          (article['id'], network, 'pending', 'buffer:' + str(remote), url,

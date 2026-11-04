@@ -17,7 +17,7 @@ from .auth import login, require_auth
 from starlette.concurrency import run_in_threadpool
 from .config import BASE_DIR, RENDER_DIR, UPLOAD_DIR, SCAN_INTERVAL_MINUTES, AUTO_PIPELINE, OPENAI_API_KEY, ADMIN_PASSWORD, JWT_SECRET, PUBLISH_MODE, CORS_ORIGINS, PUBLIC_BASE_URL, AUTO_PUBLISH
 
-VERSION='7.8.2'
+VERSION='7.9.0'
 app=FastAPI(title='InfoLinense Desk',version=VERSION)
 
 from fastapi.responses import JSONResponse as _JR
@@ -44,10 +44,12 @@ brands.init_tables()
 class LoginIn(BaseModel): password:str
 class PublishIn(BaseModel): networks:list[str]|None=None
 class ScheduleIn(BaseModel): at:str; networks:list[str]|None=None
+class StoryScheduleIn(BaseModel): at:str
 class MoveIn(BaseModel): date:str; slot:str='morning'; time:str|None=None
 class PageIn(BaseModel): page_id:str
 class TokenIn(BaseModel): token:str
 class BufferTikTokIn(BaseModel): token:str; channel_id:str=''
+class BufferInstagramIn(BaseModel): token:str; channel_id:str=''
 class SourceIn(BaseModel):
     name:str
     url:str
@@ -1076,11 +1078,34 @@ def shorten(aid:int):
     if new!=a['headline']: db.exec_('UPDATE articles SET headline=?,render_path=NULL WHERE id=?',(new,aid))
     return {'headline':new,'fits':ai.headline_fits(new,a.get('brand'))}
 
+def _cancel_article_stories(aid:int):
+    active=db.rows("SELECT * FROM scheduled_stories WHERE article_id=? AND status IN ('scheduled','pending','publishing')",(aid,))
+    for story in active:
+        if story['status']=='publishing':
+            raise HTTPException(409,'Buffer está publicando la Story; no se puede quitar la noticia ahora.')
+        if story['status']=='pending' and story.get('remote_id'):
+            try:
+                with social_publish.use_brand(story.get('brand') or brands.DEFAULT):
+                    social_publish.delete_buffer_story(story['remote_id'])
+            except social_publish.SocialError as e:
+                raise HTTPException(400,'No se pudo cancelar la Story en Buffer: '+str(e))
+        _remove_story_snapshot(story.get('image_path'))
+    db.exec_("UPDATE scheduled_stories SET status='cancelled',error=NULL,updated_at=CURRENT_TIMESTAMP WHERE article_id=? AND status IN ('scheduled','pending')",(aid,))
+
+def _remove_story_snapshot(path):
+    if not path: return
+    try:
+        p=Path(path)
+        if p.parent.resolve()==UPLOAD_DIR.resolve() and p.name.startswith('scheduled_story_'):
+            p.unlink(missing_ok=True)
+    except OSError: pass
+
 @app.delete('/api/articles/{aid}',dependencies=[Depends(require_auth)])
 def delete_article(aid:int):
     """Eliminar de la planificación: no se publica y no vuelve a aparecer en Ordenar."""
     a=db.row('SELECT id,candidate_id,status FROM articles WHERE id=?',(aid,))
     if not a: raise HTTPException(404)
+    _cancel_article_stories(aid)
     if a['status']=='published':  # se quita del panel; lo publicado sigue en la web y las redes
         db.exec_("UPDATE articles SET hidden=1,scheduled_at=NULL WHERE id=?",(aid,))
         db.log('delete',f'Noticia publicada {aid} quitada del panel')
@@ -1105,7 +1130,12 @@ def mark_ready(aid:int):
 @app.get('/api/to-publish',dependencies=[Depends(require_auth)])
 def to_publish(brand:str=''):
     rows=db.rows("""SELECT a.id,a.brand,COALESCE(NULLIF(a.headline,''),''||c.title) headline,a.section,a.status,a.image_local,a.publish_url,c.planned_at,c.editorial_priority,c.id candidate_id,c.format,c.carousel_state,
-                      a.scheduled_at,a.scheduled_networks,a.schedule_error,a.updated_at,d.exported canva_exported FROM articles a LEFT JOIN candidates c ON c.id=a.candidate_id
+                      a.scheduled_at,a.scheduled_networks,a.schedule_error,a.updated_at,d.exported canva_exported,
+                      (SELECT scheduled_at FROM scheduled_stories s WHERE s.article_id=a.id AND s.status IN ('scheduled','publishing','pending') ORDER BY s.id DESC LIMIT 1) story_scheduled_at,
+                      (SELECT status FROM scheduled_stories s WHERE s.article_id=a.id AND s.status IN ('scheduled','publishing','pending','published','error') ORDER BY s.id DESC LIMIT 1) story_status,
+                      (SELECT error FROM scheduled_stories s WHERE s.article_id=a.id AND s.status='error' ORDER BY s.id DESC LIMIT 1) story_error,
+                      (SELECT url FROM scheduled_stories s WHERE s.article_id=a.id AND s.status='published' ORDER BY s.id DESC LIMIT 1) story_url
+                      FROM articles a LEFT JOIN candidates c ON c.id=a.candidate_id
                       LEFT JOIN canva_designs d ON d.article_id=a.id
                       WHERE (a.status IN ('review_ready','approved') AND COALESCE(a.hidden,0)=0
                              AND ((d.exported=1 AND COALESCE(a.render_path,'')!='') OR EXISTS (SELECT 1 FROM videos v WHERE v.article_id=a.id)))
@@ -1239,9 +1269,64 @@ def get_carousel(aid:int):
     try: data=json.loads(a.get('carousel_json') or '{}')
     except Exception: data={}
     designs=db.rows('SELECT slide_index,design_id,url,exported,image_url,image_source,image_license FROM carousel_designs WHERE article_id=? ORDER BY slide_index',(aid,))
+    uploaded=db.rows('SELECT slide_index FROM article_carousel_uploads WHERE article_id=? ORDER BY slide_index',(aid,))
     data.update({'article_id':aid,'carousel_suitable':bool(a.get('carousel_suitable')),'carousel_reason':a.get('carousel_reason') or '',
-                 'designs':designs,'download_url':'/api/articles/%s/carousel/download' % aid if designs else None})
+                 'designs':designs,'uploaded_count':len(uploaded),
+                 'download_url':'/api/articles/%s/carousel/download' % aid if designs or uploaded else None})
     return data
+
+@app.post('/api/articles/{aid}/carousel/upload',dependencies=[Depends(require_auth)])
+async def upload_carousel(aid:int,files:list[UploadFile]=File(...)):
+    if not db.row('SELECT id FROM articles WHERE id=?',(aid,)): raise HTTPException(404,'Noticia no encontrada')
+    if not files: raise HTTPException(400,'Selecciona al menos una imagen')
+    if len(files)>20: raise HTTPException(400,'El carrusel admite como máximo 20 imágenes')
+    from PIL import Image
+    from uuid import uuid4
+    UPLOAD_DIR.mkdir(parents=True,exist_ok=True)
+    staged=[]; total=0
+    try:
+        for i,file in enumerate(files,1):
+            raw=await file.read(20_000_001)
+            total+=len(raw)
+            if len(raw)>20_000_000: raise ValueError('Cada imagen debe pesar menos de 20 MB')
+            if total>100_000_000: raise ValueError('El carrusel completo no puede superar 100 MB')
+            im=Image.open(BytesIO(raw))
+            if im.format not in ('JPEG','PNG','WEBP'): raise ValueError('Solo se admiten imágenes JPG, PNG o WEBP')
+            if im.width*im.height>40_000_000: raise ValueError('Una imagen tiene demasiados píxeles')
+            im.load()
+            dest=UPLOAD_DIR/('article_%s_carousel_%02d_%s.jpg' % (aid,i,uuid4().hex))
+            im.convert('RGB').save(dest,'JPEG',quality=92)
+            staged.append((i,str(dest)))
+    except Exception as e:
+        for _,path in staged: Path(path).unlink(missing_ok=True)
+        raise HTTPException(400,'No se pudo leer el carrusel: '+str(e))
+    c=db.conn()
+    try:
+        c.execute('BEGIN IMMEDIATE')
+        old=[r[0] for r in c.execute('SELECT path FROM article_carousel_uploads WHERE article_id=?',(aid,))]
+        c.execute('DELETE FROM article_carousel_uploads WHERE article_id=?',(aid,))
+        c.executemany('INSERT INTO article_carousel_uploads(article_id,slide_index,path) VALUES(?,?,?)',
+                      [(aid,i,path) for i,path in staged])
+        c.commit()
+    except Exception:
+        c.rollback()
+        for _,path in staged: Path(path).unlink(missing_ok=True)
+        raise HTTPException(500,'No se pudo guardar el carrusel')
+    finally:
+        c.close()
+    for path in old:
+        try: Path(path).unlink(missing_ok=True)
+        except OSError: pass
+    return {'ok':True,'count':len(staged),'limit':20}
+
+@app.delete('/api/articles/{aid}/carousel/upload',dependencies=[Depends(require_auth)])
+def delete_carousel_upload(aid:int):
+    rows=db.rows('SELECT path FROM article_carousel_uploads WHERE article_id=?',(aid,))
+    db.exec_('DELETE FROM article_carousel_uploads WHERE article_id=?',(aid,))
+    for row in rows:
+        try: Path(row['path']).unlink(missing_ok=True)
+        except OSError: pass
+    return {'ok':True}
 
 @app.post('/api/articles/{aid}/headlines',dependencies=[Depends(require_auth)])
 def alternate_headlines(aid:int):
@@ -1302,6 +1387,15 @@ def carousel_slide(aid:int,slide_index:int):
 def download_carousel(aid:int):
     a=db.row('SELECT carousel_json FROM articles WHERE id=?',(aid,))
     if not a: raise HTTPException(404,'Noticia no encontrada')
+    uploads=db.rows('SELECT slide_index,path FROM article_carousel_uploads WHERE article_id=? ORDER BY slide_index',(aid,))
+    if uploads:
+        archive=RENDER_DIR/('infolinense-carrusel-%s.zip' % aid)
+        with zipfile.ZipFile(archive,'w',compression=zipfile.ZIP_DEFLATED) as zf:
+            for row in uploads:
+                path=Path(row['path'])
+                if not path.is_file(): raise HTTPException(404,'Falta una imagen del carrusel')
+                zf.write(path,'infolinense-carrusel-%02d.jpg' % row['slide_index'])
+        return FileResponse(archive,media_type='application/zip',filename='infolinense-carrusel-%s.zip' % aid)
     designs=db.rows('SELECT slide_index,exported FROM carousel_designs WHERE article_id=? ORDER BY slide_index',(aid,))
     if len(designs)<3 or any(not row.get('exported') for row in designs):
         raise HTTPException(400,'Primero exporta todas las diapositivas en Canva')
@@ -1611,6 +1705,90 @@ def schedule_article(aid:int,body:ScheduleIn):
 def unschedule_article(aid:int):
     db.exec_("UPDATE articles SET scheduled_at=NULL,schedule_error=NULL WHERE id=?",(aid,)); return {'ok':True}
 
+@app.post('/api/articles/{aid}/story/schedule',dependencies=[Depends(require_auth)])
+def schedule_story(aid:int,body:StoryScheduleIn):
+    a=db.row('SELECT * FROM articles WHERE id=?',(aid,))
+    if not a: raise HTTPException(404,'Noticia no encontrada')
+    try: when=datetime.fromisoformat(body.at.strip().replace('Z','+00:00'))
+    except ValueError: raise HTTPException(400,'Elige día y hora')
+    if when.tzinfo is None: when=when.replace(tzinfo=MADRID)
+    if when<datetime.now(timezone.utc)-timedelta(minutes=2):
+        raise HTTPException(400,'Esa hora ya ha pasado: elige una hora futura')
+    brand=a.get('brand') or brands.DEFAULT
+    try:
+        with social_publish.use_brand(brand): account=social_publish._buffer_instagram_account()
+    except social_publish.SocialError as e: raise HTTPException(400,str(e))
+    if not account:
+        raise HTTPException(400,'Para programar Stories, conecta Instagram en Buffer → Channels y vincula la clave de Buffer en Ajustes → Instagram → Stories.')
+    try:
+        source_path=social_publish.story_image(a)
+        from shutil import copyfile
+        from uuid import uuid4
+        UPLOAD_DIR.mkdir(parents=True,exist_ok=True)
+        snapshot=UPLOAD_DIR/('scheduled_story_%s_%s.jpg' % (aid,uuid4().hex))
+        copyfile(source_path,snapshot)
+        image_path=str(snapshot)
+    except social_publish.SocialError as e: raise HTTPException(400,str(e))
+    except Exception as e: raise HTTPException(400,'No se pudo preparar la imagen de la Story: '+str(e)[:200])
+    active=db.row("SELECT id,status,image_path FROM scheduled_stories WHERE article_id=? AND status IN ('scheduled','publishing','pending') ORDER BY id DESC LIMIT 1",(aid,))
+    if active and active['status']!='scheduled':
+        _remove_story_snapshot(image_path)
+        raise HTTPException(409,'Esta Story ya se está enviando a Buffer; cancélala antes de programar otra.')
+    local=when.astimezone(MADRID).isoformat(timespec='minutes')
+    if active:
+        db.exec_("UPDATE scheduled_stories SET scheduled_at=?,image_path=?,error=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=?",
+                 (local,image_path,active['id']))
+        _remove_story_snapshot(active.get('image_path'))
+        story_id=active['id']
+    else:
+        db.exec_("UPDATE scheduled_stories SET status='cancelled',updated_at=CURRENT_TIMESTAMP WHERE article_id=? AND status='error'",(aid,))
+        story_id=db.exec_("INSERT INTO scheduled_stories(article_id,brand,scheduled_at,image_path,status) VALUES(?,?,?,?,'scheduled')",
+                          (aid,brand,local,image_path))
+    db.log('schedule',f'Story de Instagram de la noticia {aid} programada para {local}')
+    return {'ok':True,'id':story_id,'scheduled_at':local,'network':'instagram'}
+
+@app.post('/api/articles/{aid}/story/unschedule',dependencies=[Depends(require_auth)])
+def unschedule_story(aid:int):
+    story=db.row("SELECT * FROM scheduled_stories WHERE article_id=? AND status IN ('scheduled','publishing','pending') ORDER BY id DESC LIMIT 1",(aid,))
+    if not story: return {'ok':True}
+    if story['status']=='publishing': raise HTTPException(409,'Buffer ya está publicando esta Story; no se puede cancelar ahora.')
+    if story['status']=='pending' and story.get('remote_id'):
+        try:
+            with social_publish.use_brand(story.get('brand') or brands.DEFAULT):
+                social_publish.delete_buffer_story(story['remote_id'])
+        except social_publish.SocialError as e: raise HTTPException(400,str(e))
+    db.exec_("UPDATE scheduled_stories SET status='cancelled',error=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=?",(story['id'],))
+    _remove_story_snapshot(story.get('image_path'))
+    return {'ok':True}
+
+def publish_stories_due():
+    """Envía a Buffer las Stories programadas cuya hora ha llegado."""
+    now=datetime.now(timezone.utc); done=[]
+    for story in db.rows("SELECT * FROM scheduled_stories WHERE status='scheduled'"):
+        try: when=datetime.fromisoformat(story['scheduled_at'])
+        except ValueError: continue
+        if when.tzinfo is None: when=when.replace(tzinfo=MADRID)
+        if when>now: continue
+        db.exec_("UPDATE scheduled_stories SET status='publishing',updated_at=CURRENT_TIMESTAMP WHERE id=? AND status='scheduled'",(story['id'],))
+        try:
+            article=db.row('SELECT * FROM articles WHERE id=?',(story['article_id'],))
+            if not article: raise social_publish.SocialError('La noticia ya no existe')
+            remote,url,_=social_publish.publish_story(article,story['image_path'])
+            db.exec_("UPDATE scheduled_stories SET status='pending',remote_id=?,url=?,error=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=?",
+                     (remote,url,story['id']))
+            _remove_story_snapshot(story.get('image_path'))
+            db.log('schedule',f'Story de Instagram enviada a Buffer para la noticia {story["article_id"]}')
+            done.append(story['id'])
+        except Exception as e:
+            message=str(getattr(e,'detail',e))[:400]
+            db.exec_("UPDATE scheduled_stories SET status='error',error=?,updated_at=CURRENT_TIMESTAMP WHERE id=?",
+                     (message,story['id']))
+            _remove_story_snapshot(story.get('image_path'))
+            article=db.row('SELECT headline FROM articles WHERE id=?',(story['article_id'],)) or {}
+            try: alerts.notify('failed','No se publicó la Story: '+(article.get('headline') or '')[:90],message[:200],'/#publish',key='story_failed:%s:%s'%(story['id'],story['scheduled_at']))
+            except Exception as e: db.log('alert_error',str(e)[:200])
+    return done
+
 def publish_due():
     """Publica lo programado cuya hora ya ha llegado."""
     now=datetime.now(timezone.utc); done=[]
@@ -1642,8 +1820,12 @@ def publish_loop():
     while True:
         try: publish_due()
         except Exception as e: db.log('schedule_error',str(e)[:250])
+        try: publish_stories_due()
+        except Exception as e: db.log('story_schedule_error',str(e)[:250])
         try: social_publish.refresh_buffer_posts()
         except Exception as e: db.log('social_error','Buffer: '+str(e)[:200])
+        try: social_publish.refresh_buffer_stories()
+        except Exception as e: db.log('social_error','Buffer Stories: '+str(e)[:200])
         try: social_publish.check_processing()  # vídeos que las redes están procesando
         except Exception as e: db.log('social_error','Vídeos: '+str(e)[:200])
         time.sleep(30)
@@ -1725,6 +1907,17 @@ def networks_buffer_tiktok(data:BufferTikTokIn,brand:str='infolinense'):
     try:
         with social_publish.use_brand(brand): return social_publish.connect_buffer_tiktok(data.token,data.channel_id)
     except social_publish.SocialError as e: raise HTTPException(400,str(e))
+
+@app.post('/api/networks/instagram/buffer',dependencies=[Depends(require_auth)])
+def networks_buffer_instagram(data:BufferInstagramIn,brand:str='infolinense'):
+    try:
+        with social_publish.use_brand(brand): return social_publish.connect_buffer_instagram(data.token,data.channel_id)
+    except social_publish.SocialError as e: raise HTTPException(400,str(e))
+
+@app.delete('/api/networks/instagram/buffer',dependencies=[Depends(require_auth)])
+def networks_buffer_instagram_disconnect(brand:str='infolinense'):
+    with social_publish.use_brand(brand): social_publish.disconnect('buffer_instagram')
+    return {'ok':True}
 
 @app.get('/api/networks/{network}/connect',dependencies=[Depends(require_auth)])
 def networks_connect(network:str,brand:str='infolinense'):

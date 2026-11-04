@@ -68,6 +68,18 @@ def init_db():
       content_hash TEXT, image_url TEXT, image_source TEXT, image_license TEXT,
       updated_at TEXT DEFAULT CURRENT_TIMESTAMP, PRIMARY KEY(article_id,slide_index)
     );
+    CREATE TABLE IF NOT EXISTS article_carousel_uploads(
+      article_id INTEGER NOT NULL, slide_index INTEGER NOT NULL, path TEXT NOT NULL,
+      created_at TEXT DEFAULT CURRENT_TIMESTAMP, PRIMARY KEY(article_id,slide_index)
+    );
+    CREATE TABLE IF NOT EXISTS scheduled_stories(
+      id INTEGER PRIMARY KEY AUTOINCREMENT, article_id INTEGER NOT NULL,
+      brand TEXT NOT NULL DEFAULT 'infolinense', scheduled_at TEXT NOT NULL,
+      image_path TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'scheduled',
+      remote_id TEXT, url TEXT, error TEXT,
+      created_at TEXT DEFAULT CURRENT_TIMESTAMP, updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE INDEX IF NOT EXISTS scheduled_stories_due_idx ON scheduled_stories(status,scheduled_at);
     ''')
     # Railway keeps the SQLite volume between deployments.
     existing={r[1] for r in c.execute('PRAGMA table_info(sources)')}

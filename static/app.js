@@ -139,7 +139,7 @@ $('#scanBtn').onclick = async () => {
     setTimeout(tick, 1500);
   } catch (e) { toast(e.message); b.disabled = false; b.textContent = 'Buscar' }
 };
-let queue = [], groups = BLOCKS;
+let queue = [], groups = BLOCKS, cofradePages = [];
 let queueSearch = '', newsSearchBusy = false, newsSearchNote = '', newsSearchError = false;
 // Cofrade y Carnaval se ordenan por sus fuentes (cada hermandad, cada web…), no por los bloques de InfoLinense.
 const ownBrand = () => BRAND !== 'all' && BRAND !== 'infolinense';
@@ -151,10 +151,18 @@ async function sortView(v) {
     queue.forEach(n => { n.topics = labels[n.id] || [] }); sortAgenda = ag.items || [];
   } catch (e) { sortAgenda = [] }
   if (ownBrand()) {
-    const names = srcs.filter(x => (x.brand || 'infolinense') === BRAND && x.active).map(x => x.name);
-    queue.forEach(n => { n.group = names.includes(n.source_name) ? n.source_name : 'Otras fuentes' });
-    groups = [...names, 'Otras fuentes'];
-  } else groups = BLOCKS;
+    const brandSources = srcs.filter(x => (x.brand || 'infolinense') === BRAND);
+    const activeNames = brandSources.filter(x => x.active).map(x => x.name);
+    const queuedNames = [...new Set(queue.map(n => n.source_name).filter(name => activeNames.includes(name)))];
+    queue.forEach(n => { n.group = queuedNames.includes(n.source_name) ? n.source_name : 'Otras fuentes' });
+    groups = [...queuedNames, 'Otras fuentes'];
+    cofradePages = BRAND === 'cofrade'
+      ? brandSources.filter(x => x.kind === 'social' && host(x.url) === 'facebook.com').sort((a, b) => a.name.localeCompare(b.name, 'es'))
+      : [];
+  } else {
+    cofradePages = [];
+    groups = BLOCKS;
+  }
   drawSort(v);
 }
 let sortAgenda = [], onlyCarousel = false;
@@ -184,6 +192,22 @@ function gptWidget() {
     <button type="button" class="btn small primary" id="gptUp">Subir lo redactado (en lote)</button></div></section>
     <section class="gpt-export"><div><b>Para Canva</b><span class="muted small"> · un solo diseño con todas las noticias subidas en lote (titular y entradilla, sin imagen)</span></div>
     <div class="row wrap"><button type="button" class="btn small" id="canvaBatch">Crear el diseño en Canva</button><span class="muted small" id="canvaBatchOut"></span></div></section>`;
+}
+function cofradePagesWidget() {
+  if (BRAND !== 'cofrade' || !cofradePages.length) return '';
+  return `<section class="cofrade-pages" aria-labelledby="cofradePagesTitle">
+    <div class="cofrade-pages-head">
+      <div><h2 id="cofradePagesTitle">Páginas de Facebook de las hermandades</h2>
+        <p class="muted small">Abre aquí las páginas que sigue El Cofrade Linense.</p></div>
+      <button type="button" class="btn small" id="manageCofradePages">Gestionar</button>
+    </div>
+    <div class="cofrade-page-grid">${cofradePages.map(s => `<a class="cofrade-page-card" href="${safeUrl(s.url)}" target="_blank" rel="noopener noreferrer">
+      <span class="cofrade-page-icon" aria-hidden="true">f</span>
+      <span class="cofrade-page-name">${esc(s.name)}</span>
+      <span class="cofrade-page-state">${s.active ? 'En seguimiento' : 'Seguimiento pausado'} · Ver página ↗</span>
+    </a>`).join('')}</div>
+    <p class="cofrade-pages-note">El «0» de un filtro significa que no hay noticias pendientes de esa fuente. Las publicaciones públicas aparecen en el radar cuando el buscador consigue localizarlas.</p>
+  </section>`;
 }
 function armGpt(v) {
   const qs = () => `brand=${encodeURIComponent(BRAND)}`;
@@ -256,7 +280,7 @@ function drawSort(v = $('#view')) {
   if (!block || !groups.includes(block) || !count(block)) block = groups.find(count) || groups[0];
   const items = filtered.filter(n => n.group === block);
   const n = items[0];
-  const shown = ownBrand() ? [...groups.filter(count), ...groups.filter(g => !count(g))] : groups;  // primero las que tienen noticias
+  const shown = ownBrand() ? groups.filter(count) : groups;
   v.innerHTML = `<div class="chips scroll blocks"><button class="chip ${onlyCarousel ? 'on' : ''}" id="onlyCar" ${nCar || onlyCarousel ? '' : 'disabled'}>Solo carruseles <b>${nCar}</b></button>${shown.map(g => `<button class="chip ${g === block ? 'on' : ''}" data-g="${esc(g)}" ${count(g) ? '' : 'disabled'}>${esc(g)} <b>${count(g)}</b></button>`).join('')}</div>
     ${n ? `<div class="deck" id="deck">${items[2] ? '<div class="swipe ghost g2"></div>' : ''}${items[1] ? '<div class="swipe ghost"></div>' : ''}${swipeCard(n)}</div>
       <div class="deck-actions"><button class="round no" id="noBtn" aria-label="No sirve" title="No sirve (←)">✕</button>
@@ -264,8 +288,10 @@ function drawSort(v = $('#view')) {
         <button class="round yes" id="yesBtn" aria-label="Sirve" title="Sirve (→)">✓</button></div>
       <p class="deck-hint">Desliza a la derecha si sirve y a la izquierda si no.</p>`
     : queue.length ? '' : `<p class="empty">Todo ordenado. Pulsa «Buscar» para traer noticias nuevas.</p>${nextPhase('Ir a Redacción', 'writing', 'Las marcadas te esperan en Redacción para que las rellenes.')}`}`;
-  v.insertAdjacentHTML('afterbegin', agendaStrip() + searchWidget() + gptWidget());
+  v.insertAdjacentHTML('afterbegin', agendaStrip() + cofradePagesWidget() + searchWidget() + gptWidget());
   armGpt(v);
+  const managePages = v.querySelector('#manageCofradePages');
+  if (managePages) managePages.onclick = () => { settingsBrand = 'cofrade'; go('settings') };
   const input = v.querySelector('#newsQuery');
   input.oninput = e => {
     const position = e.target.selectionStart;

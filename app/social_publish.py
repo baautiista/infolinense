@@ -30,7 +30,6 @@ from .config import PUBLIC_BASE_URL, RENDER_DIR
 
 META_APP_ID = os.getenv('META_APP_ID', '').strip()
 META_APP_SECRET = os.getenv('META_APP_SECRET', '').strip()
-META_APP_ACCESS_TOKEN = os.getenv('META_APP_ACCESS_TOKEN', '').strip()
 META_CONFIG_ID = os.getenv('META_CONFIG_ID', '').strip()
 META_GRAPH_VERSION = os.getenv('META_GRAPH_VERSION', 'v21.0').strip()
 # Alternativa sin botón: token de página permanente puesto a mano en Railway
@@ -249,8 +248,7 @@ def _graph(method, path, base=None, **kw):
         r = requests.request(method, (base or GRAPH) + path, timeout=60, **kw)
         data = r.json()
     except (requests.RequestException, ValueError) as exc:
-        detail = re.sub(r'(?i)(access_token=)[^&\s]+', r'\1[oculto]', str(exc))
-        raise SocialError('Meta no responde: %s' % detail[:150])
+        raise SocialError('Meta no responde: %s' % str(exc)[:150])
     if not r.ok or (isinstance(data, dict) and data.get('error')):
         err = (data or {}).get('error') or {}
         exc = SocialError('Meta: %s' % (err.get('error_user_msg') or err.get('message') or 'HTTP %s' % r.status_code)[:300])
@@ -1053,90 +1051,39 @@ def _norm_name(text):
     return re.sub(r'[^a-z0-9]+', '', ''.join(c for c in t if unicodedata.category(c) != 'Mn'))
 
 
-_page_posts_cache = {}
-
-
 def page_posts_for(url, name=''):
-    """Publicaciones de páginas propias o públicas autorizadas por la API de Meta.
-    Para otras páginas se requiere Page Public Content Access; sin ese permiso devuelve None.
-    """
-    from urllib.parse import urlparse as _up, parse_qs as _pq, quote as _quote
+    """Publicaciones recientes de una página de Facebook SI la cuenta conectada tiene acceso a ella
+    (la hermandad te ha dado un rol en su página). Devuelve None si no hay acceso."""
+    from urllib.parse import urlparse as _up, parse_qs as _pq
     u = _up(url or '')
     if 'facebook.com' not in (u.hostname or ''):
         return None
     parts = [x for x in (u.path or '').split('/') if x]
-    if not parts or parts[0].lower() == 'groups':
+    account = (_pq(u.query).get('id') or [''])[0] if parts[:1] == ['profile.php'] else (parts[0] if parts else '')
+    if not account:
         return None
-    if parts[0].lower() == 'profile.php':
-        page_ref = (_pq(u.query).get('id') or [''])[0]
-    elif parts[0].lower() == 'pages' and len(parts) >= 3:
-        page_ref = parts[2]
-    else:
-        page_ref = parts[0]
-    if not page_ref:
-        return None
-    cache_key = (page_ref.lower(), _norm_name(name))
-    cached = _page_posts_cache.get(cache_key)
-    if cached and time.time() - cached[0] < 60:
-        return list(cached[1])
-
-    def posts_from(data, page_name):
-        items = []
-        for post in data.get('data') or []:
-            msg = (post.get('message') or '').strip()
-            image = post.get('full_picture') or ''
-            if not msg and not image:
-                continue
-            first = re.split(r'(?<=[.!?])\s|\n', msg, maxsplit=1)[0].strip() if msg else ''
-            title = (first if len(first) >= 8 else msg)[:200] if msg else 'Publicación con imagen'
-            items.append({'title': title, 'url': post.get('permalink_url') or '',
-                          'excerpt': msg[:1500], 'published_at': post.get('created_time') or '',
-                          'image': image, 'outlet': page_name or ''})
-        return [item for item in items if item['url']]
-
-    # Primero se usan los tokens de las páginas que la cuenta administra.
-    for page in _managed_pages():
-        pid = str(page['id'])
+    for p in _managed_pages():
+        pid = str(p['id'])
         if pid not in _page_usernames:
             try:
-                _page_usernames[pid] = (_graph('GET', '/' + pid, params={
-                    'fields': 'username', 'access_token': page['access_token']}).get('username') or '').lower()
+                _page_usernames[pid] = (_graph('GET', '/' + pid, params={'fields': 'username', 'access_token': p['access_token']})
+                                        .get('username') or '').lower()
             except SocialError:
                 _page_usernames[pid] = ''
-        if (page_ref in (pid, _page_usernames[pid]) or
-                (name and _norm_name(name) == _norm_name(page.get('name')))):
+        if account in (pid,) or account.lower() == _page_usernames[pid] or (name and _norm_name(name) == _norm_name(p.get('name'))):
             data = _graph('GET', '/%s/posts' % pid, params={
-                'fields': 'message,created_time,permalink_url,full_picture',
-                'limit': 50, 'access_token': page['access_token']})
-            items = posts_from(data, page.get('name') or name)
-            _page_posts_cache[cache_key] = (time.time(), items)
-            return items
-
-    # Para páginas que no administras, el token de app solo funciona si Meta aprobó Page Public Content Access.
-    app_token = META_APP_ACCESS_TOKEN or ('%s|%s' % (META_APP_ID, META_APP_SECRET)
-                                          if META_APP_ID and META_APP_SECRET else '')
-    if not app_token:
-        return None
-    try:
-        if page_ref.isdigit():
-            page_id = page_ref
-            page_name = name
-        else:
-            page = _graph('GET', '/' + _quote(page_ref, safe=''), params={
-                'fields': 'id,name,username', 'access_token': app_token})
-            page_id = str(page.get('id') or '')
-            page_name = page.get('name') or name
-        if not page_id:
-            return None
-        data = _graph('GET', '/%s/posts' % page_id, params={
-            'fields': 'message,created_time,permalink_url,full_picture',
-            'limit': 50, 'access_token': app_token})
-        items = posts_from(data, page_name)
-        _page_posts_cache[cache_key] = (time.time(), items)
-        return items
-    except SocialError:
-        # Sin aprobación de lectura pública, la persona todavía puede revisar los resultados indexados.
-        return None
+                'fields': 'message,created_time,permalink_url,full_picture', 'limit': 15, 'access_token': p['access_token']})
+            items = []
+            for post in data.get('data') or []:
+                msg = (post.get('message') or '').strip()
+                if len(msg) < 20:
+                    continue
+                first = re.split(r'(?<=[.!?])\s|\n', msg, maxsplit=1)[0].strip()
+                items.append({'title': (first if len(first) >= 20 else msg)[:200], 'url': post.get('permalink_url') or '',
+                              'excerpt': msg[:1500], 'published_at': post.get('created_time') or '',
+                              'image': post.get('full_picture') or '', 'outlet': p.get('name') or ''})
+            return [i for i in items if i['url']]
+    return None
 
 
 # ---------- leer cuentas de Instagram autorizadas (API oficial: «business discovery») ----------

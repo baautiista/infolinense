@@ -1,7 +1,7 @@
 import os
 import tempfile
 import unittest
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from unittest.mock import patch
 
@@ -12,7 +12,7 @@ for _k, _v in (('RENDER_DIR', 'renders'), ('UPLOAD_DIR', 'uploads'), ('TEMPLATE_
     os.environ.setdefault(_k, str(Path(_temp.name) / _v))
     Path(os.environ[_k]).mkdir(parents=True, exist_ok=True)
 
-from app import brands, canva, db, main, publishers, sources, social_publish as sp  # noqa: E402
+from app import brands, canva, db, main, publishers, sources, social, social_publish as sp  # noqa: E402
 
 NOW = datetime.now(timezone.utc).isoformat()
 
@@ -39,6 +39,22 @@ class BrandTests(unittest.TestCase):
     def test_cofrade_sources_seeded(self):
         names = {r['name'] for r in db.rows("SELECT name FROM sources WHERE brand='cofrade'")}
         self.assertIn('Gran Poder y Ángeles', names); self.assertIn('La Línea Cofrade', names)
+
+    def test_cofrade_feed_includes_confirmed_posts_from_last_seven_days(self):
+        source = db.row("SELECT * FROM sources WHERE kind='social' AND brand='cofrade' AND active=1 LIMIT 1")
+        self.assertTrue(source)
+        published = (datetime.now(timezone.utc) - timedelta(days=6)).isoformat()
+        post_url = source['url'] + ('&' if '?' in source['url'] else '?') + 'post_id=week-window-test'
+        cid = sources.add_candidate(
+            'Horario de cultos de esta semana en la hermandad', post_url, 'Cultos y horarios.', source['name'],
+            source['id'], published,
+            {'priority': 70, 'official': 0, 'local_scope': 1, 'kind': 'social', 'brand': 'cofrade', 'url': source['url']},
+            outlet=source['name'])
+        self.assertTrue(cid)
+        week = social.cofrade_posts(days=7)['items']
+        three_days = social.cofrade_posts(days=3)['items']
+        self.assertIn(cid, {item['id'] for item in week})
+        self.assertNotIn(cid, {item['id'] for item in three_days})
 
     def test_settings_and_templates(self):
         self.assertEqual(canva.template_for('Titular', 'cofrade'), 'EAHXWt4MRSY')  # plantilla publicada por defecto

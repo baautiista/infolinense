@@ -114,6 +114,48 @@ def web_search(query, days=3, limit=20):
     return google_web(query, days, limit) or ddg_web(query, limit)
 
 
+def search_facebook_pages(query, limit=20):
+    """Encuentra páginas públicas de hermandades en resultados indexados; el usuario elige cuáles vigilar."""
+    query = re.sub(r'\s+', ' ', query or '').strip()[:120]
+    if len(query) < 2:
+        return []
+    search_query = 'site:facebook.com "%s" (hermandad OR hermandades OR cofradía OR cofradia) "La Línea"' % query.replace('"', '')
+    found = google_web(search_query, days=3650, limit=max(limit * 2, 30))
+    if not found:
+        found = ddg_web(search_query, limit=max(limit * 2, 30))
+    existing = [s for s in watched() if (s.get('brand') or 'infolinense') == 'cofrade']
+    excluded = {'groups', 'posts', 'reel', 'watch', 'photo', 'photo.php', 'photos', 'videos',
+                'share', 'story.php', 'permalink.php', 'search', 'events', 'marketplace', 'gaming', 'live',
+                'profile.php'}
+    out, seen = [], set()
+    for item in found:
+        parsed = urlparse(item.get('url') or '')
+        host = (parsed.hostname or '').lower().removeprefix('www.')
+        if host not in ('facebook.com', 'm.facebook.com', 'fb.com'):
+            continue
+        parts = [p for p in parsed.path.split('/') if p]
+        if not parts or parts[0].lower() in excluded:
+            continue
+        if parts[0].lower() == 'pages':
+            if len(parts) < 3:
+                continue
+            account = 'pages/' + parts[2].lower()
+        elif len(parts) == 1:
+            account = parts[0].lower()
+        else:
+            continue
+        if account in seen:
+            continue
+        seen.add(account)
+        page_url = 'https://www.facebook.com/' + '/'.join(parts)
+        name = (item.get('title') or '').strip()
+        name = re.sub(r'\s*[|·-]\s*Facebook\s*$', '', name, flags=re.I)
+        out.append({'name': name or parts[-1], 'url': page_url, 'snippet': (item.get('snippet') or '')[:500],
+                    'already_watched': any(fb_account(s.get('url') or '') == account for s in existing)})
+        if len(out) >= max(1, min(int(limit), 30)):
+            break
+    return out
+
 def watched():
     """Páginas y grupos de Facebook/Instagram que vigilas."""
     return db.rows("SELECT * FROM sources WHERE kind='social' AND name!=? ORDER BY name", (SOURCE_NAME,))
@@ -127,17 +169,18 @@ def _page_name(url):
 
 
 def fb_account(url):
-    """Página o grupo de Facebook/Instagram al que pertenece un enlace: «aytocehegin», «groups/123», «id:100064…»."""
+    """Página o grupo de Facebook/Instagram al que pertenece un enlace."""
     u = urlparse(url or '')
     path = [p for p in u.path.split('/') if p]
     q = parse_qs(u.query)
     if path[:1] == ['groups'] and len(path) > 1:
         return 'groups/' + path[1].lower()
+    if path[:1] == ['pages'] and len(path) > 2:
+        return 'pages/' + path[2].lower()
     if path[:1] in (['profile.php'], ['permalink.php'], ['story.php'], ['photo.php'], ['photo'], ['watch'], ['reel'], ['share']) or not path:
         pid = (q.get('id') or [''])[0]
         return ('id:' + pid) if pid else ''
     return path[0].lower()
-
 
 def same_account(url, watched_url):
     """¿El enlace es de esa página vigilada? (las búsquedas a veces devuelven publicaciones de otras páginas)."""

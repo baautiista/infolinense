@@ -1,13 +1,11 @@
-"""Panel de redes: publicaciones de las páginas de Facebook y cuentas de Instagram que TÚ autorizas
-(Ajustes → Fuentes de redes sociales). No se descubren cuentas nuevas por su cuenta.
-
-Cómo se lee cada cuenta:
-- Páginas de Facebook que administras y cuentas profesionales de Instagram: API oficial de Meta.
-- Otras páginas de Facebook: Meta no da acceso, así que se usa lo que los buscadores tienen indexado (parcial).
+"""Panel de redes y publicaciones recientes de las páginas autorizadas.
+Las páginas propias se leen con la API oficial de Meta; para otras páginas públicas
+se intenta la API con Page Public Content Access aprobado y, si no está disponible,
+se usa lo que los buscadores tienen indexado (parcial).
 """
 import re
 from datetime import datetime, timedelta, timezone
-from urllib.parse import urlparse, parse_qs, unquote
+from urllib.parse import urlparse, parse_qs, unquote, urlencode, urlunsplit
 
 import requests
 from bs4 import BeautifulSoup
@@ -54,19 +52,34 @@ def _social_source_id():
                     (SOURCE_NAME, 'https://www.facebook.com/search/posts/?q=La%20L%C3%ADnea', 'social', 60, 0, 0))
 
 
+
+def canonical_facebook_url(url):
+    """Conserva los identificadores de publicación y quita parámetros de seguimiento."""
+    try:
+        u = urlparse(url or '')
+        host = (u.hostname or '').lower()
+        if host != 'facebook.com' and not host.endswith('.facebook.com') and host != 'fb.com':
+            return url
+        params = parse_qs(u.query)
+        keep = {k: params[k] for k in ('id', 'story_fbid', 'fbid', 'multi_permalinks', 'set', 'type') if k in params}
+        return urlunsplit(('https', 'www.facebook.com', u.path.rstrip('/') or '/', urlencode(keep, doseq=True), ''))
+    except Exception:
+        return url
+
+
 def google_web(query, days=3, limit=20):
     """Resultados de Google (web) de los últimos `days` días: [{title,url,snippet}]."""
     out = []
     try:
         r = requests.get('https://www.google.com/search', headers=HEADERS, cookies=COOKIES, timeout=20,
-                         params={'q': query, 'hl': 'es', 'gl': 'es', 'num': 30, 'tbs': 'qdr:d%d' % days})
+                         params={'q': query, 'hl': 'es', 'gl': 'es', 'num': 30, 'tbs': ('qdr:w' if days >= 7 else 'qdr:d%d' % days)})
         soup = BeautifulSoup(r.text, 'html.parser')
         for a in soup.select('a[href]'):
             href = a['href']
             if href.startswith('/url?'):
                 href = unquote(parse_qs(urlparse(href).query).get('q', [''])[0])
             host = (urlparse(href).hostname or '')
-            if 'facebook.com' not in host:
+            if host != 'facebook.com' and not host.endswith('.facebook.com') and host != 'fb.com':
                 continue
             h3 = a.find('h3')
             title = (h3.get_text(' ', strip=True) if h3 else a.get_text(' ', strip=True))[:240]
@@ -81,7 +94,7 @@ def google_web(query, days=3, limit=20):
                     break
                 block = block.find_parent('div')
             if title and href not in {x['url'] for x in out}:
-                out.append({'title': title, 'url': href.split('?')[0] if '/groups/' not in href else href, 'snippet': snippet})
+                out.append({'title': title, 'url': canonical_facebook_url(href), 'snippet': snippet})
             if len(out) >= limit:
                 break
     except Exception:
@@ -89,7 +102,7 @@ def google_web(query, days=3, limit=20):
     return out
 
 
-def ddg_web(query, limit=20):
+def ddg_web(query, limit=20, days=7):
     """DuckDuckGo (versión HTML) de la última semana, como reserva de Google."""
     out = []
     try:
@@ -101,9 +114,10 @@ def ddg_web(query, limit=20):
             href = a.get('href', '')
             if 'uddg=' in href:
                 href = unquote(parse_qs(urlparse(href).query).get('uddg', [''])[0])
-            if 'facebook.com' not in (urlparse(href).hostname or ''): continue
+            host = (urlparse(href).hostname or '').lower()
+            if host != 'facebook.com' and not host.endswith('.facebook.com') and host != 'fb.com': continue
             snip = res.select_one('.result__snippet')
-            out.append({'title': a.get_text(' ', strip=True)[:240], 'url': href, 'snippet': snip.get_text(' ', strip=True)[:600] if snip else ''})
+            out.append({'title': a.get_text(' ', strip=True)[:240], 'url': canonical_facebook_url(href), 'snippet': snip.get_text(' ', strip=True)[:600] if snip else ''})
             if len(out) >= limit: break
     except Exception:
         pass
@@ -111,7 +125,7 @@ def ddg_web(query, limit=20):
 
 
 def web_search(query, days=3, limit=20):
-    return google_web(query, days, limit) or ddg_web(query, limit)
+    return google_web(query, days, limit) or ddg_web(query, limit=limit, days=days)
 
 
 def search_facebook_pages(query, limit=20):
@@ -255,59 +269,112 @@ def _add(item, sid, outlet, kind=None, watched_page=False, src=None):
         return None  # ventas, publicidad o noticias de medios compartidas
     if not local_post(text, watched_page, item.get('url') or '', outlet):
         return None  # de otro pueblo (Nerja, Cehegín, Rota…) o sin nada claro de La Línea
-    date = sources.parse_es_date(item.get('snippet', '')) or sources.parse_es_date(item.get('title', ''))
+    date = item.get('published_at') or sources.parse_es_date(item.get('snippet', '')) or sources.parse_es_date(item.get('title', ''))
     cid = sources.add_candidate(item['title'], item['url'], item.get('snippet', ''), SOURCE_NAME, sid,
                                 date,  # fecha leída de la publicación; vacía si no se conoce
-                                {'priority': 60, 'official': 0, 'local_scope': 1, 'kind': 'social', 'url': (src or {}).get('url', '')}, outlet=outlet)
+                                {'priority': 60, 'official': 0, 'local_scope': 1, 'kind': 'social', 'url': (src or {}).get('url', '')}, outlet=outlet, image=item.get('image', ''))
     if cid:
         db.exec_('UPDATE candidates SET social_type=? WHERE id=?', (kind, cid))
     return cid
 
 
-def scan():
-    """Investiga las redes ahora. Devuelve cuántas publicaciones nuevas ha encontrado."""
+def scan(brand=None, days=7):
+    """Lee ahora las páginas seguidas y guarda publicaciones fechadas del período."""
+    days = max(1, min(int(days or 7), 14))
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
     sid = _social_source_id()
     added, errors = [], []
-    # 1. Páginas y grupos vigilados
-    for src in watched():
-        if not src.get('active'):
-            continue
+    pages = [src for src in watched() if src.get('active')
+             and (not brand or (src.get('brand') or 'infolinense') == brand)]
+    for src in pages:
         path = urlparse(src['url']).path.strip('/')
         target = '/'.join(path.split('/')[:2]) if path.startswith('groups/') else path.split('/')[0]
         host = urlparse(src['url']).hostname or 'facebook.com'
         own = (src.get('brand') or 'infolinense') != 'infolinense'
         found = None
-        try:  # API oficial cuando se puede (página tuya o cuenta profesional de Instagram)
+        try:
             from . import social_publish
             api = social_publish.ig_posts_for(src['url']) if 'instagram.com' in host else social_publish.page_posts_for(src['url'], src.get('name') or '')
             if api is not None:
-                found = [{'title': i['title'], 'url': i['url'], 'snippet': i.get('excerpt', '')} for i in api]
+                found = [{'title': i.get('title') or '', 'url': i.get('url') or '',
+                          'snippet': i.get('excerpt', ''), 'published_at': i.get('published_at') or '',
+                          'image': i.get('image') or ''} for i in api]
                 db.exec_("UPDATE sources SET access_mode='api',last_checked_at=CURRENT_TIMESTAMP,last_error=NULL WHERE id=?", (src['id'],))
-        except Exception as exc:
-            db.exec_("UPDATE sources SET access_mode='no',last_checked_at=CURRENT_TIMESTAMP,last_error=? WHERE id=?", (str(exc)[:300], src['id']))
-            errors.append('%s: %s' % (src['name'], str(exc)[:150]))
-            continue
+        except Exception:
+            # Un fallo de permisos en Meta no debe impedir probar el índice público.
+            found = None
         if found is None:
-            found = web_search(f'site:{host}/{target}', days=3, limit=15)
+            found = web_search(f'site:{host}/{target}', days=days, limit=30)
             db.exec_("UPDATE sources SET access_mode='buscador',last_checked_at=CURRENT_TIMESTAMP WHERE id=?", (src['id'],))
-        for item in found:
-            if not same_account(item.get('url') or '', src['url']):
-                continue  # la búsqueda trajo una publicación de otra página (p. ej. de otro ayuntamiento)
-            if own:  # página de una hermandad o agrupación: todo lo que publica es del medio (Cofrade, Carnaval)
-                date = sources.parse_es_date(item.get('snippet', '')) or sources.parse_es_date(item.get('title', ''))
-                cid = sources.add_candidate(item['title'], item['url'], item.get('snippet', ''), src['name'], src['id'], date,
-                                            {'priority': src.get('priority') or 70, 'official': 0, 'local_scope': 1, 'brand': src['brand'], 'kind': 'social', 'url': src['url']},
-                                            outlet=src['name'])
+        raw_count, source_added = len(found or []), 0
+        undated = [item for item in (found or []) if not (item.get('published_at')
+                    or sources.parse_es_date(item.get('snippet', ''))
+                    or sources.parse_es_date(item.get('title', '')))]
+        if undated:
+            try:
+                from concurrent.futures import ThreadPoolExecutor
+                with ThreadPoolExecutor(max_workers=8) as pool:
+                    for item, date in zip(undated, pool.map(lambda i: sources.page_date(i.get('url') or ''), undated)):
+                        item['published_at'] = date or ''
+            except Exception:
+                pass
+        for item in found or []:
+            url = item.get('url') or ''
+            if not url or not same_account(url, src['url']):
+                continue  # la búsqueda trajo otra página o un enlace de Facebook sin página identificable
+            published = (item.get('published_at') or sources.parse_es_date(item.get('snippet', ''))
+                         or sources.parse_es_date(item.get('title', '')))
+            date = sources.publication_datetime(published)
+            now = datetime.now(timezone.utc)
+            if not date or date < cutoff or date > now + timedelta(hours=6):
+                continue  # solo publicaciones con fecha comprobable de los últimos días
+            published = date.isoformat()
+            item['published_at'] = published
+            if own:
+                cid = sources.add_candidate(item['title'], url, item.get('snippet', ''), src['name'], src['id'], published,
+                                            {'priority': src.get('priority') or 70, 'official': 0, 'local_scope': 1,
+                                             'brand': src.get('brand'), 'kind': 'social', 'url': src['url']},
+                                            outlet=src['name'], image=item.get('image', ''))
             else:
                 cid = _add(item, sid, src['name'], watched_page=True, src=src)
-            if cid: added.append(cid)
-    # Solo las cuentas autorizadas: ya no se buscan quejas en Facebook en general ni se hace barrido con IA (7.8).
+            if cid:
+                added.append(cid)
+                source_added += 1
+        sources.source_health(src['id'], raw_count, source_added)
     try:
         sources.after_new(added)
     except Exception as exc:
         errors.append('Avisos: ' + str(exc)[:200])
-    db.log('social_scan', f'Redes: {len(added)} publicaciones nuevas')
-    return {'added': added, 'errors': errors}
+    db.log('social_scan', f'Redes: {len(added)} publicaciones nuevas en {days} días')
+    return {'added': added, 'errors': errors, 'checked': len(pages), 'days': days}
+
+
+def cofrade_posts(days=7):
+    """Feed de publicaciones fechadas de las páginas del Cofrade de los últimos días."""
+    days = max(1, min(int(days or 7), 14))
+    now = datetime.now(timezone.utc)
+    cutoff = now - timedelta(days=days)
+    page_rows = [s for s in watched() if (s.get('brand') or 'infolinense') == 'cofrade']
+    rows = db.rows("""SELECT c.*,s.name AS page_name,s.url AS page_url,s.access_mode,s.last_checked_at,s.last_error
+                     FROM candidates c JOIN sources s ON s.id=c.source_id
+                     WHERE s.kind='social' AND s.brand='cofrade' AND s.active=1
+                       AND c.status NOT IN ('archived','rejected','merged')
+                       AND c.published_at IS NOT NULL AND trim(c.published_at)!=''
+                     ORDER BY c.published_at DESC LIMIT 300""")
+    items = []
+    for row in rows:
+        date = sources.publication_datetime(row.get('published_at'))
+        if not date or date < cutoff or date > now + timedelta(hours=6):
+            continue
+        row['date_iso'] = date.isoformat()
+        row['source_name'] = row.get('page_name') or row.get('source_name') or ''
+        items.append(row)
+    items.sort(key=lambda row: row.get('date_iso') or '', reverse=True)
+    source_status = [{'id': s.get('id'), 'name': s.get('name'), 'url': s.get('url'),
+                      'active': bool(s.get('active')), 'access_mode': s.get('access_mode') or '',
+                      'last_checked_at': s.get('last_checked_at') or '', 'last_error': s.get('last_error') or ''}
+                     for s in page_rows]
+    return {'days': days, 'items': items[:100], 'sources': source_status}
 
 
 def cleanup():

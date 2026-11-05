@@ -1029,61 +1029,36 @@ def posts_for(article_ids):
 
 # ---------- leer páginas de hermandades que te han dado acceso ----------
 
-_page_usernames = {}
-
-
 def _managed_pages():
     """Todas las páginas que la cuenta de Facebook conectada administra (en cualquier medio), con su token."""
     pages = {}
     for row in db.rows("SELECT data FROM social_accounts WHERE network='meta' OR network LIKE 'meta@%'"):
         try:
-            for p in (json.loads(row['data']) or {}).get('pages') or []:
+            data = json.loads(row['data']) or {}
+            for p in (data.get('pages') or []) + ([data['page']] if data.get('page') else []):
                 if p.get('id') and p.get('access_token'):
                     pages[str(p['id'])] = p
         except ValueError:
             continue
+    if META_PAGE_ID and META_PAGE_TOKEN:
+        pages[META_PAGE_ID] = {'id': META_PAGE_ID, 'access_token': META_PAGE_TOKEN}
+    try:
+        configured = json.loads(os.getenv('META_READER_PAGE_TOKENS', '{}'))
+        if not isinstance(configured, dict):
+            raise ValueError()
+        for pid, token in configured.items():
+            if str(pid).isdigit() and isinstance(token, str) and token.strip():
+                pages[str(pid)] = {'id': str(pid), 'access_token': token.strip()}
+    except ValueError:
+        raise SocialError('META_READER_PAGE_TOKENS debe ser un objeto JSON de ID de página a token.')
     return list(pages.values())
-
-
-def _norm_name(text):
-    import unicodedata
-    t = unicodedata.normalize('NFD', str(text or '').lower())
-    return re.sub(r'[^a-z0-9]+', '', ''.join(c for c in t if unicodedata.category(c) != 'Mn'))
 
 
 def page_posts_for(url, name=''):
     """Publicaciones recientes de una página de Facebook SI la cuenta conectada tiene acceso a ella
-    (la hermandad te ha dado un rol en su página). Devuelve None si no hay acceso."""
-    from urllib.parse import urlparse as _up, parse_qs as _pq
-    u = _up(url or '')
-    if 'facebook.com' not in (u.hostname or ''):
-        return None
-    parts = [x for x in (u.path or '').split('/') if x]
-    account = (_pq(u.query).get('id') or [''])[0] if parts[:1] == ['profile.php'] else (parts[0] if parts else '')
-    if not account:
-        return None
-    for p in _managed_pages():
-        pid = str(p['id'])
-        if pid not in _page_usernames:
-            try:
-                _page_usernames[pid] = (_graph('GET', '/' + pid, params={'fields': 'username', 'access_token': p['access_token']})
-                                        .get('username') or '').lower()
-            except SocialError:
-                _page_usernames[pid] = ''
-        if account in (pid,) or account.lower() == _page_usernames[pid] or (name and _norm_name(name) == _norm_name(p.get('name'))):
-            data = _graph('GET', '/%s/posts' % pid, params={
-                'fields': 'message,created_time,permalink_url,full_picture', 'limit': 15, 'access_token': p['access_token']})
-            items = []
-            for post in data.get('data') or []:
-                msg = (post.get('message') or '').strip()
-                if len(msg) < 20:
-                    continue
-                first = re.split(r'(?<=[.!?])\s|\n', msg, maxsplit=1)[0].strip()
-                items.append({'title': (first if len(first) >= 20 else msg)[:200], 'url': post.get('permalink_url') or '',
-                              'excerpt': msg[:1500], 'published_at': post.get('created_time') or '',
-                              'image': post.get('full_picture') or '', 'outlet': p.get('name') or ''})
-            return [i for i in items if i['url']]
-    return None
+    (la hermandad te ha dado acceso). Lanza SocialError si no se puede verificar."""
+    from .facebook_reader import page_posts
+    return page_posts(url)
 
 
 # ---------- leer cuentas de Instagram autorizadas (API oficial: «business discovery») ----------

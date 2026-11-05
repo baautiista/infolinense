@@ -139,7 +139,7 @@ $('#scanBtn').onclick = async () => {
     setTimeout(tick, 1500);
   } catch (e) { toast(e.message); b.disabled = false; b.textContent = 'Buscar' }
 };
-let queue = [], groups = BLOCKS, cofradePages = [];
+let queue = [], groups = BLOCKS, cofradePages = [], cofradeFeed = { items: [], pages: [] };
 let queueSearch = '', newsSearchBusy = false, newsSearchNote = '', newsSearchError = false;
 // Cofrade y Carnaval se ordenan por sus fuentes (cada hermandad, cada web…), no por los bloques de InfoLinense.
 const ownBrand = () => BRAND !== 'all' && BRAND !== 'infolinense';
@@ -162,6 +162,11 @@ async function sortView(v) {
   } else {
     cofradePages = [];
     groups = BLOCKS;
+  }
+  cofradeFeed = { items: [], pages: [] };
+  if (BRAND === 'cofrade') {
+    try { cofradeFeed = await api('/api/social/facebook/brotherhoods') }
+    catch (e) { cofradeFeed.error = 'No se pudieron consultar las publicaciones de Facebook.' }
   }
   drawSort(v);
 }
@@ -198,7 +203,7 @@ function cofradePagesWidget() {
   return `<section class="cofrade-pages" aria-labelledby="cofradePagesTitle">
     <div class="cofrade-pages-head">
       <div><h2 id="cofradePagesTitle">Páginas de Facebook de las hermandades</h2>
-        <p class="muted small">Abre aquí las páginas que sigue El Cofrade Linense.</p></div>
+        <p class="muted small">Publicaciones de páginas oficiales de La Línea · últimos 7 días.</p></div>
       <button type="button" class="btn small" id="manageCofradePages">Gestionar</button>
     </div>
     <div class="cofrade-page-grid">${cofradePages.map(s => `<a class="cofrade-page-card" href="${safeUrl(s.url)}" target="_blank" rel="noopener noreferrer">
@@ -206,7 +211,16 @@ function cofradePagesWidget() {
       <span class="cofrade-page-name">${esc(s.name)}</span>
       <span class="cofrade-page-state">${s.active ? 'En seguimiento' : 'Seguimiento pausado'} · Ver página ↗</span>
     </a>`).join('')}</div>
-    <p class="cofrade-pages-note">El «0» de un filtro significa que no hay noticias pendientes de esa fuente. Las publicaciones públicas aparecen en el radar cuando el buscador consigue localizarlas.</p>
+    ${cofradeFeed.error ? `<p class="error small">${esc(cofradeFeed.error)}</p>` : ''}
+    ${cofradeFeed.extraction_at ? `<p class="muted small">Última extracción: ${esc(new Date(cofradeFeed.extraction_at).toLocaleString('es-ES', { timeZone: 'Europe/Madrid' }))}</p>` : ''}
+    <div class="cofrade-posts">${(cofradeFeed.items || []).map(p => `<article class="cofrade-post">
+      <b>${esc(p.brotherhood)}</b><p class="muted small">${esc(p.page_name)} · <time datetime="${esc(p.published_at)}">${esc(new Date(p.published_at).toLocaleString('es-ES', { timeZone: 'Europe/Madrid' }))}</time></p>
+      <p class="cofrade-post-text">${esc(p.text)}</p>
+      ${p.image ? `<img src="${safeUrl(p.image)}" alt="Imagen de la publicación de ${esc(p.brotherhood)}" loading="lazy" referrerpolicy="no-referrer">` : ''}
+      <a href="${safeUrl(p.url)}" target="_blank" rel="noopener noreferrer">Ver publicación original ↗</a>
+    </article>`).join('')}</div>
+    ${!(cofradeFeed.items || []).length && !cofradeFeed.error ? '<p class="muted small">No hay publicaciones verificadas disponibles de los últimos 7 días.</p>' : ''}
+    ${(cofradeFeed.pages || []).filter(p => p.status !== 'ok').map(p => `<p class="cofrade-pages-note"><b>${esc(p.name)}:</b> ${esc(p.message)}</p>`).join('')}
   </section>`;
 }
 function armGpt(v) {
@@ -1389,7 +1403,7 @@ async function settings(v) {
       <form id="addLearn" class="row wrap"><input name="label" placeholder="Sitio (p. ej. Castelldefels)" required><button class="btn small">Añadir</button></form></section>
     <section class="panel"><h2>Fuentes de redes sociales</h2><p class="muted small">Facebook e Instagram: el panel SOLO lee las cuentas de esta lista y no descubre otras. Cómo se lee cada una: <b>API</b> (página que administras o cuenta profesional de Instagram), <b>buscador</b> (lo que Google tenga indexado: parcial) o <b>no se puede leer</b>.</p>
       <div class="sources" id="fbList"></div>
-      ${SB === 'cofrade' ? `<div class="stack" style="margin:16px 0"><h3>Buscar páginas de hermandades en Facebook</h3><p class="muted small">Busca por el nombre y abre la página para comprobar que es la oficial. Si la añades, el radar del Cofrade intentará leer sus publicaciones. Los resultados dependen de lo que Facebook y los buscadores muestran públicamente.</p><form id="fbBrotherhoodSearch" class="row wrap"><input name="q" placeholder="Nombre de la hermandad" required maxlength="120"><button class="btn small">Buscar páginas</button></form><div id="fbPageResults"></div></div>` : ''}
+      ${SB === 'cofrade' ? `<div class="stack" style="margin:16px 0"><h3>Buscar páginas de hermandades en Facebook</h3><p class="muted small">Busca por el nombre y abre la página para comprobar que es la oficial. Añadir un resultado no lo verifica. Comprueba que es la página oficial de la hermandad de La Línea, márcala como oficial en Editar y configura el proveedor de lectura.</p><form id="fbBrotherhoodSearch" class="row wrap"><input name="q" placeholder="Nombre de la hermandad" required maxlength="120"><button class="btn small">Buscar páginas</button></form><div id="fbPageResults"></div></div>` : ''}
       <form id="addFb" class="soc-form"><select name="network"><option value="facebook">Facebook</option><option value="instagram">Instagram</option></select><input name="account" placeholder="URL, usuario o identificador" required><input name="name" placeholder="Nombre (p. ej. AVV La Atunara)" required><button class="btn primary small">Añadir</button></form></section>
     <button class="btn" onclick="logout()">Salir</button>`;
   const socUrl = (net, acc) => { acc = acc.trim(); if (/^https?:\/\//i.test(acc)) return acc; acc = acc.replace(/^@/, ''); return net === 'instagram' ? `https://www.instagram.com/${acc}/` : /^\d+$/.test(acc) ? `https://www.facebook.com/profile.php?id=${acc}` : `https://www.facebook.com/${acc}`; };
@@ -1401,9 +1415,9 @@ async function settings(v) {
         <button class="link small" data-socedit="${s.id}">Editar</button><button class="link small danger" data-socdel="${s.id}">Eliminar</button></div>` }).join('') || '<p class="muted small">Ninguna todavía. Sin cuentas aquí, no entra nada de Facebook ni de Instagram.</p>';
     $('#fbList').querySelectorAll('[data-socdel]').forEach(b => b.onclick = async () => { try { await api('/api/sources/' + b.dataset.socdel, { method: 'DELETE' }); toast('Fuente eliminada'); drawSoc() } catch (e) { toast(e.message) } });
     $('#fbList').querySelectorAll('[data-socedit]').forEach(b => b.onclick = () => { const s = d.watched.find(x => x.id === +b.dataset.socedit); const sheet = document.createElement('div'); sheet.className = 'sheet-bg';
-      sheet.innerHTML = `<div class="sheet" role="dialog" aria-label="Editar fuente"><h2>Editar fuente</h2><label>Nombre<input id="seName" value="${esc(s.name)}"></label><label>Dirección<input id="seUrl" value="${esc(s.url)}"></label><div class="row"><button class="btn" id="seNo">Cancelar</button><button class="btn primary" id="seOk">Guardar</button></div></div>`;
+      sheet.innerHTML = `<div class="sheet" role="dialog" aria-label="Editar fuente"><h2>Editar fuente</h2><label>Nombre<input id="seName" value="${esc(s.name)}"></label><label>Dirección<input id="seUrl" value="${esc(s.url)}"></label>${s.brand === 'cofrade' ? `<label><input type="checkbox" id="seOfficial" ${s.official ? 'checked' : ''}> He comprobado que es la página oficial de esta hermandad de La Línea</label>` : ''}<div class="row"><button class="btn" id="seNo">Cancelar</button><button class="btn primary" id="seOk">Guardar</button></div></div>`;
       document.body.appendChild(sheet); sheet.onclick = e => { if (e.target === sheet) sheet.remove() }; sheet.querySelector('#seNo').onclick = () => sheet.remove();
-      sheet.querySelector('#seOk').onclick = async () => { try { await api('/api/sources/' + s.id, { method: 'PUT', body: JSON.stringify({ name: sheet.querySelector('#seName').value, url: sheet.querySelector('#seUrl').value, kind: 'social', priority: s.priority || 60, official: !!s.official, local_scope: !!s.local_scope, brand: s.brand || 'infolinense' }) }); sheet.remove(); toast('Guardado'); drawSoc() } catch (e) { toast(e.message) } } });
+      sheet.querySelector('#seOk').onclick = async () => { try { await api('/api/sources/' + s.id, { method: 'PUT', body: JSON.stringify({ name: sheet.querySelector('#seName').value, url: sheet.querySelector('#seUrl').value, kind: 'social', priority: s.priority || 60, official: sheet.querySelector('#seOfficial') ? sheet.querySelector('#seOfficial').checked : !!s.official, local_scope: !!s.local_scope, brand: s.brand || 'infolinense' }) }); sheet.remove(); toast('Guardado'); drawSoc() } catch (e) { toast(e.message) } } });
   }).catch(() => { });
   drawSoc();
   const showLearn = d => { $('#learnList').innerHTML = d.items.map(t => `<div class="srcrow"><span title="${esc(t.example || '')}">${esc(t.label)}</span><button class="link small" data-unlearn="${esc(t.term)}">Quitar</button></div>`).join('') || '<p class="muted small">Nada todavía.</p>' };

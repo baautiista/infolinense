@@ -448,6 +448,11 @@ def social_items():
     """Panel de redes: quejas y noticias públicas de páginas y grupos de Facebook de La Línea."""
     return {'items':social.items(),'watched':social.watched()}
 
+@app.get('/api/social/facebook/brotherhoods',dependencies=[Depends(require_auth)])
+def brotherhood_posts():
+    from .facebook_reader import recent
+    return recent()
+
 @app.get('/api/social/facebook/pages/search',dependencies=[Depends(require_auth)])
 def search_facebook_pages(q:str=''):
     """Encuentra páginas públicas de Facebook de hermandades a partir de resultados indexados."""
@@ -705,7 +710,8 @@ def export_chatgpt(brand:str='',scope:str='publish',download:int=0):
 def _sort_queue(brand=''):
     rows=[r for r in candidates('pending',brand) if not r.get('article_id') and (r.get('editorial_priority') or 'undecided') in ('undecided','')]
     rows+= [r for r in _bf(social.items(),brand) if not r.get('article_id') and (r.get('editorial_priority') or 'undecided') in ('undecided','')]
-    return rows
+    return [r for r in rows if not (r.get('brand') == 'cofrade' and
+            (urlparse(r.get('url') or '').hostname or '') in {'facebook.com', 'www.facebook.com', 'm.facebook.com'})]
 
 def _drafting(brand=''):
     rows=db.rows("""SELECT c.id,c.brand,c.title,a.section,a.subtitle,a.section_label,a.image_local IS NOT NULL AND a.image_local!='' has_photo,c.source_name,c.outlet,c.editorial_priority,c.planned_at,c.work_state,c.work_step,c.work_error,

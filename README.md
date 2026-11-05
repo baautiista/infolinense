@@ -105,3 +105,125 @@ La app de Canva necesita los permisos `asset:read`, `asset:write`, `brandtemplat
 Copia `.env.example` a `.env` y asigna las credenciales antes de arrancar. Usa rutas de datos locales o `docker compose up --build` con `DATA_DIR=/data` y el volumen `./data:/data`. El servidor arranca con `./start.sh` y escucha en el `PORT` asignado por Railway.
 
 Nunca pongas `OPENAI_API_KEY`, `JWT_SECRET`, `ADMIN_PASSWORD` o una clave Supabase de servicio en Lovable o en el navegador.
+
+
+## Publicaciones oficiales de hermandades (Facebook)
+
+En **El Cofrade Linense → Ordenar**, el panel existente de hermandades muestra las
+publicaciones de los últimos siete días, en orden descendente, con fecha en Madrid,
+texto completo, imagen disponible y enlace original. No usa resultados de buscadores
+ni noticias antiguas del radar como publicaciones verificadas.
+
+Las 13 direcciones iniciales están en `app/db.py`; son fuentes propuestas, no una
+certificación de oficialidad. En **Gestionar → Editar**, comprueba que la dirección
+pertenece a la hermandad de La Línea y marca «He comprobado que es la página oficial».
+No marques perfiles personales ni páginas de otros municipios. Añadir un resultado de
+búsqueda no lo aprueba. Las fuentes pausadas o sin confirmar no aportan publicaciones.
+Meta debe identificar el recurso como Page y su ID/username/enlace debe coincidir con
+la dirección configurada. Cada publicación debe tener `from.id` y prefijo de ID de
+esa misma página, además de una fecha comprobable dentro del intervalo. Nunca se
+empareja por nombre, palabras del texto o menciones. No se incluyen posts de visitantes.
+
+El lector reutiliza las páginas y tokens de las conexiones Meta ya guardadas por Desk.
+También acepta variables de entorno de servidor, nunca del frontend:
+
+- `META_PAGE_ID` y `META_PAGE_TOKEN`: ID y token de acceso de una página concreta.
+- `META_READER_PAGE_TOKENS`: objeto JSON de IDs de páginas a sus tokens de acceso,
+  para varias hermandades. Introducirlo mediante la configuración segura del servidor;
+  no añadir sus valores a Git, capturas, logs ni archivos de ejemplo.
+- OAuth existente: `META_APP_ID`, `META_APP_SECRET`, `PUBLIC_BASE_URL` HTTPS y retorno
+  `/api/networks/meta/callback`. Autorizar **cada página de hermandad** con
+  `pages_show_list` para enumerarlas y `pages_read_engagement` para leer sus posts.
+  La cuenta debe tener acceso asignado a esas páginas. El flujo de publicación de
+  Desk solicita también `pages_manage_posts`, pero el lector no lo necesita.
+
+Un token de la página de El Cofrade Linense no permite leer automáticamente las
+hermandades. Para páginas no administradas se necesita la aprobación de Meta de
+**Page Public Content Access** y un token autorizado para ese acceso; el lector exige
+igualmente un ID de página explícito y la validación de su identidad. Si Meta rechaza
+la consulta o falta acceso, el panel lo indica y no sustituye el contenido por búsquedas.
+En entornos de red restringida, permitir HTTPS a `graph.facebook.com` y, para mostrar
+las imágenes de Meta, sus destinos CDN de Facebook. OAuth necesita además acceso a
+`www.facebook.com`. No se requieren `pages_read_user_content` ni permisos de escritura
+para leer exclusivamente posts publicados por las propias páginas.
+
+Endpoint autenticado: `GET /api/social/facebook/brotherhoods`. `items` contiene solo
+publicaciones verificadas; `pages` distingue páginas sin confirmar, sin acceso y
+lecturas correctas sin publicaciones. Un fallo de acceso no equivale a cero posts.
+No se ha validado acceso real en el entorno inicial: no tiene credenciales Meta.
+Pruebas aisladas: `PYTHONPATH=. .venv/bin/python -m unittest discover -s tests -p test_facebook_reader.py`.
+
+### Alternativa sin permisos de las hermandades: Apify
+
+Desk permite seleccionar `FACEBOOK_READER_PROVIDER=apify`. Importa el dataset de la
+última ejecución **SUCCEEDED** de una tarea de Apify. No inicia actores, no compra
+servicios, no envía cookies de Facebook y no necesita acceso de administración a las
+hermandades. La extracción externa puede tener coste y cobertura parcial. No se ha
+comprobado todavía que un actor concreto cubra estas 13 páginas: no hay cuenta/token
+y la política de red del entorno bloquea la web de Apify. No contratar un plan sin
+comprobar antes una extracción real de una de las páginas.
+
+Preparación en Apify y en el servidor:
+
+1. Crear una cuenta en [Apify](https://apify.com/) y evaluar un extractor de posts
+   públicos, por ejemplo [Facebook Posts Scraper](https://apify.com/apify/facebook-posts-scraper).
+   Este enlace es un candidato para evaluar, no una garantía de cobertura o de formato.
+2. Crear una tarea guardada con **solo** las URL oficiales confirmadas en Desk.
+   Probar primero una página y revisar en el dataset su autor, fecha y enlace.
+   Limitar el periodo a siete días y comprobar que el límite de resultados no recorta
+   publicaciones. No usar búsquedas por nombre ni feeds de perfiles personales.
+3. Comprobar el contrato de salida de abajo. Si el actor omite la identidad/tipo de
+   página o del autor, no es suficiente para este lector: elegir otro actor o adaptar
+   la salida con datos de identidad realmente extraídos. Nunca rellenar esa evidencia
+   con valores supuestos para hacer pasar la validación.
+4. Configurar `FACEBOOK_READER_PROVIDER=apify`, `APIFY_FACEBOOK_TASK_ID` (ID de la tarea,
+   no del actor) y `APIFY_TOKEN` mediante las variables seguras del servidor. El token
+   debe poder leer la tarea, sus ejecuciones y datasets. No compartirlo en chat.
+5. Ejecutar la tarea desde Apify y programar allí su actualización si la prueba es
+   satisfactoria, revisando antes sus límites de gasto. Desk rechaza extracciones con
+   más de 24 horas y filtra de nuevo las fechas a los últimos siete días.
+6. Permitir HTTPS a `api.apify.com` en el entorno de Desk. El navegador también necesita
+   acceso a los hosts de las imágenes devueltas. Para probar o configurar el actor,
+   acceder a `apify.com` y su consola desde el navegador.
+
+Contrato del dataset (son nombres de campos; no hay publicaciones de demostración
+cargadas en Desk):
+
+| Campo | Uso y requisito |
+| --- | --- |
+| `page.id` o `pageId` | ID numérico de la página, obligatorio |
+| `page.url` o `facebookUrl` | URL canónica que coincide exactamente con la fuente configurada, o su ID numérico |
+| `page.isPage=true`, `page.type=Page`, `page.category` o `pageCategory` | Evidencia de que el recurso extraído es una página, no un perfil |
+| `user.id` | Autor de la publicación; debe coincidir con el ID de página |
+| `user.profileUrl` o `user.url` | Si existe, debe identificar la misma página |
+| `postId` o `id` | Identificador de publicación, obligatorio |
+| `time` o `publishedAt` | Fecha ISO 8601 con zona horaria, obligatoria |
+| `url` | Enlace Facebook de posts/fotos/vídeos de esa misma página o permalink con su ID |
+| `text` | Texto; puede faltar si solo hay imagen |
+| `full_picture` o `media[].thumbnail` | Imagen opcional HTTPS |
+| `page.name` o `pageName` | Nombre público de la página |
+
+Los formatos sin identidad verificable, enlaces ambiguos (por ejemplo reels sin
+propietario en la URL), posts de visitantes y fechas desconocidas se descartan.
+Una página ausente del dataset aparece como **sin lectura verificable**, no como
+«cero publicaciones». La interfaz mantiene el diseño y muestra la fecha de la
+extracción. Meta sigue disponible seleccionando `FACEBOOK_READER_PROVIDER=meta`.
+
+La integración usa únicamente GET y autenticación Bearer en cabecera. Resuelve un
+dataset fijo antes de paginar para no mezclar ejecuciones. API contrastada con la
+[documentación oficial de Apify](https://docs.apify.com/api/v2/actor-task-runs-last-get)
+y [lectura de datasets](https://docs.apify.com/api/v2/dataset-items-get), cuya
+[especificación pública](https://github.com/apify/apify-docs/tree/master/apify-api/openapi)
+se consultó durante la implementación. Las pruebas con respuestas simuladas verifican
+el adaptador, pero no sustituyen la prueba pendiente con datos reales de Facebook.
+
+
+Formato comprobado con el JSON real aportado el 5 de noviembre de 2026:
+Facebook Posts Scraper entrega `facebookId` para la identidad y
+`pageAdLibrary.id` como evidencia de página. El lector admite esos campos y exige
+que `user.id` coincida y que `topLevelUrl` identifique exactamente esa página y
+`postId`. El ID de la biblioteca de anuncios no se usa como ID de página.
+Se excluyen los registros con `sharedPost`. Para reels se utiliza el permalink
+numérico de `topLevelUrl`, previamente verificado. Los errores `not_available` y
+`no_items` se muestran como lectura no verificada. Esta comprobación valida el
+archivo aportado; no confirma que la API esté conectada o programada.

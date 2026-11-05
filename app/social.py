@@ -272,6 +272,9 @@ def scan():
     for src in watched():
         if not src.get('active'):
             continue
+        if src.get('brand') == 'cofrade' and 'facebook.com' in (urlparse(src['url']).hostname or ''):
+            # These posts have a dedicated verified reader, never search snippets or legacy candidates.
+            continue
         path = urlparse(src['url']).path.strip('/')
         target = '/'.join(path.split('/')[:2]) if path.startswith('groups/') else path.split('/')[0]
         host = urlparse(src['url']).hostname or 'facebook.com'
@@ -334,6 +337,8 @@ def items():
     limit = datetime.now(timezone.utc) - timedelta(days=4)
     out = []
     for r in rows:
+        if r.get('brand') == 'cofrade' and (urlparse(r.get('url') or '').hostname or '') in {'facebook.com', 'www.facebook.com', 'm.facebook.com'}:
+            continue  # Old indexed candidates are not verified Page publications.
         real = sources.publication_datetime(r.get('published_at'))
         d = real or sources.publication_datetime((r.get('created_at') or '').replace(' ', 'T') + '+00:00')
         if d and d < limit:

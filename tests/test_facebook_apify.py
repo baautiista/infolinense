@@ -72,6 +72,13 @@ class ApifyTests(unittest.TestCase):
         self.assertEqual(get.call_args_list[2].kwargs['offset'], 500)
         self.assertEqual(finished, NOW.isoformat())
 
+    def test_console_task_name_with_slash_is_accepted(self):
+        env = {'APIFY_TOKEN': 'fixture', 'APIFY_FACEBOOK_TASK_ID': 'fixture_user/task-name'}
+        run = {'data': {'status': 'SUCCEEDED', 'finishedAt': NOW.isoformat(), 'defaultDatasetId': 'fixed-id'}}
+        with patch.dict(os.environ, env), patch.object(apify, '_get', side_effect=[run, []]) as get:
+            apify.fetch(NOW)
+        self.assertEqual(get.call_args_list[0].args[0], '/actor-tasks/fixture_user~task-name/runs/last')
+
     def test_stale_failed_or_malformed_run(self):
         env = {'APIFY_TOKEN': 'fixture', 'APIFY_FACEBOOK_TASK_ID': 'fixture-task'}
         for data in [{'status': 'RUNNING'}, {'status': 'SUCCEEDED', 'finishedAt': (NOW-timedelta(days=2)).isoformat(), 'defaultDatasetId': 'id'}]:

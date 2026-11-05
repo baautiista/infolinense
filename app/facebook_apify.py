@@ -40,7 +40,7 @@ def fetch(now=None):
     """Get a fixed dataset from the latest successful run, once per panel request."""
     now = now or datetime.now(timezone.utc)
     token = os.getenv('APIFY_TOKEN', '').strip()
-    task = os.getenv('APIFY_FACEBOOK_TASK_ID', '').strip()
+    task = os.getenv('APIFY_FACEBOOK_TASK_ID', '').strip().replace('/', '~')
     if not token or not re.fullmatch(r'[A-Za-z0-9_-]+(?:~[A-Za-z0-9_-]+)?', task):
         raise meta.SocialError(REQUIREMENTS)
     run = _get('/actor-tasks/' + task + '/runs/last', token, status='SUCCEEDED')

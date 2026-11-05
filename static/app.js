@@ -209,7 +209,7 @@ function cofradePagesWidget() {
     <div class="cofrade-page-grid">${cofradePages.map(s => `<a class="cofrade-page-card" href="${safeUrl(s.url)}" target="_blank" rel="noopener noreferrer">
       <span class="cofrade-page-icon" aria-hidden="true">f</span>
       <span class="cofrade-page-name">${esc(s.name)}</span>
-      <span class="cofrade-page-state">${s.active ? 'En seguimiento' : 'Seguimiento pausado'} · Ver página ↗</span>
+      <span class="cofrade-page-state">${!s.active ? 'Seguimiento pausado' : s.official ? 'Página confirmada' : 'Pendiente de confirmar como oficial'} · Ver página ↗</span>
     </a>`).join('')}</div>
     ${cofradeFeed.error ? `<p class="error small">${esc(cofradeFeed.error)}</p>` : ''}
     ${cofradeFeed.extraction_at ? `<p class="muted small">Última extracción: ${esc(new Date(cofradeFeed.extraction_at).toLocaleString('es-ES', { timeZone: 'Europe/Madrid' }))}</p>` : ''}
@@ -219,7 +219,11 @@ function cofradePagesWidget() {
       ${p.image ? `<img src="${safeUrl(p.image)}" alt="Imagen de la publicación de ${esc(p.brotherhood)}" loading="lazy" referrerpolicy="no-referrer">` : ''}
       <a href="${safeUrl(p.url)}" target="_blank" rel="noopener noreferrer">Ver publicación original ↗</a>
     </article>`).join('')}</div>
-    ${!(cofradeFeed.items || []).length && !cofradeFeed.error ? '<p class="muted small">No hay publicaciones verificadas disponibles de los últimos 7 días.</p>' : ''}
+    ${!cofradeFeed.error ? `<p class="muted small">${(cofradeFeed.items || []).length ? `${cofradeFeed.items.length} publicaciones verificadas de los últimos 7 días.` :
+      (cofradeFeed.pages || []).some(p => p.status === 'unverified') ? 'La lectura no está completa: hay páginas sin confirmar como oficiales. Pulsa Gestionar → Editar y confirma las páginas que hayas comprobado.' :
+      (cofradeFeed.pages || []).some(p => p.status === 'unavailable') ? 'No se ha podido completar la lectura. Revisa el motivo que aparece debajo de cada página.' :
+      !(cofradeFeed.pages || []).length ? 'No hay páginas oficiales activas configuradas para leer.' :
+      'Lectura completada: no hay publicaciones propias de estas páginas dentro de los últimos 7 días.'}</p>` : ''}
     ${(cofradeFeed.pages || []).filter(p => p.status !== 'ok').map(p => `<p class="cofrade-pages-note"><b>${esc(p.name)}:</b> ${esc(p.message)}</p>`).join('')}
   </section>`;
 }
@@ -301,7 +305,7 @@ function drawSort(v = $('#view')) {
         <span class="deck-count">${items.length} ${items.length === 1 ? 'queda' : 'quedan'}</span>
         <button class="round yes" id="yesBtn" aria-label="Sirve" title="Sirve (→)">✓</button></div>
       <p class="deck-hint">Desliza a la derecha si sirve y a la izquierda si no.</p>`
-    : queue.length ? '' : `<p class="empty">Todo ordenado. Pulsa «Buscar» para traer noticias nuevas.</p>${nextPhase('Ir a Redacción', 'writing', 'Las marcadas te esperan en Redacción para que las rellenes.')}`}`;
+    : queue.length ? '' : `<p class="empty">${BRAND === 'cofrade' ? 'La cola de otras fuentes está vacía. Las publicaciones de Facebook y su estado de lectura aparecen en el panel de hermandades de arriba.' : 'Todo ordenado. Pulsa «Buscar» para traer noticias nuevas.'}</p>${nextPhase('Ir a Redacción', 'writing', 'Las marcadas te esperan en Redacción para que las rellenes.')}`}`;
   v.insertAdjacentHTML('afterbegin', agendaStrip() + cofradePagesWidget() + searchWidget() + gptWidget());
   armGpt(v);
   const managePages = v.querySelector('#manageCofradePages');

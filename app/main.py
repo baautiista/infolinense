@@ -17,7 +17,7 @@ from .auth import login, require_auth
 from starlette.concurrency import run_in_threadpool
 from .config import BASE_DIR, RENDER_DIR, UPLOAD_DIR, SCAN_INTERVAL_MINUTES, AUTO_PIPELINE, OPENAI_API_KEY, ADMIN_PASSWORD, JWT_SECRET, PUBLISH_MODE, CORS_ORIGINS, PUBLIC_BASE_URL, AUTO_PUBLISH
 
-VERSION='7.11.0'
+VERSION='7.12.0'
 app=FastAPI(title='InfoLinense Desk',version=VERSION)
 
 from fastapi.responses import JSONResponse as _JR
@@ -448,6 +448,11 @@ def social_items():
     """Panel de redes: quejas y noticias públicas de páginas y grupos de Facebook de La Línea."""
     return {'items':social.items(),'watched':social.watched()}
 
+@app.get('/api/social/cofrade',dependencies=[Depends(require_auth)])
+def cofrade_social_posts(days:int=7):
+    """Publicaciones fechadas de las hermandades en el período solicitado."""
+    return social.cofrade_posts(days)
+
 @app.get('/api/social/facebook/pages/search',dependencies=[Depends(require_auth)])
 def search_facebook_pages(q:str=''):
     """Encuentra páginas públicas de Facebook de hermandades a partir de resultados indexados."""
@@ -456,8 +461,8 @@ def search_facebook_pages(q:str=''):
     return {'query':query,'items':social.search_facebook_pages(query,limit=20)}
 
 @app.post('/api/social/scan',dependencies=[Depends(require_auth)])
-def social_scan():
-    return social.scan()
+def social_scan(brand:str='',days:int=7):
+    return social.scan(brand=brand or None,days=days)
 
 @app.get('/api/schedule',dependencies=[Depends(require_auth)])
 def schedule():

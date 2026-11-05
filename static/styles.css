@@ -853,3 +853,20 @@ input[type=range]{padding:0;border:0}
 .cofrade-pages-note{margin:10px 0 0;color:var(--muted);font-size:12px;line-height:1.4}
 @media(max-width:760px){.cofrade-page-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
 @media(max-width:470px){.cofrade-pages{padding:12px}.cofrade-pages-head{align-items:center}.cofrade-page-grid{grid-template-columns:1fr}}
+
+/* Feed de publicaciones de las hermandades */
+.cofrade-pages-head .row{justify-content:flex-end}
+.cofrade-post-list{display:grid;gap:9px;margin:12px 0}
+.cofrade-post{min-width:0;background:#F8FAFF;border:1px solid var(--line);border-radius:14px;padding:12px 14px}
+.cofrade-post-head{display:flex;align-items:center;gap:10px;color:var(--muted);font-size:12px}
+.cofrade-post-head b{color:var(--blue);font-weight:800}
+.cofrade-post-head time{margin-left:auto;white-space:nowrap}
+.cofrade-post h3{margin:5px 0 4px;font:750 16px/1.3 "Space Grotesk",sans-serif}
+.cofrade-post h3 a{color:var(--ink);text-decoration:none}
+.cofrade-post h3 a:hover{text-decoration:underline}
+.cofrade-post p{margin:4px 0 6px;color:var(--muted);font-size:13px;white-space:pre-line}
+.cofrade-post-open{font-size:12px;font-weight:800;text-decoration:none}
+.cofrade-feed-empty{padding:10px 2px;margin:0;color:var(--muted);font-size:13px}
+.cofrade-followed{border-top:1px solid var(--line);padding-top:10px}
+.cofrade-followed summary{cursor:pointer;color:var(--blue);font-size:13px;font-weight:750;margin-bottom:10px}
+@media(max-width:600px){.cofrade-pages-head{align-items:stretch;flex-direction:column}.cofrade-pages-head .row{justify-content:flex-start}.cofrade-post{padding:10px}.cofrade-post-head{align-items:flex-start}}

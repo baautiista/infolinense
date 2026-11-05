@@ -17,7 +17,7 @@ from .auth import login, require_auth
 from starlette.concurrency import run_in_threadpool
 from .config import BASE_DIR, RENDER_DIR, UPLOAD_DIR, SCAN_INTERVAL_MINUTES, AUTO_PIPELINE, OPENAI_API_KEY, ADMIN_PASSWORD, JWT_SECRET, PUBLISH_MODE, CORS_ORIGINS, PUBLIC_BASE_URL, AUTO_PUBLISH
 
-VERSION='7.9.0'
+VERSION='7.10.0'
 app=FastAPI(title='InfoLinense Desk',version=VERSION)
 
 from fastapi.responses import JSONResponse as _JR
@@ -447,6 +447,13 @@ def learned_remove(term:str): learn.remove(term); return {'items':learn.terms()}
 def social_items():
     """Panel de redes: quejas y noticias públicas de páginas y grupos de Facebook de La Línea."""
     return {'items':social.items(),'watched':social.watched()}
+
+@app.get('/api/social/facebook/pages/search',dependencies=[Depends(require_auth)])
+def search_facebook_pages(q:str=''):
+    """Encuentra páginas públicas de Facebook de hermandades a partir de resultados indexados."""
+    query=' '.join((q or '').split())[:120]
+    if len(query)<2: raise HTTPException(400,'Escribe el nombre de una hermandad')
+    return {'query':query,'items':social.search_facebook_pages(query,limit=20)}
 
 @app.post('/api/social/scan',dependencies=[Depends(require_auth)])
 def social_scan():
@@ -994,12 +1001,12 @@ async def article_web_photo(aid:int,photo:UploadFile=File(...)):
 
 @app.post('/api/quick',dependencies=[Depends(require_auth)])
 async def quick_publish(headline:str=Form(...),subtitle:str=Form(''),body:str=Form(''),section:str=Form(''),brand:str=Form('infolinense'),
-                        link:str=Form(''),at:str=Form(''),networks:str=Form(''),ready:str=Form(''),photo:UploadFile=File(...),
+                        link:str=Form(''),at:str=Form(''),networks:str=Form(''),networks_explicit:str=Form(''),ready:str=Form(''),photo:UploadFile=File(...),
                         extra:list[UploadFile]=File(default=[]),web_photo:UploadFile|None=File(None)):
     """Lanzadera: la redacción trae su noticia ya escrita (titular, entradilla, texto y foto). No se reescribe nada:
     se hace la imagen de Canva y se publica al momento (o a la hora indicada) en la web y en las redes del medio.
     Con ready=1 la imagen subida ya es la definitiva (hecha en Canva por la redacción) y se publica tal cual.
-    «extra»: más imágenes (hasta 9) que van detrás de la primera como carrusel en Instagram y Facebook.
+    «extra»: más imágenes (hasta 19) que van detrás de la primera como carrusel; Instagram admite hasta 20 con Buffer.
     «web_photo»: con ready=1, la foto limpia para la portada de la web (la imagen de Canva nunca va a la web)."""
     from uuid import uuid4
     headline=re.sub(r'\s+',' ',headline).strip(); subtitle=re.sub(r'\s+',' ',subtitle).strip(); body=(body or '').strip()
@@ -1019,7 +1026,7 @@ async def quick_publish(headline:str=Form(...),subtitle:str=Form(''),body:str=Fo
         raise HTTPException(400,f'La foto no es válida ({str(e)[:80]})')
     except Exception as e: raise HTTPException(400,f'La foto no es válida ({str(e)[:80]})')
     slides=[]
-    for i,f in enumerate([f for f in (extra if isinstance(extra,list) else []) if f is not None][:9],1):
+    for i,f in enumerate([f for f in (extra if isinstance(extra,list) else []) if f is not None][:19],1):
         raw=await f.read(25_000_001)
         if len(raw)>25_000_000: raise HTTPException(400,f'La imagen {i+1} pesa más de 25 MB')
         try:
@@ -1061,7 +1068,9 @@ async def quick_publish(headline:str=Form(...),subtitle:str=Form(''),body:str=Fo
         for i,sim in enumerate(slides,1):
             sim.save(RENDER_DIR/f'article_{aid}_carousel_{i}.png','PNG')
             db.exec_("INSERT OR REPLACE INTO carousel_designs(article_id,slide_index,design_id,url,exported) VALUES(?,?,'upload','',1)",(aid,i))
-    nets=[n for n in (networks.split(',') if networks else []) if n] or None
+    selected=[n.strip() for n in (networks.split(',') if networks else []) if n.strip() in ('instagram','facebook','tiktok')]
+    explicit=networks_explicit.strip().lower() in ('1','true','yes','si','sí','on')
+    nets=selected if explicit else (selected or None)
     if at.strip():
         try: res=await run_in_threadpool(schedule_article,aid,ScheduleIn(at=at.strip(),networks=nets))
         except HTTPException as e: return {'ok':False,'id':aid,'message':str(e.detail),'canva':canva_msg}

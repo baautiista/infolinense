@@ -115,15 +115,37 @@ def web_search(query, days=3, limit=20):
 
 
 def search_facebook_pages(query, limit=20):
-    """Encuentra páginas públicas de hermandades en resultados indexados; el usuario elige cuáles vigilar."""
+    """Busca páginas públicas y prioriza las hermandades que ya están en el radar."""
     query = re.sub(r'\s+', ' ', query or '').strip()[:120]
     if len(query) < 2:
         return []
+    max_results = max(1, min(int(limit), 30))
+    existing = [s for s in watched() if (s.get('brand') or 'infolinense') == 'cofrade']
+
+    def fold(value):
+        import unicodedata
+        normalized = unicodedata.normalize('NFKD', str(value or '').casefold())
+        return re.sub(r'[^a-z0-9]+', ' ', normalized.encode('ascii', 'ignore').decode()).strip()
+
+    ignored = {'de', 'del', 'la', 'las', 'el', 'los', 'y', 'hermandad', 'hermandades',
+               'cofradia', 'cofradias'}
+    terms = [term for term in fold(query).split() if term not in ignored and len(term) > 1]
+    local = []
+    for source in existing:
+        name = source.get('name') or _page_name(source.get('url') or '')
+        url = source.get('url') or ''
+        searchable = fold(name + ' ' + url)
+        if not terms or all(term in searchable for term in terms):
+            local.append({'name': name, 'url': url,
+                          'snippet': 'Página ya añadida a las fuentes del Cofrade.',
+                          'already_watched': True})
+    if local:
+        return local[:max_results]
+
     search_query = 'site:facebook.com "%s" (hermandad OR hermandades OR cofradía OR cofradia) "La Línea"' % query.replace('"', '')
     found = google_web(search_query, days=3650, limit=max(limit * 2, 30))
     if not found:
         found = ddg_web(search_query, limit=max(limit * 2, 30))
-    existing = [s for s in watched() if (s.get('brand') or 'infolinense') == 'cofrade']
     excluded = {'groups', 'posts', 'reel', 'watch', 'photo', 'photo.php', 'photos', 'videos',
                 'share', 'story.php', 'permalink.php', 'search', 'events', 'marketplace', 'gaming', 'live',
                 'profile.php'}
@@ -150,12 +172,13 @@ def search_facebook_pages(query, limit=20):
         page_url = 'https://www.facebook.com/' + '/'.join(parts)
         name = (item.get('title') or '').strip()
         name = re.sub(r'\s*[|·-]\s*Facebook\s*$', '', name, flags=re.I)
-        out.append({'name': name or parts[-1], 'url': page_url, 'snippet': (item.get('snippet') or '')[:500],
-                    'already_watched': any(fb_account(s.get('url') or '') == account for s in existing)})
-        if len(out) >= max(1, min(int(limit), 30)):
+        already_watched = any(fb_account(source.get('url') or '') == account for source in existing)
+        out.append({'name': name or parts[-1], 'url': page_url,
+                    'snippet': (item.get('snippet') or '')[:500],
+                    'already_watched': already_watched})
+        if len(out) >= max_results:
             break
     return out
-
 def watched():
     """Páginas y grupos de Facebook/Instagram que vigilas."""
     return db.rows("SELECT * FROM sources WHERE kind='social' AND name!=? ORDER BY name", (SOURCE_NAME,))

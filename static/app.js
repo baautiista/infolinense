@@ -485,14 +485,23 @@ function launchBatchView(v) {
     if (!fd.get('txt').size) fd.delete('txt');
     [...$('#lbDir').files, ...$('#lbFiles').files].filter(f => /\.(png|jpe?g|webp|zip)$/i.test(f.name) && !f.name.startsWith('.')).forEach(f => fd.append('images', f, f.webkitRelativePath || f.name));
     const b = $('#lbBtn'); b.disabled = true; b.textContent = 'Cargando…';
-    try { const r = await api('/api/launch/batch', { method: 'POST', body: fd }); launchItems = r.items; toast(`${r.items.length} noticias · ${r.matched} de ${r.images} imágenes unidas${r.web_photos ? ` · ${r.web_matched} de ${r.web_photos} fotos para la web` : ''}${r.ocr ? '' : ' (el servidor aún no sabe leer el texto de las imágenes: unidas por orden)'}`); drawLaunch() }
+    try { const r = await api('/api/launch/batch', { method: 'POST', body: fd }); launchItems = r.items; toast(`${r.items.length} noticias · ${r.matched} de ${r.images} imágenes unidas${r.web_photos ? ` · ${r.web_matched} de ${r.web_photos} fotos para la web` : ''}${r.ocr ? '' : ' (el servidor aún no sabe leer el texto de las imágenes: unidas por orden)'}`); await drawLaunch() }
     catch (er) { toast(er.message) }
     b.disabled = false; b.textContent = 'Cargar noticias';
   };
   if (launchItems.length) drawLaunch();
 }
-function drawLaunch() {
+async function drawLaunch() {
   const box = $('#lbList'); if (!box) return;
+  const brands = [...new Set(launchItems.map(it => it.brand || 'infolinense'))];
+  const [publishRows, ...netStates] = await Promise.all([
+    api('/api/to-publish').catch(() => []),
+    ...brands.map(b => api('/api/networks?brand=' + encodeURIComponent(b)).catch(() => ({})))
+  ]);
+  if (!box.isConnected) return;
+  const rowById = new Map((publishRows || []).map(r => [Number(r.id), r]));
+  launchItems = launchItems.map(it => Object.assign(it, rowById.get(Number(it.id)) || {}));
+  const networkByBrand = Object.fromEntries(brands.map((b, i) => [b, netStates[i] || {}]));
   const start = nextQuarter();
   box.innerHTML = `<section class="panel lb-bar"><h2>${launchItems.length} noticias listas</h2>
       <div class="row wrap"><button class="btn primary" id="lbAllNow">Publicar todas ya</button></div>
@@ -506,12 +515,16 @@ function drawLaunch() {
         <label class="small lb-change">Cambiar imagen<input type="file" accept="image/*" data-img="${it.id}"></label>
         <p class="small ${it.has_web_photo ? '' : 'muted'}">${it.has_web_photo ? '✓ Foto para la web' : 'Sin foto para la web (sale sin portada)'}
           <label class="lb-change">${it.has_web_photo ? 'Cambiar' : 'Añadir'} foto web<input type="file" accept="image/*" data-web="${it.id}"></label></p>
+        <details class="alts"><summary>Carrusel de fotos · hasta 20</summary><div class="stack"><p class="muted small" data-carousel-count>No has subido un carrusel.</p><label>Imágenes JPG, PNG o WEBP<input type="file" accept="image/jpeg,image/png,image/webp" multiple data-carousel-files="${it.id}"></label><button class="btn small" type="button" data-carousel-upload="${it.id}">Subir carrusel</button><p class="muted small">Instagram admite hasta 20 con Buffer; Facebook y TikTok usan las 10 primeras.</p></div></details>
         <div class="row wrap">${whenPicker(it.id, nextQuarter(15 * i))}</div>
-        <div class="rv-actions"><button class="btn small primary" data-now="${it.id}">Publicar ya</button><button class="btn small" data-sched="${it.id}">Programar</button></div></div></article>`).join('')}</div>`;
+        ${networkPicker(it.id, availableNetworks(networkByBrand[it.brand || 'infolinense']))}
+        ${storySummary(it)}
+        <div class="rv-actions"><button class="btn small primary" data-now="${it.id}">Publicar ya</button><button class="btn small" data-sched="${it.id}">Programar</button>${storyAction(it)}</div></div></article>`).join('')}</div>`;
   launchItems.forEach(async it => { if (it.has_image) { try { const u = await blobUrl(`/media/render/${it.id}.png?t=${Date.now()}`); $('#img-' + it.id).innerHTML = `<img src="${u}" alt="">` } catch (e) { } } });
   const mark = (id, t) => { const it = launchItems.find(x => x.id === id); if (it) it.state = t; const el = $('#st-' + id); if (el) el.textContent = t };
-  const pubNow = async id => { mark(id, 'Publicando…'); try { const r = await api(`/api/articles/${id}/publish`, { method: 'POST', body: '{}' }); const bad = (r.results || []).filter(x => !x.ok && !x.skipped); mark(id, bad.length ? 'Error: ' + bad.map(x => x.message).join(' · ').slice(0, 120) : 'Publicada') } catch (e) { mark(id, 'Error: ' + e.message) } };
-  const sched = async (id, at) => { try { const r = await api(`/api/articles/${id}/schedule`, { method: 'POST', body: JSON.stringify({ at }) }); mark(id, 'Programada ' + whenText(r.scheduled_at)) } catch (e) { mark(id, 'Error: ' + e.message) } };
+  box.querySelectorAll('.netpick[data-aid] input').forEach(input => input.onchange = () => rememberNetworks(input.closest('.netpick').dataset.aid, [...input.closest('.netpick').querySelectorAll('input:checked')].map(x => x.value)));
+  const pubNow = async id => { mark(id, 'Publicando…'); try { const r = await api(`/api/articles/${id}/publish`, { method: 'POST', body: JSON.stringify({ networks: pickedNets(id) }) }); const bad = (r.results || []).filter(x => !x.ok && !x.skipped); mark(id, bad.length ? 'Error: ' + bad.map(x => x.message).join(' · ').slice(0, 120) : 'Publicada') } catch (e) { mark(id, 'Error: ' + e.message) } };
+  const sched = async (id, at) => { try { const r = await api(`/api/articles/${id}/schedule`, { method: 'POST', body: JSON.stringify({ at, networks: pickedNets(id) }) }); mark(id, 'Programada ' + whenText(r.scheduled_at)) } catch (e) { mark(id, 'Error: ' + e.message) } };
   const atOf = id => $('#d-' + id).value + 'T' + $('#t-' + id).value;
   box.querySelectorAll('[data-now]').forEach(b => b.onclick = () => pubNow(+b.dataset.now));
   box.querySelectorAll('[data-sched]').forEach(b => b.onclick = () => { const at = atOf(b.dataset.sched); if (at <= madridNow()) return toast('Elige una hora futura'); sched(+b.dataset.sched, at) });
@@ -522,6 +535,15 @@ function drawLaunch() {
   box.querySelectorAll('[data-web]').forEach(inp => inp.onchange = async () => {
     const f = inp.files[0]; if (!f) return; const fd = new FormData(); fd.append('photo', f);
     try { await api(`/api/articles/${inp.dataset.web}/web-photo`, { method: 'POST', body: fd }); const it = launchItems.find(x => x.id === +inp.dataset.web); it.has_web_photo = true; drawLaunch(); toast('Foto para la web añadida') } catch (e) { toast(e.message) }
+  });
+  box.querySelectorAll('[data-carousel-upload]').forEach(button => button.onclick = async () => {
+    const card = button.closest('.lb-item'), id = button.dataset.carouselUpload, input = card.querySelector('[data-carousel-files]'), files = [...(input.files || [])];
+    if (!files.length) return toast('Selecciona las fotos del carrusel');
+    if (files.length > 20) return toast('Elige como máximo 20 imágenes');
+    const form = new FormData(); files.forEach(f => form.append('files', f, f.name));
+    button.disabled = true; button.textContent = 'Subiendo…';
+    try { const r = await api(`/api/articles/${id}/carousel/upload`, { method: 'POST', body: form }); card.querySelector('[data-carousel-count]').textContent = r.count + ' fotos subidas en este orden'; input.value = ''; toast('Carrusel de ' + r.count + ' fotos subido') }
+    catch (e) { toast(e.message) } finally { button.disabled = false; button.textContent = 'Subir carrusel' }
   });
   $('#lbAllNow').onclick = async e => { e.target.disabled = true; for (const it of launchItems) await pubNow(it.id); e.target.disabled = false; toast('Hecho') };
   $('#lbAllSched').onclick = async e => {
@@ -535,11 +557,13 @@ function drawLaunch() {
   };
 }
 let quickReady = true;
-const dropHint = () => quickReady ? 'Pulsa o arrastra las imágenes de Canva. Si subes varias, se publica como carrusel (la primera es la portada)'
-  : 'Pulsa o arrastra la foto. La primera lleva el titular; si añades más, van detrás como carrusel';
+const dropHint = () => quickReady ? 'Sube hasta 20 imágenes de Canva en el orden del carrusel (la primera será la portada)'
+  : 'Sube hasta 20 fotos en orden; la primera llevará el titular y el resto irá detrás';
 // Lanzadera: la noticia ya escrita (titular, entradilla, texto y foto) se publica tal cual con la imagen de Canva
-function quickView(v) {
+async function quickView(v) {
   const b0 = netBrand();
+  const quickNetworkState = { [b0]: await api('/api/networks?brand=' + encodeURIComponent(b0)).catch(() => ({})) };
+  let quickSelectedNetworks = null;
   const brandOpts = BRANDS.map(b => `<label><input type="radio" name="brand" value="${b.slug}" ${b.slug === b0 ? 'checked' : ''}><span>${esc(b.name)}</span></label>`).join('');
   v.innerHTML = `${modeSwitch()}<form class="up" id="qForm">
     <div><h2>Lanzadera</h2><p class="muted small">Pones tu titular, texto e imagen y se publica tal cual en la web y en las redes del medio. No se cambia nada.</p></div>
@@ -556,14 +580,29 @@ function quickView(v) {
     <label id="qWebWrap" ${quickReady ? '' : 'hidden'}>Foto para la portada de la web (sin textos ni gráficos)
       <input type="file" id="qWeb" accept="image/jpeg,image/png,image/webp">
       <span class="muted small">La imagen de Canva solo va a las redes. Sin esta foto, la noticia sale en la web sin portada.</span></label>
+    <div><p class="small" style="font-weight:700;margin:0 0 6px">Redes de esta noticia</p><div id="qNetworks" class="row wrap"><span class="muted small">Cargando redes…</span></div><p class="muted small">Puedes desmarcarlas todas para publicar solo en la web. Facebook y TikTok usan como máximo 10 fotos; Instagram permite 20 con Buffer.</p></div>
     <details class="alts"><summary>Enlace de la fuente (opcional)</summary>
       <label>Enlace<input name="link" type="url" placeholder="https://…"></label></details>
     <div><p class="small" style="font-weight:700;margin:0 0 6px">¿Cuándo?</p><div class="seg" id="qWhen">
       <label><input type="radio" name="qwhen" value="now" checked><span>Publicar ya</span></label>
       <label><input type="radio" name="qwhen" value="later"><span>Programar</span></label></div></div>
     <label id="qAtWrap" hidden>Día y hora de publicación<input name="at" type="datetime-local" min="${madridNow()}"></label>
+    <div class="stack"><label class="switch"><input type="checkbox" id="qStoryToggle"> Programar también una Story de Instagram</label>
+      <label id="qStoryAtWrap" hidden>Día y hora de la Story<input type="datetime-local" id="qStoryAt" min="${madridNow()}"></label>
+      <p class="muted small">La Story se programa con la imagen final de Canva y requiere el canal de Instagram de Buffer conectado en Ajustes.</p></div>
     <button class="btn primary" id="qBtn">Publicar ya</button>
     <div id="qOut"></div></form>`;
+  const drawQuickNetworks = async brand => {
+    if (!quickNetworkState[brand]) quickNetworkState[brand] = await api('/api/networks?brand=' + encodeURIComponent(brand)).catch(() => ({}));
+    const available = availableNetworks(quickNetworkState[brand]);
+    if (quickSelectedNetworks === null) quickSelectedNetworks = new Set(available);
+    else quickSelectedNetworks = new Set([...quickSelectedNetworks].filter(n => available.includes(n)));
+    $('#qNetworks').innerHTML = SOCIAL_NETS.map(n => available.includes(n)
+      ? `<label class="switch"><input type="checkbox" value="${n}" ${quickSelectedNetworks.has(n) ? 'checked' : ''}> ${NET_NAMES[n]}</label>`
+      : `<a class="switch off" href="#settings" title="Sin conectar">${NET_NAMES[n]}: sin conectar</a>`).join('');
+    $('#qNetworks').querySelectorAll('input').forEach(input => input.onchange = () => { quickSelectedNetworks = new Set([...$('#qNetworks').querySelectorAll('input:checked')].map(x => x.value)) });
+  };
+  await drawQuickNetworks(b0);
   // Varias imágenes = carrusel: la primera es la portada; se pueden reordenar y quitar
   let files = [];
   const input = $('#qPhoto'), drop = $('#qDrop');
@@ -576,8 +615,8 @@ function quickView(v) {
   };
   const addFiles = list => {
     const imgs = [...(list || [])].filter(f => /^image\//.test(f.type));
-    const room = 10 - files.length;
-    if (imgs.length > room) toast('Máximo 10 imágenes por carrusel');
+    const room = 20 - files.length;
+    if (imgs.length > room) toast('Máximo 20 imágenes por carrusel');
     files.push(...imgs.slice(0, Math.max(0, room)).map(f => ({ f, url: URL.createObjectURL(f) })));
     drawThumbs();
   };
@@ -586,7 +625,7 @@ function quickView(v) {
   drop.ondragover = e => { e.preventDefault(); drop.classList.add('over') }; drop.ondragleave = () => drop.classList.remove('over');
   drop.ondrop = e => { e.preventDefault(); drop.classList.remove('over'); addFiles(e.dataTransfer.files) };
   const brandSel = () => (document.querySelector('#qBrand input:checked') || {}).value || b0;
-  if ($('#qBrand')) $('#qBrand').onchange = () => { $('#qSec').innerHTML = sectionOptions(brandSel(), '') };
+  if ($('#qBrand')) $('#qBrand').onchange = () => { $('#qSec').innerHTML = sectionOptions(brandSel(), ''); drawQuickNetworks(brandSel()) };
   const ta = $('#qForm').headline; ta.oninput = () => { const n = lines(ta.value); $('#qFit').textContent = ta.value && !quickReady ? (n <= 4 ? `${n} ${n === 1 ? 'línea' : 'líneas'} en la imagen` : `${n} líneas: no cabe, acórtalo`) : '' };
   $('#qKind').onchange = e => {
     quickReady = e.target.value === 'ready'; ta.oninput();
@@ -602,22 +641,39 @@ function quickView(v) {
     if (!later) $('#qForm').at.value = '';
     $('#qBtn').textContent = btnLabel();
   };
+  $('#qStoryToggle').onchange = () => {
+    const active = $('#qStoryToggle').checked; $('#qStoryAtWrap').hidden = !active;
+    if (active && !$('#qStoryAt').value) $('#qStoryAt').value = defaultWhen('');
+  };
   $('#qForm').onsubmit = async e => {
     e.preventDefault();
     if (!files.length) return toast(quickReady ? 'Falta la imagen' : 'Falta la foto');
     if ($('#qWhen input:checked').value === 'later' && !(e.target.at.value > madridNow())) return toast('Elige un día y una hora futuros');
-    const fd = new FormData(e.target); fd.set('brand', brandSel()); fd.append('photo', files[0].f); files.slice(1).forEach(x => fd.append('extra', x.f)); fd.delete('qkind'); fd.delete('qwhen'); if (quickReady) { fd.set('ready', '1'); if ($('#qWeb').files[0]) fd.append('web_photo', $('#qWeb').files[0]) }
+    const storyAt = $('#qStoryToggle').checked ? $('#qStoryAt').value : '';
+    if (storyAt && storyAt <= madridNow()) return toast('Elige un día y una hora futura para la Story');
+    const fd = new FormData(e.target); fd.set('brand', brandSel()); fd.append('photo', files[0].f); files.slice(1).forEach(x => fd.append('extra', x.f)); fd.delete('qkind'); fd.delete('qwhen');
+    fd.set('networks', [...(quickSelectedNetworks || [])].join(',')); fd.set('networks_explicit', '1'); fd.delete('story_at');
+    if (quickReady) { fd.set('ready', '1'); if ($('#qWeb').files[0]) fd.append('web_photo', $('#qWeb').files[0]) }
     const b = $('#qBtn'); b.disabled = true; b.textContent = e.target.at.value ? 'Programando…' : quickReady ? 'Publicando…' : 'Creando imagen y publicando…';
     try {
       const r = await api('/api/quick', { method: 'POST', body: fd });
+      let storyLine = '';
+      if (storyAt && r.id) {
+        try { const st = await api(`/api/articles/${r.id}/story/schedule`, { method: 'POST', body: JSON.stringify({ at: storyAt }) }); storyLine = `<p class="small" id="qStoryStatus">✓ Story de Instagram programada para ${esc(whenText(st.scheduled_at))} <button type="button" class="link small" onclick="cancelUploadStory(${r.id},this)">Cancelar Story</button></p>` }
+        catch (se) { storyLine = `<p class="error small">No se pudo programar la Story: ${esc(se.message)}</p>` }
+      }
       const lines_ = (r.results || []).filter(x => x.message).map(x => (x.ok ? '✓ ' : '') + esc(x.message));
       $('#qOut').innerHTML = `<div class="${r.ok === false ? 'error' : ''}"><p><b>${r.scheduled_at ? 'Programada para ' + esc(whenText(r.scheduled_at)) : r.published ? '✓ Publicada' : esc(r.message || 'No se pudo publicar')}</b></p>
-        ${lines_.length ? `<p class="small">${lines_.join('<br>')}</p>` : ''}${r.canva ? `<p class="small error">Imagen de Canva: ${esc(r.canva)}</p>` : ''}
+        ${lines_.length ? `<p class="small">${lines_.join('<br>')}</p>` : ''}${storyLine}${r.canva ? `<p class="small error">Imagen de Canva: ${esc(r.canva)}</p>` : ''}
         <div class="row wrap"><a class="btn small" href="#editor/${r.id}">Ver la noticia</a><button type="button" class="btn small" onclick="render()">Otra noticia</button></div></div>`;
       b.textContent = 'Hecho'; counts();
     } catch (er) { toast(er.message); b.disabled = false; b.textContent = btnLabel() }
   };
 }
+window.cancelUploadStory = async (id, button) => {
+  try { await api(`/api/articles/${id}/story/unschedule`, { method: 'POST' }); const status = button.closest('#qStoryStatus'); if (status) status.textContent = 'Story cancelada'; toast('Story cancelada') }
+  catch (e) { toast(e.message) }
+};
 
 /* ---------- Fase 2: Redacción ---------- */
 async function writingView(v) {
@@ -1045,10 +1101,7 @@ window.aiWrite = async b => {
   catch (e) { toast(e.message); b.disabled = false; b.textContent = 'Redactar con IA' }
 };
 async function editor(v) {
-  const [a, kit, car] = await Promise.all([api(`/api/articles/${editorId}`), api(`/api/articles/${editorId}/kit`), api(`/api/articles/${editorId}/carousel`).catch(() => ({ uploaded_count: 0 }))]);
-  const networkInfo = await api('/api/networks?brand=' + encodeURIComponent(a.brand || 'infolinense')).catch(() => ({}));
-  const editorNetworks = availableNetworks(networkInfo);
-  const editorNetPicker = networkPicker(editorId, editorNetworks);
+  const [a, kit] = await Promise.all([api(`/api/articles/${editorId}`), api(`/api/articles/${editorId}/kit`)]);
   cache.article = a; cache.kit = kit;
   const options = jparse(a.headline_options_json, []), missing = jparse(a.missing_data_json, []), srcs = jparse(a.sources_json, []);
   const published = a.status === 'published';
@@ -1081,13 +1134,6 @@ async function editor(v) {
       <p class="muted small">La imagen de Canva lleva exactamente este titular y esta entradilla.</p>
       <label>Texto <span class="muted" id="count"></span><textarea id="f-body" rows="16" maxlength="2200">${esc(a.body)}</textarea></label>
       <details class="alts" id="carousel"><summary>${a.carousel_suitable ? 'Carrusel recomendado' : 'Carrusel'}</summary><div id="carouselBox"><p class="muted small">${esc(a.carousel_reason || '')}</p><button class="btn small" onclick="carousel()">Preparar diapositivas</button></div></details>
-      <details class="alts" id="uploadCarousel"><summary>Carrusel de fotos · hasta 20</summary>
-        <div class="stack"><p class="muted small">Sube fotos en el orden que quieres publicarlas. Instagram admite hasta 20; para 11–20 conecta su canal de Buffer en Ajustes. Facebook y TikTok usan como máximo las 10 primeras.</p>
-          <p class="muted small" id="carouselUploadCount">${car.uploaded_count ? car.uploaded_count + ' fotos subidas' : 'No has subido un carrusel de fotos.'}</p>
-          <label>Imágenes JPG, PNG o WEBP<input type="file" id="carouselFiles" accept="image/jpeg,image/png,image/webp" multiple></label>
-          <div class="row wrap"><button class="btn small primary" onclick="uploadCarouselFiles()">Subir carrusel</button><button class="link small" id="clearCarouselUpload" ${car.uploaded_count ? '' : 'hidden'} onclick="deleteCarouselUpload()">Quitar carrusel</button></div>
-        </div>
-      </details>
     </section>
   </div>
   <section class="panel"><h2>Formato</h2>${formatPicker(a.candidate_id, a)}</section>
@@ -1095,7 +1141,6 @@ async function editor(v) {
   <details class="panel net-texts"><summary><b>Texto por red</b> <span class="muted small">opcional: si lo dejas vacío, va el texto de la noticia</span></summary>
     ${['instagram', 'facebook', 'tiktok'].map(n => `<label>${NET_NAMES[n]} <span class="muted small" id="ntc-${n}"></span><textarea rows="5" data-nt="${n}" maxlength="2200">${esc((jparse(a.network_texts, {}) || {})[n] || '')}</textarea></label>`).join('')}
     <p class="muted small">Los hashtags del medio se añaden solos al final. Puedes poner más aquí.</p><button class="btn small" onclick="saveNetTexts()">Guardar textos</button></details>
-  <section class="panel"><h2>Redes de esta noticia</h2>${editorNetPicker}<p class="muted small">Las casillas solo controlan las redes sociales; la web sigue la configuración de este medio.</p></section>
   <section class="panel checks" id="checks"><div class="row"><h2 class="grow">Revisión automática</h2><button class="btn small" onclick="runChecks(0)">Volver a revisar</button><button class="btn small lime" onclick="runChecks(1)">Revisar con IA</button></div><div id="checkList"><p class="muted small">Revisando…</p></div></section>
   <div class="actions">
     <button class="btn" onclick="save(true)">Guardar</button>
@@ -1103,10 +1148,6 @@ async function editor(v) {
     ${published ? '<span class="muted">Publicada</span>' : a.status === 'draft' ? `<button class="btn primary" onclick="reviewed()">Revisada</button>` : `<button class="btn primary" id="pubBtn" onclick="publish()">Publicar</button>`}
     <button class="btn danger" onclick="removeArticle(${a.id})">${published ? 'Quitar del panel' : 'Eliminar'}</button>
   </div>`;
-  v.querySelectorAll('.netpick[data-aid] input').forEach(input => {
-    input.onchange = () => rememberNetworks(input.closest('.netpick').dataset.aid,
-      [...input.closest('.netpick').querySelectorAll('input:checked')].map(x => x.value));
-  });
   setTimeout(() => { runChecks(0); drawVideo(a) }, 0);
   const f = id => $(`#f-${id}`);
   const fit = () => {
@@ -1240,28 +1281,6 @@ window.carousel = async () => {
   } catch (e) { box.innerHTML = `<p class="error">${esc(e.message)}</p><button class="btn small" onclick="carousel()">Reintentar</button>` }
 };
 
-window.uploadCarouselFiles = async () => {
-  const input = $('#carouselFiles'), files = [...(input && input.files || [])];
-  if (!files.length) return toast('Selecciona las imágenes del carrusel');
-  if (files.length > 20) return toast('Elige como máximo 20 imágenes');
-  const button = $('#uploadCarousel button.primary'); button.disabled = true; button.textContent = 'Subiendo…';
-  const form = new FormData(); files.forEach(file => form.append('files', file, file.name));
-  try {
-    const result = await api(`/api/articles/${editorId}/carousel/upload`, { method: 'POST', body: form });
-    $('#carouselUploadCount').textContent = result.count + ' fotos subidas en este orden';
-    $('#clearCarouselUpload').hidden = false; input.value = '';
-    toast('Carrusel de ' + result.count + ' fotos subido');
-  } catch (e) { toast(e.message) }
-  finally { button.disabled = false; button.textContent = 'Subir carrusel' }
-};
-window.deleteCarouselUpload = async () => {
-  try {
-    await api(`/api/articles/${editorId}/carousel/upload`, { method: 'DELETE' });
-    $('#carouselUploadCount').textContent = 'No has subido un carrusel de fotos.';
-    $('#clearCarouselUpload').hidden = true; toast('Carrusel de fotos quitado');
-  } catch (e) { toast(e.message) }
-};
-
 /* ---------- Ajustes ---------- */
 let settingsBrand = null;
 async function settings(v) {
@@ -1344,6 +1363,7 @@ async function settings(v) {
       <form id="addLearn" class="row wrap"><input name="label" placeholder="Sitio (p. ej. Castelldefels)" required><button class="btn small">Añadir</button></form></section>
     <section class="panel"><h2>Fuentes de redes sociales</h2><p class="muted small">Facebook e Instagram: el panel SOLO lee las cuentas de esta lista y no descubre otras. Cómo se lee cada una: <b>API</b> (página que administras o cuenta profesional de Instagram), <b>buscador</b> (lo que Google tenga indexado: parcial) o <b>no se puede leer</b>.</p>
       <div class="sources" id="fbList"></div>
+      ${SB === 'cofrade' ? `<div class="stack" style="margin:16px 0"><h3>Buscar páginas de hermandades en Facebook</h3><p class="muted small">Busca por el nombre y abre la página para comprobar que es la oficial. Si la añades, el radar del Cofrade intentará leer sus publicaciones. Los resultados dependen de lo que Facebook y los buscadores muestran públicamente.</p><form id="fbBrotherhoodSearch" class="row wrap"><input name="q" placeholder="Nombre de la hermandad" required maxlength="120"><button class="btn small">Buscar páginas</button></form><div id="fbPageResults"></div></div>` : ''}
       <form id="addFb" class="soc-form"><select name="network"><option value="facebook">Facebook</option><option value="instagram">Instagram</option></select><input name="account" placeholder="URL, usuario o identificador" required><input name="name" placeholder="Nombre (p. ej. AVV La Atunara)" required><button class="btn primary small">Añadir</button></form></section>
     <button class="btn" onclick="logout()">Salir</button>`;
   const socUrl = (net, acc) => { acc = acc.trim(); if (/^https?:\/\//i.test(acc)) return acc; acc = acc.replace(/^@/, ''); return net === 'instagram' ? `https://www.instagram.com/${acc}/` : /^\d+$/.test(acc) ? `https://www.facebook.com/profile.php?id=${acc}` : `https://www.facebook.com/${acc}`; };
@@ -1366,6 +1386,22 @@ async function settings(v) {
   $('#learnList').onclick = async e => { const t = e.target.dataset.unlearn; if (!t) return; try { showLearn(await api('/api/learned/' + encodeURIComponent(t), { method: 'DELETE' })) } catch (er) { toast(er.message) } };
   $('#addLearn').onsubmit = async e => { e.preventDefault(); try { showLearn(await api('/api/learned', { method: 'POST', body: JSON.stringify(Object.fromEntries(new FormData(e.target))) })); e.target.reset(); toast('Ya no saldrán noticias con eso') } catch (er) { toast(er.message) } };
   $('#addFb').onsubmit = async e => { e.preventDefault(); const d = Object.fromEntries(new FormData(e.target)); try { await api('/api/sources', { method: 'POST', body: JSON.stringify({ name: d.name, url: socUrl(d.network, d.account), kind: 'social', priority: 60, local_scope: true, brand: SB }) }); toast('Fuente añadida'); e.target.reset(); drawSoc() } catch (er) { toast(er.message) } };
+  const pageSearch = $('#fbBrotherhoodSearch');
+  if (pageSearch) pageSearch.onsubmit = async e => {
+    e.preventDefault(); const q = new FormData(e.target).get('q').toString().trim(), out = $('#fbPageResults'), button = pageSearch.querySelector('button');
+    button.disabled = true; button.textContent = 'Buscando…'; out.innerHTML = '';
+    try {
+      const data = await api('/api/social/facebook/pages/search?q=' + encodeURIComponent(q));
+      const pages = data.items || [];
+      out.innerHTML = pages.length ? `<div class="sources">${pages.map((p, i) => `<div class="soc-row"><div class="grow"><b>${esc(p.name)}</b><span class="small muted">${esc(p.snippet || '')}</span></div><a class="btn small" href="${safeUrl(p.url)}" target="_blank" rel="noopener">Ver página</a><button class="btn small" data-fb-page="${i}" ${p.already_watched ? 'disabled' : ''}>${p.already_watched ? 'Ya añadida' : 'Añadir al Cofrade'}</button></div>`).join('')}</div>` : `<p class="muted small">No he encontrado páginas indexadas con ese nombre. Prueba con el nombre exacto o <a href="https://www.facebook.com/search/pages/?q=${encodeURIComponent(q + ' La Línea')}" target="_blank" rel="noopener">buscar directamente en Facebook</a>; también puedes pegar el enlace oficial abajo.</p>`;
+      out.querySelectorAll('[data-fb-page]').forEach(b => b.onclick = async () => {
+        const p = pages[+b.dataset.fbPage]; b.disabled = true; b.textContent = 'Añadiendo…';
+        try { await api('/api/sources', { method: 'POST', body: JSON.stringify({ name: p.name, url: p.url, kind: 'social', priority: 70, local_scope: true, brand: 'cofrade' }) }); b.textContent = 'Ya añadida'; toast('Página añadida a las fuentes del Cofrade'); drawSoc() }
+        catch (err) { toast(err.message); b.disabled = false; b.textContent = 'Añadir al Cofrade' }
+      });
+    } catch (err) { out.innerHTML = `<p class="error small">${esc(err.message)}</p>` }
+    finally { button.disabled = false; button.textContent = 'Buscar páginas' }
+  };
   $('#aiCheck').onclick = async e => {
     e.target.disabled = true; e.target.textContent = 'Comprobando…';
     try { const r = await api('/api/ai/check'); $('#aiOut').innerHTML = r.providers.filter(p => p.configured).map(p => `<p class="${p.ok ? 'ok' : 'error'}"><b>${esc(p.provider_name)}</b> ${p.active ? '(en uso)' : ''}: ${p.ok === null ? esc(p.message) : p.ok ? 'funciona' : esc(p.message) + (p.http_status ? ` <small>(HTTP ${p.http_status} ${esc(p.code || '')})</small>` : '')}</p>`).join('') || '<p class="error">Sin claves configuradas.</p>' }

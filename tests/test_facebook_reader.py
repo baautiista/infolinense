@@ -93,6 +93,20 @@ class ReaderTests(unittest.TestCase):
         self.assertEqual([p['source_id'] for p in result['items']], [2, 1])
         self.assertTrue(all(p['status'] == 'ok' for p in result['pages']))
 
+    def test_configuration_selection_and_safe_diagnostics(self):
+        from app.facebook_reader import configuration
+        cases = [('', 'fixture-token', 'fixture-task', 'apify'),
+                 ('meta', 'fixture-token', 'fixture-task', 'meta'),
+                 ('"apify"', 'fixture-token', 'fixture-task', 'apify'),
+                 ('', '', '', 'meta'), ('wrong', '', '', 'invalid')]
+        for provider, token, task, expected in cases:
+            with patch.dict(os.environ, {'FACEBOOK_READER_PROVIDER': provider, 'APIFY_TOKEN': token, 'APIFY_FACEBOOK_TASK_ID': task}):
+                result = configuration()
+            self.assertEqual(result['provider'], expected)
+            self.assertNotIn('fixture-token', str(result))
+            self.assertNotIn('fixture-task', str(result))
+            self.assertEqual(result['apify_token_present'], bool(token))
+
     def test_environment_page_tokens(self):
         with patch.object(meta.db, 'rows', return_value=[]), patch.object(meta, 'META_PAGE_ID', '123'), patch.object(meta, 'META_PAGE_TOKEN', 'fixture'), patch.dict(os.environ, {'META_READER_PAGE_TOKENS': '{"456":"another fixture"}'}):
             self.assertEqual({p['id'] for p in meta._managed_pages()}, {'123', '456'})

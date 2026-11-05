@@ -227,3 +227,12 @@ Se excluyen los registros con `sharedPost`. Para reels se utiliza el permalink
 numérico de `topLevelUrl`, previamente verificado. Los errores `not_available` y
 `no_items` se muestran como lectura no verificada. Esta comprobación valida el
 archivo aportado; no confirma que la API esté conectada o programada.
+
+Diagnóstico del servidor: el panel de hermandades muestra el lector activo y si
+el proceso recibió `APIFY_TOKEN` y `APIFY_FACEBOOK_TASK_ID`, sin devolver sus valores.
+La revisión `2026-11-06.1` identifica esta comprobación. Un error de la API de Apify
+no provoca un cambio a Meta. Si `FACEBOOK_READER_PROVIDER` no existe o está vacío,
+se elige Apify cuando están presentes token y tarea; un `meta` explícito se respeta.
+Las comillas exteriores en el selector se toleran. Si Railway muestra variables
+pero el panel indica que faltan, comprobar el servicio, entorno y despliegue que
+atienden al dominio abierto; la configuración guardada puede no ser la del proceso.

@@ -85,9 +85,22 @@ def page_posts(url, now=None):
     raise meta.SocialError('No hay acceso verificable a esta página. ' + REQUIREMENTS)
 
 
+def configuration():
+    """Report only configuration presence; never return credential or task values."""
+    configured = os.getenv('FACEBOOK_READER_PROVIDER', '').strip().strip('\"\'').lower()
+    token_present = bool(os.getenv('APIFY_TOKEN', '').strip())
+    task_present = bool(os.getenv('APIFY_FACEBOOK_TASK_ID', '').strip())
+    provider = configured or ('apify' if token_present and task_present else 'meta')
+    return {'provider': provider if provider in {'meta', 'apify'} else 'invalid',
+            'selection': 'explicit' if configured else 'automatic',
+            'apify_token_present': token_present, 'apify_task_present': task_present,
+            'reader_revision': '2026-11-06.1'}
+
+
 def recent():
     items, pages = [], []
-    provider = os.getenv('FACEBOOK_READER_PROVIDER', 'meta').strip().lower()
+    config = configuration()
+    provider = config['provider']
     requirements = REQUIREMENTS
     external_rows, extraction_at, external_error = None, None, None
     if provider == 'apify':
@@ -125,4 +138,4 @@ def recent():
                 state.update(status='unavailable', message=message)
         pages.append(state)
     items.sort(key=lambda p: p['published_at'], reverse=True)
-    return {'items': items, 'pages': pages, 'days': 7, 'requirements': requirements, 'provider': provider, 'extraction_at': extraction_at}
+    return {'items': items, 'pages': pages, 'days': 7, 'requirements': requirements, 'provider': provider, 'extraction_at': extraction_at, 'configuration': config}

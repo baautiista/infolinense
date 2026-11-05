@@ -212,6 +212,7 @@ function cofradePagesWidget() {
       <span class="cofrade-page-state">${!s.active ? 'Seguimiento pausado' : s.official ? 'Página confirmada' : 'Pendiente de confirmar como oficial'} · Ver página ↗</span>
     </a>`).join('')}</div>
     ${cofradeFeed.error ? `<p class="error small">${esc(cofradeFeed.error)}</p>` : ''}
+    ${cofradeFeed.configuration ? `<p class="muted small">Lector activo: <b>${cofradeFeed.provider === 'apify' ? 'Apify' : cofradeFeed.provider === 'meta' ? 'Meta' : 'Configuración no válida'}</b> · Apify: ${cofradeFeed.configuration.apify_token_present ? 'token recibido' : 'falta el token'} · ${cofradeFeed.configuration.apify_task_present ? 'tarea recibida' : 'falta la tarea'}. <span>Revisión ${esc(cofradeFeed.configuration.reader_revision)}</span></p>` : ''}
     ${cofradeFeed.extraction_at ? `<p class="muted small">Última extracción: ${esc(new Date(cofradeFeed.extraction_at).toLocaleString('es-ES', { timeZone: 'Europe/Madrid' }))}</p>` : ''}
     <div class="cofrade-posts">${(cofradeFeed.items || []).map(p => `<article class="cofrade-post">
       <b>${esc(p.brotherhood)}</b><p class="muted small">${esc(p.page_name)} · <time datetime="${esc(p.published_at)}">${esc(new Date(p.published_at).toLocaleString('es-ES', { timeZone: 'Europe/Madrid' }))}</time></p>

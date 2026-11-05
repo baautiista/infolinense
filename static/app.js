@@ -139,13 +139,16 @@ $('#scanBtn').onclick = async () => {
     setTimeout(tick, 1500);
   } catch (e) { toast(e.message); b.disabled = false; b.textContent = 'Buscar' }
 };
-let queue = [], groups = BLOCKS, cofradePages = [];
+let queue = [], groups = BLOCKS, cofradePages = [], cofradePosts = [];
+let cofradeScanPromise = null, cofradeAutoScanAt = 0, cofradeScanPending = false, cofradeScanNotice = '';
 let queueSearch = '', newsSearchBusy = false, newsSearchNote = '', newsSearchError = false;
 // Cofrade y Carnaval se ordenan por sus fuentes (cada hermandad, cada web…), no por los bloques de InfoLinense.
 const ownBrand = () => BRAND !== 'all' && BRAND !== 'infolinense';
 async function sortView(v) {
-  const [q, srcs] = await Promise.all([api('/api/sort-queue'), ownBrand() ? api('/api/sources').catch(() => []) : Promise.resolve([])]);
+  const [q, srcs, feed] = await Promise.all([api('/api/sort-queue'), ownBrand() ? api('/api/sources').catch(() => []) : Promise.resolve([]),
+    BRAND === 'cofrade' ? api('/api/social/cofrade?days=7').catch(() => ({ items: [], sources: [] })) : Promise.resolve({ items: [], sources: [] })]);
   queue = q;
+  cofradePosts = feed.items || [];
   try {
     const [labels, ag] = await Promise.all([queue.length ? api('/api/topics/labels?ids=' + queue.slice(0, 300).map(n => n.id).join(',')) : {}, api('/api/agenda?days=7')]);
     queue.forEach(n => { n.topics = labels[n.id] || [] }); sortAgenda = ag.items || [];
@@ -164,6 +167,11 @@ async function sortView(v) {
     groups = BLOCKS;
   }
   drawSort(v);
+  if (BRAND === 'cofrade' && cofradePages.some(p => p.active) && !cofradeScanPromise
+      && Date.now() - cofradeAutoScanAt > 10 * 60 * 1000) {
+    cofradeAutoScanAt = Date.now();
+    void readCofradePages(v, true);
+  }
 }
 let sortAgenda = [], onlyCarousel = false;
 // Franja de agenda en Ordenar: lo que llega esta semana (para preparar la previa) y acceso a temas y agenda
@@ -193,20 +201,81 @@ function gptWidget() {
     <section class="gpt-export"><div><b>Para Canva</b><span class="muted small"> · un solo diseño con todas las noticias subidas en lote (titular y entradilla, sin imagen)</span></div>
     <div class="row wrap"><button type="button" class="btn small" id="canvaBatch">Crear el diseño en Canva</button><span class="muted small" id="canvaBatchOut"></span></div></section>`;
 }
+function readCofradePages(v, quiet = false) {
+  if (cofradeScanPromise) return cofradeScanPromise;
+  cofradeScanPending = true;
+  cofradeScanNotice = '';
+  const button = v.querySelector('#scanCofradePages');
+  if (button) { button.disabled = true; button.textContent = 'Leyendo Facebook…'; }
+  const state = v.querySelector('#cofradeScanState');
+  if (state) state.textContent = 'Consultando las páginas seguidas…';
+  const empty = v.querySelector('.cofrade-feed-empty');
+  if (empty) empty.textContent = 'Consultando las publicaciones recientes de las páginas seguidas…';
+
+  cofradeScanPromise = (async () => {
+    let result = null;
+    try {
+      result = await api('/api/social/scan?brand=cofrade&days=7', { method: 'POST' });
+      const feed = await api('/api/social/cofrade?days=7');
+      cofradePosts = feed.items || [];
+      const states = new Map((feed.sources || []).map(s => [s.id, s]));
+      cofradePages = cofradePages.map(s => ({ ...s, ...(states.get(s.id) || {}) }));
+      const fresh = (result.added || []).length;
+      cofradeScanNotice = (result.errors || []).length
+        ? (result.errors || []).join(' · ')
+        : fresh ? `${fresh} publicaciones nuevas detectadas`
+          : `Lectura terminada: ${cofradePosts.length} publicaciones fechadas en los últimos 7 días.`;
+      if (!quiet) toast(cofradeScanNotice);
+    } catch (e) {
+      cofradeScanNotice = 'No se pudo terminar la lectura: ' + (e.message || 'error de conexión');
+      if (!quiet) toast(cofradeScanNotice);
+    } finally {
+      cofradeScanPending = false;
+      cofradeScanPromise = null;
+      drawSort(v);
+    }
+    return result;
+  })();
+  return cofradeScanPromise;
+}
+
 function cofradePagesWidget() {
   if (BRAND !== 'cofrade' || !cofradePages.length) return '';
+  const active = cofradePages.filter(s => s.active);
+  const direct = active.filter(s => s.access_mode === 'api').length;
+  const indexed = active.filter(s => s.access_mode === 'buscador').length;
+  const checked = active.filter(s => s.last_checked_at).length;
+  const status = cofradeScanPending
+    ? `Consultando ${active.length} páginas seguidas…`
+    : checked
+      ? `${checked}/${active.length} páginas revisadas · ${direct} lectura directa · ${indexed} por buscador`
+      : `${active.length} páginas seguidas · lectura automática al abrir esta sección`;
+  const posts = cofradePosts.map(p => `<article class="cofrade-post">
+    <div class="cofrade-post-head"><b>${esc(p.source_name || p.outlet || 'Hermandad')}</b><time>${esc(ago(p.date_iso) || 'fecha reciente')}</time></div>
+    <h3><a href="${safeUrl(p.url)}" target="_blank" rel="noopener noreferrer">${esc(p.title || 'Publicación de Facebook')}</a></h3>
+    ${p.excerpt && p.excerpt !== p.title ? `<p>${esc(p.excerpt.slice(0, 360))}${p.excerpt.length > 360 ? '…' : ''}</p>` : ''}
+    <a class="cofrade-post-open" href="${safeUrl(p.url)}" target="_blank" rel="noopener noreferrer">Ver publicación ↗</a>
+  </article>`).join('');
+  const mode = s => s.access_mode === 'api' ? 'Lectura directa de Meta'
+    : s.access_mode === 'buscador' ? 'Buscador público (parcial)'
+      : s.access_mode === 'no' ? 'No se pudo leer' : 'Aún sin revisar';
   return `<section class="cofrade-pages" aria-labelledby="cofradePagesTitle">
     <div class="cofrade-pages-head">
-      <div><h2 id="cofradePagesTitle">Páginas de Facebook de las hermandades</h2>
-        <p class="muted small">Abre aquí las páginas que sigue El Cofrade Linense.</p></div>
-      <button type="button" class="btn small" id="manageCofradePages">Gestionar</button>
+      <div><h2 id="cofradePagesTitle">Publicaciones de Facebook · últimos 7 días</h2>
+        <p class="muted small">${cofradePosts.length} publicaciones fechadas · ${esc(status)}</p>
+        <p class="muted small" id="cofradeScanState">${cofradeScanPending ? 'Leyendo Facebook…' : esc(cofradeScanNotice)}</p></div>
+      <div class="row wrap"><button type="button" class="btn small primary" id="scanCofradePages" ${cofradeScanPending ? 'disabled' : ''}>${cofradeScanPending ? 'Leyendo Facebook…' : 'Buscar publicaciones nuevas'}</button>
+        <button type="button" class="btn small" id="manageCofradePages">Gestionar páginas</button></div>
     </div>
-    <div class="cofrade-page-grid">${cofradePages.map(s => `<a class="cofrade-page-card" href="${safeUrl(s.url)}" target="_blank" rel="noopener noreferrer">
-      <span class="cofrade-page-icon" aria-hidden="true">f</span>
-      <span class="cofrade-page-name">${esc(s.name)}</span>
-      <span class="cofrade-page-state">${s.active ? 'En seguimiento' : 'Seguimiento pausado'} · Ver página ↗</span>
-    </a>`).join('')}</div>
-    <p class="cofrade-pages-note">El «0» de un filtro significa que no hay noticias pendientes de esa fuente. Las publicaciones públicas aparecen en el radar cuando el buscador consigue localizarlas.</p>
+    <div class="cofrade-post-list">${posts || `<p class="cofrade-feed-empty">${cofradeScanPending ? 'Consultando las publicaciones recientes de las páginas seguidas…' : 'No hay publicaciones fechadas de los últimos 7 días.'}</p>`}</div>
+    <details class="cofrade-followed"><summary>Páginas seguidas (${cofradePages.length})</summary>
+      <div class="cofrade-page-grid">${cofradePages.map(s => `<a class="cofrade-page-card" href="${safeUrl(s.url)}" target="_blank" rel="noopener noreferrer">
+        <span class="cofrade-page-icon" aria-hidden="true">f</span>
+        <span class="cofrade-page-name">${esc(s.name)}</span>
+        <span class="cofrade-page-state">${esc(mode(s))} · ${s.active ? 'En seguimiento' : 'Pausada'}</span>
+      </a>`).join('')}</div>
+    </details>
+    <p class="cofrade-pages-note">La lectura completa de páginas que no administras depende de que Meta autorice Page Public Content Access para esta app. Si no está autorizado, el Desk muestra solo publicaciones que los buscadores han indexado, y puede faltar alguna.</p>
   </section>`;
 }
 function armGpt(v) {
@@ -292,6 +361,11 @@ function drawSort(v = $('#view')) {
   armGpt(v);
   const managePages = v.querySelector('#manageCofradePages');
   if (managePages) managePages.onclick = () => { settingsBrand = 'cofrade'; go('settings') };
+  const scanPages = v.querySelector('#scanCofradePages');
+  if (scanPages) scanPages.onclick = () => {
+    cofradeAutoScanAt = Date.now();
+    void readCofradePages(v, false);
+  };
   const input = v.querySelector('#newsQuery');
   input.oninput = e => {
     const position = e.target.selectionStart;
@@ -1387,7 +1461,7 @@ async function settings(v) {
     <section class="panel"><h2>Sitios que no te interesan</h2><p class="muted small">Se aprende por contexto: al descartar una noticia que NO es de La Línea, se guardan los sitios de los que habla (p. ej. Castelldefels, Lima). Solo frenan noticias de esos sitios: lo que sea de La Línea entra siempre, trate del tema que trate. Lo que descartas de La Línea no vuelve a salir desde otro medio, salvo que haya un cambio importante.</p>
       <div class="sources" id="learnList"></div>
       <form id="addLearn" class="row wrap"><input name="label" placeholder="Sitio (p. ej. Castelldefels)" required><button class="btn small">Añadir</button></form></section>
-    <section class="panel"><h2>Fuentes de redes sociales</h2><p class="muted small">Facebook e Instagram: el panel SOLO lee las cuentas de esta lista y no descubre otras. Cómo se lee cada una: <b>API</b> (página que administras o cuenta profesional de Instagram), <b>buscador</b> (lo que Google tenga indexado: parcial) o <b>no se puede leer</b>.</p>
+    <section class="panel"><h2>Fuentes de redes sociales</h2><p class="muted small">Facebook e Instagram: el panel solo lee las cuentas de esta lista. <b>API</b>: páginas que administras, cuentas profesionales de Instagram o páginas públicas si Meta aprobó Page Public Content Access. <b>Buscador</b>: resultados indexados, parcial.</p>
       <div class="sources" id="fbList"></div>
       ${SB === 'cofrade' ? `<div class="stack" style="margin:16px 0"><h3>Buscar páginas de hermandades en Facebook</h3><p class="muted small">Busca por el nombre y abre la página para comprobar que es la oficial. Si la añades, el radar del Cofrade intentará leer sus publicaciones. Los resultados dependen de lo que Facebook y los buscadores muestran públicamente.</p><form id="fbBrotherhoodSearch" class="row wrap"><input name="q" placeholder="Nombre de la hermandad" required maxlength="120"><button class="btn small">Buscar páginas</button></form><div id="fbPageResults"></div></div>` : ''}
       <form id="addFb" class="soc-form"><select name="network"><option value="facebook">Facebook</option><option value="instagram">Instagram</option></select><input name="account" placeholder="URL, usuario o identificador" required><input name="name" placeholder="Nombre (p. ej. AVV La Atunara)" required><button class="btn primary small">Añadir</button></form></section>

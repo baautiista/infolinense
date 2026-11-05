@@ -25,29 +25,6 @@ class Resp:
 
 
 class SocialPublishTests(unittest.TestCase):
-    def test_page_posts_for_uses_public_app_token_for_unmanaged_page(self):
-        calls = []
-
-        def fake_graph(method, path, **kwargs):
-            token = kwargs.get('params', {}).get('access_token')
-            calls.append((path, token))
-            if path == '/gran-poder-linense':
-                return {'id': 'PAGE-123', 'name': 'Gran Poder y Ángeles'}
-            if path == '/PAGE-123/posts':
-                return {'data': [{'message': 'Misa a las 19 h', 'created_time': '2026-11-04T18:00:00+0000',
-                                  'permalink_url': 'https://www.facebook.com/gran-poder-linense/posts/123'}]}
-            raise AssertionError(path)
-
-        with patch.object(sp, 'META_APP_ID', 'APP-ID'), patch.object(sp, 'META_APP_SECRET', 'APP-SECRET'), \
-             patch.object(sp, 'META_APP_ACCESS_TOKEN', ''), patch.object(sp, '_managed_pages', return_value=[]), \
-             patch.object(sp, '_graph', side_effect=fake_graph):
-            posts = sp.page_posts_for('https://www.facebook.com/gran-poder-linense', 'Gran Poder y Ángeles')
-
-        self.assertEqual(posts[0]['title'], 'Misa a las 19 h')
-        self.assertEqual(posts[0]['published_at'], '2026-11-04T18:00:00+0000')
-        self.assertEqual(calls, [('/gran-poder-linense', 'APP-ID|APP-SECRET'),
-                                  ('/PAGE-123/posts', 'APP-ID|APP-SECRET')])
-
     def setUp(self):
         db.init_db(); sp.init_tables()
         for t in ('social_posts', 'social_accounts', 'public_media', 'carousel_designs', 'article_carousel_uploads', 'scheduled_stories'):

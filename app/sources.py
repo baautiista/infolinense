@@ -93,7 +93,12 @@ def parse_es_date(text, now=None):
         n, unit = int(m.group(1)), m.group(2)
         delta = timedelta(minutes=n) if unit.startswith('min') else timedelta(hours=n) if unit.startswith('h') else timedelta(weeks=n) if unit.startswith('sem') else timedelta(days=n)
         return (now - delta).isoformat(timespec='minutes')
-    if re.search(r'\bayer\b', t): return (now - timedelta(days=1)).isoformat(timespec='minutes')
+    m = re.search(r'\b(\d+)\s*(?:minutes?|mins?|hours?|hrs?|days?|weeks?)\s+ago\b', t)
+    if m:
+        n, unit = int(m.group(1)), m.group(0).lower()
+        delta = timedelta(minutes=n) if 'min' in unit else timedelta(hours=n) if ('hour' in unit or 'hr' in unit) else timedelta(weeks=n) if 'week' in unit else timedelta(days=n)
+        return (now - delta).isoformat(timespec='minutes')
+    if re.search(r'\b(?:ayer|yesterday)\b', t): return (now - timedelta(days=1)).isoformat(timespec='minutes')
     return ''
 
 
@@ -1160,7 +1165,8 @@ def add_candidate(title, url, excerpt, source_name, source_id=None, published_at
     elif str(source_meta.get('name') or source_name or '').startswith('Medios nacionales') and not exact_locality(title + ' ' + excerpt[:300]):
         return None  # mención de pasada a La Línea en un medio nacional
     tender = source_meta.get('kind') in ('procurement', 'bop', 'edictos') or bool(re.search(r'licitaci|adjudica|edicto|contrataci', title, re.I))
-    window = WINDOW_DAYS['Licitaciones y edictos'] if tender else None
+    window = (WINDOW_DAYS['Licitaciones y edictos'] if tender else
+              7 if source_meta.get('kind') == 'social' and source_meta.get('brand') == 'cofrade' else None)
     if not title or not url or (not (tender and _open_tender_deadline(title, excerpt)) and not recent_enough(published_at, window)): return None
     if not source_meta.get('local_scope'):
         if tender:
@@ -1349,7 +1355,7 @@ def read_source(source, remember_state=True):
             query = f'site:{host}/{account}'
         items = []
         pid = (parse_qs(target.query).get('id') or [''])[0]
-        for it in social.web_search(query, days=7, limit=15):
+        for it in social.web_search(query, days=7, limit=30):
             if not re.search(r'facebook\.com|instagram\.com', it.get('url') or ''):
                 continue
             if account == 'profile.php' and pid and pid not in (it.get('url') or '') \

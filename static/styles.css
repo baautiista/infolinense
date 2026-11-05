@@ -838,3 +838,18 @@ input[type=range]{padding:0;border:0}
   .tabs{grid-template-columns:repeat(6,minmax(0,1fr))}
   .tabs button{font-size:9px;letter-spacing:0;padding:8px 1px 7px;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 }
+
+/* Enlaces directos a las páginas de hermandades */
+.cofrade-pages{background:var(--card);border:1px solid var(--line);border-radius:var(--r-lg);box-shadow:var(--lift);padding:14px;margin:0 0 12px}
+.cofrade-pages-head{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;margin-bottom:12px}
+.cofrade-pages-head h2{font-size:17px;margin:0;color:var(--ink)}
+.cofrade-pages-head p{margin:3px 0 0}
+.cofrade-page-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}
+.cofrade-page-card{min-width:0;display:grid;grid-template-columns:32px minmax(0,1fr);grid-template-rows:auto auto;align-items:center;gap:2px 9px;padding:9px 10px;border:1px solid var(--line);border-radius:12px;background:var(--card);color:var(--ink);text-decoration:none}
+.cofrade-page-card:hover{border-color:var(--blue);box-shadow:0 0 0 2px var(--blue-soft)}
+.cofrade-page-icon{grid-row:1/3;display:grid;place-items:center;width:30px;height:30px;border-radius:9px;background:#1877F2;color:#fff;font:800 23px/1 Arial,sans-serif}
+.cofrade-page-name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px;font-weight:750}
+.cofrade-page-state{font-size:11px;color:var(--blue);line-height:1.25}
+.cofrade-pages-note{margin:10px 0 0;color:var(--muted);font-size:12px;line-height:1.4}
+@media(max-width:760px){.cofrade-page-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(max-width:470px){.cofrade-pages{padding:12px}.cofrade-pages-head{align-items:center}.cofrade-page-grid{grid-template-columns:1fr}}

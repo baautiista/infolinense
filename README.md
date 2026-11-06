@@ -219,3 +219,10 @@ El Cofrade no da permiso para leer todas las hermandades.
 Pruebas: `PYTHONPATH=. .venv/bin/python -m unittest discover -s tests -p 'test_facebook*.py'`.
 Incluyen autoría, fechas, cobertura parcial explícita, bloqueo del POST de pago,
 continuación de fuentes gratuitas tras errores y conservación de tarjetas/decisiones.
+
+Las comprobaciones de seguridad de Facebook pueden usar Arkose Labs. Durante la
+interacción manual se permiten recursos HTTPS de `*.arkoselabs.com` y
+`*.funcaptcha.com` en marcos y subrecursos; no se permiten como navegación principal
+ni durante la lectura automática. El editor completa la comprobación por sí mismo:
+Desk no resuelve desafíos ni contrata servicios de resolución. Si faltan recursos,
+la vista indica únicamente los dominios bloqueados, sin URLs, parámetros o cookies.

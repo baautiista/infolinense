@@ -17,7 +17,7 @@ from .auth import login, require_auth
 from starlette.concurrency import run_in_threadpool
 from .config import BASE_DIR, RENDER_DIR, UPLOAD_DIR, SCAN_INTERVAL_MINUTES, AUTO_PIPELINE, OPENAI_API_KEY, ADMIN_PASSWORD, JWT_SECRET, PUBLISH_MODE, CORS_ORIGINS, PUBLIC_BASE_URL, AUTO_PUBLISH
 
-VERSION='7.13.0'
+VERSION='7.13.1'
 app=FastAPI(title='InfoLinense Desk',version=VERSION)
 
 from fastapi.responses import JSONResponse as _JR
@@ -470,7 +470,9 @@ def facebook_browser_screenshot():
     from .facebook_browser import call
     from fastapi.responses import Response
     try:
-        return Response(call('screenshot'), media_type='image/png', headers={'Cache-Control':'no-store', 'Pragma':'no-cache'})
+        image = call('screenshot')
+        hosts = call('status').get('blocked_hosts', [])
+        return Response(image, media_type='image/png', headers={'Cache-Control':'no-store', 'Pragma':'no-cache', 'X-Facebook-Blocked-Hosts': ', '.join(hosts)})
     except social_publish.SocialError as exc:
         raise HTTPException(400, str(exc))
 

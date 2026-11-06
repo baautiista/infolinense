@@ -21,6 +21,8 @@ _commands = queue.Queue(maxsize=32)
 _thread = None
 _start_lock = threading.Lock()
 _context = _page = _playwright = None
+_interactive = False
+_blocked_hosts = set()
 _profile = Path(DATA_DIR) / '.private-facebook-browser'
 
 
@@ -62,6 +64,35 @@ def _allowed_url(url):
     return parsed.scheme == 'https' and not parsed.username and not parsed.password and (host == 'facebook.com' or host.endswith('.facebook.com') or host.endswith('.fbcdn.net') or host.endswith('.facebook.net'))
 
 
+def _allowed_resource_url(url, interactive=False):
+    if _allowed_url(url):
+        return True
+    parsed = urlparse(url)
+    host = (parsed.hostname or '').lower()
+    # These are resources for a challenge completed by the editor, never a solver.
+    return (interactive and parsed.scheme == 'https' and not parsed.username and not parsed.password and
+            any(host == domain or host.endswith('.' + domain) for domain in ('arkoselabs.com', 'funcaptcha.com')))
+
+
+def _route_request(route):
+    request = route.request
+    allowed = _allowed_resource_url(request.url, _interactive)
+    if allowed and request.is_navigation_request():
+        # Arkose is permitted in a frame, not as a replacement top-level site.
+        try:
+            if request.frame.parent_frame is None:
+                allowed = _allowed_url(request.url)
+        except Exception:
+            allowed = False
+    if allowed:
+        route.continue_()
+    else:
+        host = urlparse(request.url).hostname
+        if host and len(_blocked_hosts) < 16:
+            _blocked_hosts.add(host)
+        route.abort()
+
+
 def _ensure():
     global _context, _page, _playwright
     if _context is not None:
@@ -85,7 +116,7 @@ def _ensure():
         options['proxy'] = {'server': proxy}
     try:
         _context = _playwright.chromium.launch_persistent_context(str(_profile), **options)
-        _context.route('**/*', lambda route: route.continue_() if _allowed_url(route.request.url) else route.abort())
+        _context.route('**/*', _route_request)
         _page = _context.pages[0] if _context.pages else _context.new_page()
         _page.set_default_timeout(12000)
     except Exception:
@@ -98,7 +129,8 @@ def _ensure():
 
 
 def _close():
-    global _context, _page, _playwright
+    global _context, _page, _playwright, _interactive
+    _interactive = False
     if _context:
         _context.close()
     if _playwright:
@@ -107,10 +139,11 @@ def _close():
 
 
 def _execute(action, args):
+    global _interactive
     from . import db
     if action == 'status':
         return {'open': _context is not None, 'enabled': db.get_setting('facebook_browser_enabled', '') == 'true',
-                'width': _WIDTH, 'height': _HEIGHT}
+                'width': _WIDTH, 'height': _HEIGHT, 'blocked_hosts': sorted(_blocked_hosts)}
     if action == 'disconnect':
         _close()
         if _profile.exists():
@@ -121,6 +154,12 @@ def _execute(action, args):
         raise SocialError('Conecta primero tu sesión privada de Facebook desde Ajustes de Desk.')
     if action not in {'start', 'read'} and _context is None:
         raise SocialError('Abre primero el navegador privado de Facebook.')
+    if action == 'start':
+        _interactive = True
+        _blocked_hosts.clear()
+    elif action == 'read':
+        _interactive = False
+        _blocked_hosts.clear()
     _ensure()
     if action == 'start':
         source = db.row("SELECT url FROM sources WHERE brand='cofrade' AND kind='social' AND active=1 AND official=1 ORDER BY name LIMIT 1")

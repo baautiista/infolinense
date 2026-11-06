@@ -1671,6 +1671,8 @@ function armFacebookBrowser(v) {
     let temporary;
     try {
       const response = await request('/api/facebook/browser/screenshot');
+      const blocked = response.headers.get('X-Facebook-Blocked-Hosts');
+      if (blocked) status.textContent = 'Facebook necesita recursos que el navegador ha bloqueado: ' + blocked + '. Comunica estos dominios, sin enviar contraseñas ni cookies.';
       temporary = URL.createObjectURL(await response.blob());
       const img = new Image(); img.src = temporary; await img.decode();
       canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);

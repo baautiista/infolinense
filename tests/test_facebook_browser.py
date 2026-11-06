@@ -20,6 +20,24 @@ class BrowserTests(unittest.TestCase):
         for url in ['http://www.facebook.com/', 'https://facebook.com.evil.invalid/', 'file:///etc/passwd', 'http://127.0.0.1/', 'https://example.org/']:
             self.assertFalse(browser._allowed_url(url))
 
+    def test_arkose_resources_only_load_during_manual_interaction(self):
+        for url in ['https://client-api.arkoselabs.com/v2/fixture/api.js', 'https://iframe.arkoselabs.com/frame', 'https://client-api.funcaptcha.com/fc/fixture']:
+            self.assertFalse(browser._allowed_resource_url(url))
+            self.assertTrue(browser._allowed_resource_url(url, interactive=True))
+        for url in ['http://client-api.arkoselabs.com/', 'https://arkoselabs.com.evil.invalid/', 'https://evilfuncaptcha.com/', 'https://user@client-api.arkoselabs.com/']:
+            self.assertFalse(browser._allowed_resource_url(url, interactive=True))
+
+    def test_challenge_frame_allowed_but_top_level_navigation_blocked(self):
+        for top_level in [False, True]:
+            route = Mock()
+            route.request.url = 'https://iframe.arkoselabs.com/fixture'
+            route.request.is_navigation_request.return_value = True
+            route.request.frame.parent_frame = None if top_level else Mock()
+            with patch.object(browser, '_interactive', True):
+                browser._route_request(route)
+            if top_level: route.abort.assert_called_once()
+            else: route.continue_.assert_called_once()
+
     def test_worker_does_not_return_browser_exception_values(self):
         with patch.object(browser, '_execute', side_effect=RuntimeError('fixture-sensitive-input')), self.assertRaises(SocialError) as error:
             browser.call('status')
@@ -59,7 +77,7 @@ class BrowserTests(unittest.TestCase):
     def test_private_screenshot_is_not_cacheable(self):
         main.app.dependency_overrides[main.require_auth] = lambda: True
         try:
-            with patch.object(browser, 'call', return_value=b'fixture-png'):
+            with patch.object(browser, 'call', side_effect=[b'fixture-png', {'blocked_hosts': []}]):
                 response = TestClient(main.app).get('/api/facebook/browser/screenshot')
             self.assertEqual(response.status_code, 200)
             self.assertEqual(response.headers['Cache-Control'], 'no-store')

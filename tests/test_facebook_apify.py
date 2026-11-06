@@ -114,7 +114,7 @@ class ApifyTests(unittest.TestCase):
     def test_provider_integration_fetches_once_for_all_official_sources(self):
         sources = [{'id': 1, 'name': 'One', 'url': URL, 'official': 1},
                    {'id': 2, 'name': 'Two', 'url': 'https://facebook.com/other.page', 'official': 1}]
-        with patch.dict(os.environ, {'FACEBOOK_READER_PROVIDER': 'apify'}), patch.object(reader.db, 'rows', return_value=sources), patch.object(apify, 'fetch', return_value=([], NOW.isoformat())) as fetch, patch.object(apify, 'page_posts', side_effect=[[dict(post(), id='123:1', published_at=NOW.isoformat())], SocialError('No identity')]), patch.object(reader, 'page_posts') as meta:
+        with patch.dict(os.environ, {'FACEBOOK_READER_PROVIDER': 'apify', 'FACEBOOK_ALLOW_PAID': 'true'}), patch.object(reader.db, 'rows', return_value=sources), patch.object(apify, 'fetch', return_value=([], NOW.isoformat())) as fetch, patch.object(apify, 'page_posts', side_effect=[[dict(post(), id='123:1', published_at=NOW.isoformat())], SocialError('No identity')]), patch.object(reader, 'page_posts') as meta:
             result = reader.recent()
         fetch.assert_called_once()
         meta.assert_not_called()

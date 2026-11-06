@@ -108,86 +108,73 @@ Nunca pongas `OPENAI_API_KEY`, `JWT_SECRET`, `ADMIN_PASSWORD` o una clave Supaba
 
 
 
-## Facebook de las hermandades en las tarjetas habituales
 
-En **El Cofrade Linense → Ordenar → Buscar**, Desk ejecuta la tarea guardada de
-Apify y trae sus publicaciones verificadas a la misma cola que las otras fuentes.
-Usan las tarjetas habituales con foto disponible, titular tomado del texto,
-hermandad, fecha y enlace original. Se ordenan por fecha descendente dentro de cada
-fuente y pasan por «Sirve/No sirve», Redacción y Revisión como cualquier candidata.
-No hay un listado aparte de publicaciones. Los errores de lectura y la última
-comprobación se consultan en **Ajustes → Fuentes de redes sociales**.
+## Facebook gratuito y automático en las tarjetas habituales
 
-### Configuración de servidor
+El modo por defecto es `FACEBOOK_READER_PROVIDER=public`: consulta anónimamente el
+HTML público de las páginas oficiales confirmadas, sin token, cookies de sesión,
+servicios externos de extracción ni consumo de crédito de Apify. Los resultados
+verificados entran en las tarjetas normales de Ordenar con foto, texto, fecha y fuente.
+No hay un listado separado. Tanto Buscar de Cofrade como el escaneo programado pueden
+consultar esta vía. Un fallo de Facebook no impide consultar las demás fuentes.
 
-- `FACEBOOK_READER_PROVIDER=apify`.
-- `APIFY_FACEBOOK_TASK_ID`: ID interno de la tarea guardada, visible en su URL de
-  Apify. También admite `usuario~tarea` o `usuario/tarea` si la API resuelve ese nombre.
-- `APIFY_TOKEN`: clave privada en las variables seguras del servidor; nunca en Git
-  ni en el navegador. Debe permitir iniciar la tarea y consultar ejecuciones/datasets.
-- `APIFY_FACEBOOK_MAX_CHARGE_USD`: tope por ejecución que Desk envía a Apify mediante
-  `maxTotalChargeUsd`, **1 USD por defecto** (configurable hasta 100 USD).
+**Cobertura parcial, no garantizada:** este método solo ve los datos de timeline que
+Facebook incluya en el HTML inicial. Puede exponer solo un post, exigir login o bloquear
+la consulta. Filtrar los últimos siete días no significa haber leído toda la semana.
+Desk registra la cobertura parcial o el fallo en Ajustes → Fuentes y no inventa cero
+resultados ni mezcla buscadores con la autoría de una hermandad. No se resuelven
+CAPTCHAs ni se intenta acceder a publicaciones privadas.
 
-El botón **Buscar de Cofrade puede consumir crédito en Apify**. Abrir Ordenar,
-recargarlo o los escaneos programados solo importan resultados disponibles; no
-lanzan extracciones pagadas. La búsqueda manual aplica las URL de las fuentes de
-Cofrade activas y confirmadas como oficiales, una ventana de siete días y un límite
-de 100 resultados por página. Este límite y la cobertura de Facebook pueden impedir
-recoger todos los posts de una página muy activa. El tope de gasto puede detener una
-extracción antes de terminar: revisar el registro de Apify si falla por saldo/límite.
-No hay que ejecutar primero la tarea desde la consola de Apify.
+El enfoque del timeline público se contrastó con el
+[código actual de RSS-Bridge](https://github.com/RSS-Bridge/rss-bridge/blob/master/bridges/FacebookBridge.php),
+que documenta esa limitación. El lector de Desk es una implementación propia y más
+restrictiva en autoría. Solo acepta nodos `timeline_list_feed_units`, actor de tipo
+Page cuya identidad coincide con la URL configurada, permalink de esa misma página
+y fecha comprobable en los últimos siete días. Rechaza perfiles personales y posts
+compartidos. La foto se toma de adjuntos de la publicación, nunca del avatar.
 
-La búsqueda sigue en segundo plano y el botón muestra progreso. Desk guarda el ID
-de la ejecución pendiente y lo reutiliza al reanudar después de una interrupción;
-un clic repetido durante la misma búsqueda no inicia otra. Si un POST queda sin
-confirmar, Desk se bloquea de forma conservadora antes de repetirlo, porque Apify
-podría haber aceptado y cobrado la solicitud. En ese caso revisar Runs y recuperar
-su ID con soporte antes de limpiar el ajuste `facebook_apify_run` de la base de datos.
-Se mantiene una sola réplica de Desk, como exige el despliegue con SQLite.
+En el entorno de desarrollo las peticiones reales se rechazaron por la política de
+red antes de llegar a Facebook. Las pruebas de parser usan HTML sintético y no
+certifican cobertura real. Para validación en vivo se necesita permitir HTTPS a
+`www.facebook.com` y probar las URL configuradas. Los dominios necesarios se guardaron
+en el borrador del entorno, pendiente de aplicación por el usuario. No se debe
+prometer cobertura completa o acceso permanente sin una prueba real.
 
-### Fuentes e identidad
+### Prohibición por defecto de ejecuciones pagadas
 
-Las direcciones iniciales de las hermandades están en `app/db.py`. En **Ajustes →
-Fuentes de redes sociales → Editar**, comprobar que cada enlace es la página oficial
-de la hermandad de La Línea y marcar la casilla correspondiente. No se certifican
-automáticamente resultados encontrados por nombre. Los perfiles personales, páginas
-sin confirmar y fuentes pausadas no aportan tarjetas.
+`FACEBOOK_ALLOW_PAID=false` impide iniciar tareas en Apify incluso si siguen presentes
+el token y el ID en Railway. Un selector antiguo `FACEBOOK_READER_PROVIDER=apify`
+se sustituye por la vía pública mientras no haya autorización explícita de pago.
+La función que inicia la tarea también rechaza el POST si falta esa autorización;
+no existe fallback pagado del lector público. No activar esa variable si el objetivo
+es no consumir servicios de pago.
 
-El adaptador de Facebook Posts Scraper comprueba `facebookId`, `user.id`,
-`pageAdLibrary.id`, la URL de la fuente y el permalink numérico `topLevelUrl` con su
-`postId`. El ID de la biblioteca de anuncios no se confunde con el ID de página.
-Solo se guardan posts con identidad concordante y fecha real dentro de los últimos
-siete días. Se descarta `sharedPost`; no se atribuye contenido de terceros a la
-hermandad. Los reels solo se admiten con permalink numérico verificado. Las imágenes
-se toman de la publicación, no de la foto de perfil. Nunca se inventan publicaciones
-ni se cargan datos de pruebas como reales.
+El adaptador de Apify se conserva solo como opción explícita (`FACEBOOK_ALLOW_PAID=true`
+y `FACEBOOK_READER_PROVIDER=apify`, con `APIFY_TOKEN` y `APIFY_FACEBOOK_TASK_ID`). Es una
+vía que consume crédito y no es la solución gratuita. Si se autoriza, Buscar inicia
+la tarea guardada y aplica un tope `APIFY_FACEBOOK_MAX_CHARGE_USD` de 1 USD por defecto;
+conserva el ID de ejecuciones pendientes para evitar duplicarlas tras interrupciones.
+Ni el tope ni el crédito gratuito garantizan coste cero. No se ha llamado a esta vía
+pagada durante el desarrollo del lector público.
 
-La base de datos migra automáticamente `facebook_post_id` y `facebook_page_id` en
-`candidates`. Esos marcadores se escriben solo desde el lector verificado y permiten
-mostrar las tarjetas de Facebook sin reactivar candidatas antiguas de buscadores.
-La importación conserva decisiones editoriales y deduplica por página/publicación;
-el periodo de estas tarjetas es siete días, independiente del filtro general de dos
-días. La investigación usa el texto importado sin volver a extraer HTML de Facebook.
+### Cola editorial y fuentes
 
-### Acceso externo y comprobaciones
+Las fuentes iniciales están en `app/db.py`. En Ajustes → Fuentes de redes sociales →
+Editar se confirma que el enlace es el oficial de la hermandad de La Línea. Nunca se
+certifican fuentes por el nombre o por menciones. Las fuentes pausadas o sin confirmar
+no aportan tarjetas.
 
-Permitir HTTPS a `api.apify.com`; el navegador debe poder cargar los hosts CDN de
-las fotos que entregue Facebook. Esta vía no necesita administrar las páginas en
-Meta ni Page Public Content Access. La API usada se contrastó con la
-[especificación oficial de Apify](https://github.com/apify/apify-docs/tree/master/apify-api/openapi).
+La base de datos migra `facebook_post_id` y `facebook_page_id` en `candidates`. Se
+escriben solo desde el importador verificado. La importación deduplica por identidad,
+conserva decisiones editoriales y usa una ventana de siete días independiente del
+filtro general. La investigación usa el texto importado, sin volver a pedir el HTML.
+Los fallos y las lecturas parciales se ven en las fuentes existentes, sin secciones nuevas.
 
-El JSON real aportado el 5 de noviembre de 2026 se pudo interpretar: 29 posts propios
-de 10 fuentes tras excluir tres compartidos; otras tres fuentes devolvían errores.
-Eso no garantiza cobertura futura ni que la ejecución de producción haya terminado.
-No se ha lanzado desde este entorno una extracción real: no tiene el token de Railway.
+La API oficial de Meta sigue disponible como `FACEBOOK_READER_PROVIDER=meta` si se
+dispone de tokens de páginas autorizadas con `pages_read_engagement`; OAuth necesita
+`pages_show_list`, `META_APP_ID`, `META_APP_SECRET` y `PUBLIC_BASE_URL`. Un token de
+El Cofrade no da permiso para leer todas las hermandades.
 
 Pruebas: `PYTHONPATH=. .venv/bin/python -m unittest discover -s tests -p 'test_facebook*.py'`.
-Cubren atribución, fechas, importación a la cola, foto/texto, conservación de decisiones,
-inicio de la tarea, reanudación sin duplicar la ejecución y tratamiento de errores.
-
-La API oficial de Meta sigue disponible con `FACEBOOK_READER_PROVIDER=meta`, tokens
-por página con `pages_read_engagement`, y `pages_show_list` para enumerarlas mediante
-OAuth (`META_APP_ID`, `META_APP_SECRET`, `PUBLIC_BASE_URL`). Un token de El Cofrade no
-concede acceso a las páginas de las hermandades. `META_PAGE_ID`/`META_PAGE_TOKEN` o
-`META_READER_PAGE_TOKENS` (objeto JSON de ID a token) configuran acceso de lectura sin
-poner credenciales en código. Para páginas ajenas se requiere autorización de Meta.
+Incluyen autoría, fechas, cobertura parcial explícita, bloqueo del POST de pago,
+continuación de fuentes gratuitas tras errores y conservación de tarjetas/decisiones.

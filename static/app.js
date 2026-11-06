@@ -97,7 +97,7 @@ function go(target, fromHash) {
   $('#title').textContent = { sort: 'Ordenar', writing: 'Redacción', review: 'Revisar', publish: 'Publicar', settings: 'Ajustes', editor: 'Noticia', upload: 'Subir noticia', agenda: 'Agenda', stats: 'Estadísticas', topics: 'Temas', efemerides: 'Efemérides Linenses' }[view];
   $('#backBtn').hidden = view !== 'editor';
   $('#scanBtn').hidden = view !== 'sort';
-  $('#scanBtn').title = BRAND === 'cofrade' ? 'Consulta las fuentes y ejecuta la tarea de Facebook en Apify; puede consumir crédito.' : 'Buscar noticias nuevas';
+  $('#scanBtn').title = BRAND === 'cofrade' ? 'Consulta las fuentes y los resultados de Facebook disponibles. Las extracciones de pago están desactivadas por defecto.' : 'Buscar noticias nuevas';
   render(); counts();
 }
 async function counts() {
@@ -1373,7 +1373,7 @@ async function settings(v) {
       <form id="addFb" class="soc-form"><select name="network"><option value="facebook">Facebook</option><option value="instagram">Instagram</option></select><input name="account" placeholder="URL, usuario o identificador" required><input name="name" placeholder="Nombre (p. ej. AVV La Atunara)" required><button class="btn primary small">Añadir</button></form></section>
     <button class="btn" onclick="logout()">Salir</button>`;
   const socUrl = (net, acc) => { acc = acc.trim(); if (/^https?:\/\//i.test(acc)) return acc; acc = acc.replace(/^@/, ''); return net === 'instagram' ? `https://www.instagram.com/${acc}/` : /^\d+$/.test(acc) ? `https://www.facebook.com/profile.php?id=${acc}` : `https://www.facebook.com/${acc}`; };
-  const MODE = { apify: ['Apify', 'pub'], meta: ['Meta', 'pub'], api: ['API', 'pub'], buscador: ['Buscador (parcial)', 'warn'], no: ['No se puede leer', 'bad'] };
+  const MODE = { public: ['Lectura gratuita (parcial)', 'warn'], apify: ['Apify', 'pub'], meta: ['Meta', 'pub'], api: ['API', 'pub'], buscador: ['Buscador (parcial)', 'warn'], no: ['No se puede leer', 'bad'] };
   const drawSoc = () => api('/api/social').then(d => { $('#fbList').innerHTML = d.watched.filter(x => (x.brand || 'infolinense') === SB).map(s => { const m = MODE[s.access_mode] || ['Sin revisar', '']; const net = s.network || (/instagram/.test(s.url) ? 'instagram' : 'facebook');
       return `<div class="soc-row"><label class="switch"><input type="checkbox" ${s.active ? 'checked' : ''} onchange="toggleSource(${s.id})"></label><span class="net-badge ${net}">${net === 'instagram' ? 'Instagram' : 'Facebook'}</span>
         <div class="grow"><b>${esc(s.name)}</b><a class="small" href="${safeUrl(s.url)}" target="_blank" rel="noopener">${esc(s.url.replace(/^https?:\/\/(www\.)?/, ''))}</a>

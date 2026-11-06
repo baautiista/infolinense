@@ -28,6 +28,11 @@ def post(number, days=1, author='123', **changes):
 
 
 class ReaderTests(unittest.TestCase):
+    def setUp(self):
+        self.env = patch.dict(os.environ, {'FACEBOOK_READER_PROVIDER': 'meta', 'FACEBOOK_ALLOW_PAID': 'false'})
+        self.env.start()
+        self.addCleanup(self.env.stop)
+
     def read(self, pages, url='https://www.facebook.com/test.page', metadata=PAGE):
         calls = []
         def graph(method, path, params):
@@ -95,10 +100,10 @@ class ReaderTests(unittest.TestCase):
 
     def test_configuration_selection_and_safe_diagnostics(self):
         from app.facebook_reader import configuration
-        cases = [('', 'fixture-token', 'fixture-task', 'apify'),
+        cases = [('', 'fixture-token', 'fixture-task', 'public'),
                  ('meta', 'fixture-token', 'fixture-task', 'meta'),
-                 ('"apify"', 'fixture-token', 'fixture-task', 'apify'),
-                 ('', '', '', 'meta'), ('wrong', '', '', 'invalid')]
+                 ('"apify"', 'fixture-token', 'fixture-task', 'public'),
+                 ('', '', '', 'public'), ('wrong', '', '', 'invalid')]
         for provider, token, task, expected in cases:
             with patch.dict(os.environ, {'FACEBOOK_READER_PROVIDER': provider, 'APIFY_TOKEN': token, 'APIFY_FACEBOOK_TASK_ID': task}):
                 result = configuration()

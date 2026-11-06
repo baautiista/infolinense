@@ -90,11 +90,15 @@ def configuration():
     configured = os.getenv('FACEBOOK_READER_PROVIDER', '').strip().strip('\"\'').lower()
     token_present = bool(os.getenv('APIFY_TOKEN', '').strip())
     task_present = bool(os.getenv('APIFY_FACEBOOK_TASK_ID', '').strip())
-    provider = configured or ('apify' if token_present and task_present else 'meta')
-    return {'provider': provider if provider in {'meta', 'apify'} else 'invalid',
+    provider = configured or 'public'
+    if provider == 'apify':
+        from .facebook_apify import paid_runs_allowed
+        if not paid_runs_allowed():
+            provider = 'public'
+    return {'provider': provider if provider in {'meta', 'apify', 'public'} else 'invalid',
             'selection': 'explicit' if configured else 'automatic',
             'apify_token_present': token_present, 'apify_task_present': task_present,
-            'reader_revision': '2026-11-06.2'}
+            'reader_revision': '2026-11-06.free'}
 
 
 def recent(run_id=None):
@@ -124,15 +128,20 @@ def recent(run_id=None):
                     if external_error:
                         raise meta.SocialError(external_error)
                     posts = facebook_apify.page_posts(source['url'], external_rows)
+                elif provider == 'public':
+                    from . import facebook_public
+                    posts = facebook_public.page_posts(source['url'])['items']
                 elif provider == 'meta':
                     posts = page_posts(source['url'])
                 else:
-                    raise meta.SocialError('FACEBOOK_READER_PROVIDER debe ser meta o apify.')
+                    raise meta.SocialError('FACEBOOK_READER_PROVIDER debe ser public, meta o apify.')
                 for post in posts:
                     if post['id'] not in seen:
                         items.append(dict(post, brotherhood=source['name'], source_id=source['id']))
                         seen.add(post['id'])
                 state.update(status='ok', count=len(posts))
+                if provider == 'public':
+                    state.update(status='partial', message=facebook_public.LIMITATION)
             except meta.SocialError as exc:
                 message = str(exc) if provider != 'meta' else 'Meta no permite verificar o leer esta página. ' + REQUIREMENTS
                 state.update(status='unavailable', message=message)
@@ -148,13 +157,15 @@ def import_recent(run_id=None):
     added, errors = [], []
     counts = {page['source_id']: 0 for page in result['pages']}
     for page in result['pages']:
-        if page['status'] != 'ok':
+        if page['status'] not in {'ok', 'partial'}:
             errors.append(page['name'] + ': ' + page['message'])
             db.exec_('UPDATE sources SET last_checked_at=CURRENT_TIMESTAMP,last_error=? WHERE id=?',
                      (page['message'], page['source_id']))
         else:
-            db.exec_("UPDATE sources SET access_mode=?,last_checked_at=CURRENT_TIMESTAMP,last_success_at=CURRENT_TIMESTAMP,last_error=NULL,items_seen=? WHERE id=?",
-                     (result['provider'], page['count'], page['source_id']))
+            if page['status'] == 'partial':
+                errors.append(page['name'] + ': ' + page['message'])
+            db.exec_("UPDATE sources SET access_mode=?,last_checked_at=CURRENT_TIMESTAMP,last_success_at=CURRENT_TIMESTAMP,last_error=?,items_seen=? WHERE id=?",
+                     (result['provider'], page.get('message'), page['count'], page['source_id']))
     for post in result['items']:
         source = db.row("SELECT * FROM sources WHERE id=? AND active=1 AND official=1 AND brand='cofrade'", (post['source_id'],))
         if not source:

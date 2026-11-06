@@ -197,9 +197,15 @@ def page_posts(url, rows, now=None):
     return sorted(items, key=lambda item: item['published_at'], reverse=True)
 
 
+def paid_runs_allowed():
+    return os.getenv('FACEBOOK_ALLOW_PAID', 'false').strip().lower() in {'true', '1', 'yes', 'on'}
+
+
 def run_task(urls, progress):
     """Explicit user-triggered paid operation. Resume persisted runs instead of duplicating them."""
     import json
+    if not paid_runs_allowed():
+        raise meta.SocialError('Las extracciones de pago están desactivadas. No se ha iniciado ninguna tarea en Apify.')
     token = os.getenv('APIFY_TOKEN', '').strip()
     task = os.getenv('APIFY_FACEBOOK_TASK_ID', '').strip().replace('/', '~')
     if not token or not re.fullmatch(r'[A-Za-z0-9_-]+(?:~[A-Za-z0-9_-]+)?', task):

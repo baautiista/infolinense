@@ -74,7 +74,7 @@ class WorkflowTests(unittest.TestCase):
     def test_background_job_imports_the_exact_run_into_normal_queue(self):
         from app import facebook_jobs as jobs
         jobs._lock.acquire()
-        with patch.object(reader, 'configuration', return_value={'provider': 'apify'}), patch.object(apify, 'run_task', return_value='run123') as run, patch.object(reader, 'import_recent', return_value={'added': [99], 'errors': []}) as import_posts:
+        with patch.object(apify, 'paid_runs_allowed', return_value=True), patch.object(reader, 'configuration', return_value={'provider': 'apify'}), patch.object(apify, 'run_task', return_value='run123') as run, patch.object(reader, 'import_recent', return_value={'added': [99], 'errors': []}) as import_posts:
             jobs._run(lambda: {'added': [100], 'errors': []})
         import_posts.assert_called_once_with(run_id='run123')
         self.assertEqual(run.call_args.args[0], ['https://facebook.com/fixture.page'])
@@ -85,7 +85,7 @@ class WorkflowTests(unittest.TestCase):
     def test_manual_run_starts_saved_task_with_only_approved_urls_and_persists_id(self):
         response = Mock(status_code=201)
         response.json.return_value = {'data': {'id': 'run123'}}
-        env = {'APIFY_TOKEN': 'fixture-secret', 'APIFY_FACEBOOK_TASK_ID': 'task123'}
+        env = {'APIFY_TOKEN': 'fixture-secret', 'APIFY_FACEBOOK_TASK_ID': 'task123', 'FACEBOOK_ALLOW_PAID': 'true'}
         with patch.dict(os.environ, env), patch.object(apify.requests, 'post', return_value=response) as post, patch.object(apify, '_get', return_value={'data': {'status': 'SUCCEEDED'}}):
             run = apify.run_task(['https://facebook.com/fixture.page']*2, Mock())
         self.assertEqual(run, 'run123')
@@ -98,9 +98,27 @@ class WorkflowTests(unittest.TestCase):
             self.assertEqual(apify.run_task(['https://facebook.com/fixture.page'], Mock()), run)
         post.assert_not_called()
 
+    def test_default_zero_cost_policy_prevents_any_paid_request(self):
+        with patch.dict(os.environ, {'FACEBOOK_ALLOW_PAID': ''}), patch.object(apify.requests, 'post') as post, self.assertRaisesRegex(apify.meta.SocialError, 'pago están desactivadas'):
+            apify.run_task(['https://facebook.com/fixture.page'], Mock())
+        post.assert_not_called()
+
+    def test_free_sources_continue_even_when_facebook_cannot_be_read(self):
+        from app import facebook_jobs as jobs
+        jobs.state.update(added=0, errors=[])
+        jobs._lock.acquire()
+        with patch.object(apify, 'paid_runs_allowed', return_value=False), patch.object(reader, 'configuration', return_value={'provider': 'apify'}), patch.object(apify, 'run_task') as run, patch.object(reader, 'import_recent', side_effect=apify.meta.SocialError('No hay resultados existentes')):
+            other = Mock(return_value={'added': [20], 'errors': []})
+            jobs._run(other)
+        run.assert_not_called()
+        other.assert_called_once()
+        self.assertEqual(jobs.state['added'], 1)
+        self.assertEqual(jobs.state['errors'], ['No hay resultados existentes'])
+        self.assertFalse(jobs._lock.locked())
+
     def test_unknown_start_is_not_retried_as_another_paid_run(self):
         db.set_setting('facebook_apify_run', '{"task":"task123","id":"pending"}')
-        with patch.dict(os.environ, {'APIFY_TOKEN': 'fixture', 'APIFY_FACEBOOK_TASK_ID': 'task123'}), patch.object(apify.requests, 'post') as post, self.assertRaisesRegex(apify.meta.SocialError, 'sin confirmar'):
+        with patch.dict(os.environ, {'APIFY_TOKEN': 'fixture', 'APIFY_FACEBOOK_TASK_ID': 'task123', 'FACEBOOK_ALLOW_PAID': 'true'}), patch.object(apify.requests, 'post') as post, self.assertRaisesRegex(apify.meta.SocialError, 'sin confirmar'):
             apify.run_task(['https://facebook.com/fixture.page'], Mock())
         post.assert_not_called()
 

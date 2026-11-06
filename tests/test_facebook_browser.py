@@ -29,6 +29,22 @@ class BrowserTests(unittest.TestCase):
         for url in ['http://client-api.arkoselabs.com/', 'https://arkoselabs.com.evil.invalid/', 'https://evilfuncaptcha.com/', 'https://user@client-api.arkoselabs.com/']:
             self.assertFalse(browser._allowed_resource_url(url, interactive=True))
 
+    def test_facebook_sandbox_challenge_is_allowed_only_on_exact_manual_path(self):
+        url='https://www.fbsbx.com/captcha/arkose/iframe/?fixture=public-test'
+        self.assertTrue(browser._allowed_resource_url(url, interactive=True))
+        self.assertFalse(browser._allowed_resource_url(url))
+        for url in ['https://www.fbsbx.com/other/resource', 'https://www.fbsbx.com.evil.invalid/captcha/arkose/iframe/',
+                    'http://www.fbsbx.com/captcha/arkose/iframe/', 'https://user@www.fbsbx.com/captcha/arkose/iframe/']:
+            self.assertFalse(browser._allowed_resource_url(url, interactive=True))
+        for top_level in [True,False]:
+            route=Mock()
+            route.request.url='https://www.fbsbx.com/captcha/arkose/iframe/'
+            route.request.is_navigation_request.return_value=True
+            route.request.frame.parent_frame=None if top_level else Mock()
+            with patch.object(browser,'_interactive',True):browser._route_request(route)
+            if top_level:route.abort.assert_called_once()
+            else:route.continue_.assert_called_once()
+
     def test_challenge_frame_allowed_but_top_level_navigation_blocked(self):
         for top_level in [False, True]:
             route = Mock()

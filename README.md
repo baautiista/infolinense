@@ -237,3 +237,8 @@ retira automáticamente un bloqueo perteneciente a otro equipo. El cierre normal
 Desk intenta cerrar Chromium y guardar la sesión antes de liberar el perfil.
 Los errores de arranque distinguen perfil en uso, permisos, disco y terminación por
 el sistema; no se devuelven los argumentos o registros internos del navegador.
+
+El marco de seguridad de Meta `https://www.fbsbx.com/captcha/arkose/` también se
+permite únicamente como recurso durante la interacción manual. No se habilita el
+resto de `fbsbx.com` ni la navegación principal a ese dominio. Los parámetros de
+la comprobación no se registran ni se reutilizan; la persona completa la prueba.

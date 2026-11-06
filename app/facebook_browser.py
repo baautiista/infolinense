@@ -74,7 +74,8 @@ def _allowed_resource_url(url, interactive=False):
     host = (parsed.hostname or '').lower()
     # These are resources for a challenge completed by the editor, never a solver.
     return (interactive and parsed.scheme == 'https' and not parsed.username and not parsed.password and
-            any(host == domain or host.endswith('.' + domain) for domain in ('arkoselabs.com', 'funcaptcha.com')))
+            (any(host == domain or host.endswith('.' + domain) for domain in ('arkoselabs.com', 'funcaptcha.com')) or
+             (host in {'www.fbsbx.com', 'fbsbx.com'} and parsed.path.startswith('/captcha/arkose/'))))
 
 
 def _route_request(route):

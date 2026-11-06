@@ -107,6 +107,8 @@ def init_db():
         'scope':'TEXT',
         'social_type':'TEXT',
         'image_hint':'TEXT',
+        'facebook_post_id':'TEXT',
+        'facebook_page_id':'TEXT',
         'merged_into':'INTEGER',
         'plan_day':'TEXT',
         'manual_photo':'TEXT',

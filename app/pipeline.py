@@ -27,7 +27,7 @@ def investigate_candidate(cid):
     if not c: raise RuntimeError('Candidata no existe')
     if c['status'] not in ('new', 'needs_config'): raise ValueError('La noticia ya ha avanzado desde el radar')
     manual = str(c.get('url') or '').startswith('manual:')
-    src_text = c.get('raw_text') or '' if manual else sources.fetch_article_text(c.get('url', ''))  # subida a mano: su propio texto
+    src_text = (c.get('raw_text') or c.get('excerpt') or '') if manual or c.get('facebook_post_id') else sources.fetch_article_text(c.get('url', ''))  # subida a mano: su propio texto
     if len(src_text or '') < 300 and len(c.get('excerpt') or '') > len(src_text or ''):
         src_text = c.get('excerpt') or src_text  # si la página no se deja leer, al menos el resumen completo de la fuente
     extra = sources.links_for([cid]).get(cid, [])[:3]  # la misma noticia en otras fuentes: se combinan

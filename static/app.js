@@ -97,6 +97,7 @@ function go(target, fromHash) {
   $('#title').textContent = { sort: 'Ordenar', writing: 'Redacción', review: 'Revisar', publish: 'Publicar', settings: 'Ajustes', editor: 'Noticia', upload: 'Subir noticia', agenda: 'Agenda', stats: 'Estadísticas', topics: 'Temas', efemerides: 'Efemérides Linenses' }[view];
   $('#backBtn').hidden = view !== 'editor';
   $('#scanBtn').hidden = view !== 'sort';
+  $('#scanBtn').title = BRAND === 'cofrade' ? 'Consulta las fuentes y ejecuta la tarea de Facebook en Apify; puede consumir crédito.' : 'Buscar noticias nuevas';
   render(); counts();
 }
 async function counts() {
@@ -119,7 +120,7 @@ function nextPhase(label, target, note = '') { return `<div class="next"><p>${no
 $('#scanBtn').onclick = async () => {
   const b = $('#scanBtn'); b.disabled = true; b.textContent = 'Buscando…';
   try {
-    const r = await api('/api/scan', { method: 'POST' });
+    const r = await api('/api/scan?brand=' + encodeURIComponent(BRAND), { method: 'POST' });
     if (!r.started) toast('Ya hay una búsqueda en marcha: van llegando');
     let shown = 0;
     const tick = async () => {
@@ -134,12 +135,13 @@ $('#scanBtn').onclick = async () => {
         b.disabled = false; b.textContent = 'Buscar';
         const failures = st.errors?.length ? ' · ' + st.errors.length + ' fuentes con error' : '';
         toast('Búsqueda terminada: ' + (st.added || 0) + ' nuevas' + failures);
+        if (st.errors?.length) toast(st.errors[0]);
       }
     };
     setTimeout(tick, 1500);
   } catch (e) { toast(e.message); b.disabled = false; b.textContent = 'Buscar' }
 };
-let queue = [], groups = BLOCKS, cofradePages = [], cofradeFeed = { items: [], pages: [] };
+let queue = [], groups = BLOCKS;
 let queueSearch = '', newsSearchBusy = false, newsSearchNote = '', newsSearchError = false;
 // Cofrade y Carnaval se ordenan por sus fuentes (cada hermandad, cada web…), no por los bloques de InfoLinense.
 const ownBrand = () => BRAND !== 'all' && BRAND !== 'infolinense';
@@ -156,17 +158,8 @@ async function sortView(v) {
     const queuedNames = [...new Set(queue.map(n => n.source_name).filter(name => activeNames.includes(name)))];
     queue.forEach(n => { n.group = queuedNames.includes(n.source_name) ? n.source_name : 'Otras fuentes' });
     groups = [...queuedNames, 'Otras fuentes'];
-    cofradePages = BRAND === 'cofrade'
-      ? brandSources.filter(x => x.kind === 'social' && host(x.url) === 'facebook.com').sort((a, b) => a.name.localeCompare(b.name, 'es'))
-      : [];
   } else {
-    cofradePages = [];
     groups = BLOCKS;
-  }
-  cofradeFeed = { items: [], pages: [] };
-  if (BRAND === 'cofrade') {
-    try { cofradeFeed = await api('/api/social/facebook/brotherhoods') }
-    catch (e) { cofradeFeed.error = 'No se pudieron consultar las publicaciones de Facebook.' }
   }
   drawSort(v);
 }
@@ -197,36 +190,6 @@ function gptWidget() {
     <button type="button" class="btn small primary" id="gptUp">Subir lo redactado (en lote)</button></div></section>
     <section class="gpt-export"><div><b>Para Canva</b><span class="muted small"> · un solo diseño con todas las noticias subidas en lote (titular y entradilla, sin imagen)</span></div>
     <div class="row wrap"><button type="button" class="btn small" id="canvaBatch">Crear el diseño en Canva</button><span class="muted small" id="canvaBatchOut"></span></div></section>`;
-}
-function cofradePagesWidget() {
-  if (BRAND !== 'cofrade' || !cofradePages.length) return '';
-  return `<section class="cofrade-pages" aria-labelledby="cofradePagesTitle">
-    <div class="cofrade-pages-head">
-      <div><h2 id="cofradePagesTitle">Páginas de Facebook de las hermandades</h2>
-        <p class="muted small">Publicaciones de páginas oficiales de La Línea · últimos 7 días.</p></div>
-      <button type="button" class="btn small" id="manageCofradePages">Gestionar</button>
-    </div>
-    <div class="cofrade-page-grid">${cofradePages.map(s => `<a class="cofrade-page-card" href="${safeUrl(s.url)}" target="_blank" rel="noopener noreferrer">
-      <span class="cofrade-page-icon" aria-hidden="true">f</span>
-      <span class="cofrade-page-name">${esc(s.name)}</span>
-      <span class="cofrade-page-state">${!s.active ? 'Seguimiento pausado' : s.official ? 'Página confirmada' : 'Pendiente de confirmar como oficial'} · Ver página ↗</span>
-    </a>`).join('')}</div>
-    ${cofradeFeed.error ? `<p class="error small">${esc(cofradeFeed.error)}</p>` : ''}
-    ${cofradeFeed.configuration ? `<p class="muted small">Lector activo: <b>${cofradeFeed.provider === 'apify' ? 'Apify' : cofradeFeed.provider === 'meta' ? 'Meta' : 'Configuración no válida'}</b> · Apify: ${cofradeFeed.configuration.apify_token_present ? 'token recibido' : 'falta el token'} · ${cofradeFeed.configuration.apify_task_present ? 'tarea recibida' : 'falta la tarea'}. <span>Revisión ${esc(cofradeFeed.configuration.reader_revision)}</span></p>` : ''}
-    ${cofradeFeed.extraction_at ? `<p class="muted small">Última extracción: ${esc(new Date(cofradeFeed.extraction_at).toLocaleString('es-ES', { timeZone: 'Europe/Madrid' }))}</p>` : ''}
-    <div class="cofrade-posts">${(cofradeFeed.items || []).map(p => `<article class="cofrade-post">
-      <b>${esc(p.brotherhood)}</b><p class="muted small">${esc(p.page_name)} · <time datetime="${esc(p.published_at)}">${esc(new Date(p.published_at).toLocaleString('es-ES', { timeZone: 'Europe/Madrid' }))}</time></p>
-      <p class="cofrade-post-text">${esc(p.text)}</p>
-      ${p.image ? `<img src="${safeUrl(p.image)}" alt="Imagen de la publicación de ${esc(p.brotherhood)}" loading="lazy" referrerpolicy="no-referrer">` : ''}
-      <a href="${safeUrl(p.url)}" target="_blank" rel="noopener noreferrer">Ver publicación original ↗</a>
-    </article>`).join('')}</div>
-    ${!cofradeFeed.error ? `<p class="muted small">${(cofradeFeed.items || []).length ? `${cofradeFeed.items.length} publicaciones verificadas de los últimos 7 días.` :
-      (cofradeFeed.pages || []).some(p => p.status === 'unverified') ? 'La lectura no está completa: hay páginas sin confirmar como oficiales. Pulsa Gestionar → Editar y confirma las páginas que hayas comprobado.' :
-      (cofradeFeed.pages || []).some(p => p.status === 'unavailable') ? 'No se ha podido completar la lectura. Revisa el motivo que aparece debajo de cada página.' :
-      !(cofradeFeed.pages || []).length ? 'No hay páginas oficiales activas configuradas para leer.' :
-      'Lectura completada: no hay publicaciones propias de estas páginas dentro de los últimos 7 días.'}</p>` : ''}
-    ${(cofradeFeed.pages || []).filter(p => p.status !== 'ok' && p.message !== cofradeFeed.error).map(p => `<p class="cofrade-pages-note"><b>${esc(p.name)}:</b> ${esc(p.message)}</p>`).join('')}
-  </section>`;
 }
 function armGpt(v) {
   const qs = () => `brand=${encodeURIComponent(BRAND)}`;
@@ -306,11 +269,9 @@ function drawSort(v = $('#view')) {
         <span class="deck-count">${items.length} ${items.length === 1 ? 'queda' : 'quedan'}</span>
         <button class="round yes" id="yesBtn" aria-label="Sirve" title="Sirve (→)">✓</button></div>
       <p class="deck-hint">Desliza a la derecha si sirve y a la izquierda si no.</p>`
-    : queue.length ? '' : `<p class="empty">${BRAND === 'cofrade' ? 'La cola de otras fuentes está vacía. Las publicaciones de Facebook y su estado de lectura aparecen en el panel de hermandades de arriba.' : 'Todo ordenado. Pulsa «Buscar» para traer noticias nuevas.'}</p>${nextPhase('Ir a Redacción', 'writing', 'Las marcadas te esperan en Redacción para que las rellenes.')}`}`;
-  v.insertAdjacentHTML('afterbegin', agendaStrip() + cofradePagesWidget() + searchWidget() + gptWidget());
+    : queue.length ? '' : `<p class="empty">Todo ordenado. Pulsa «Buscar» para traer noticias nuevas.</p>${nextPhase('Ir a Redacción', 'writing', 'Las marcadas te esperan en Redacción para que las rellenes.')}`}`;
+  v.insertAdjacentHTML('afterbegin', agendaStrip() + searchWidget() + gptWidget());
   armGpt(v);
-  const managePages = v.querySelector('#manageCofradePages');
-  if (managePages) managePages.onclick = () => { settingsBrand = 'cofrade'; go('settings') };
   const input = v.querySelector('#newsQuery');
   input.oninput = e => {
     const position = e.target.selectionStart;
@@ -1412,7 +1373,7 @@ async function settings(v) {
       <form id="addFb" class="soc-form"><select name="network"><option value="facebook">Facebook</option><option value="instagram">Instagram</option></select><input name="account" placeholder="URL, usuario o identificador" required><input name="name" placeholder="Nombre (p. ej. AVV La Atunara)" required><button class="btn primary small">Añadir</button></form></section>
     <button class="btn" onclick="logout()">Salir</button>`;
   const socUrl = (net, acc) => { acc = acc.trim(); if (/^https?:\/\//i.test(acc)) return acc; acc = acc.replace(/^@/, ''); return net === 'instagram' ? `https://www.instagram.com/${acc}/` : /^\d+$/.test(acc) ? `https://www.facebook.com/profile.php?id=${acc}` : `https://www.facebook.com/${acc}`; };
-  const MODE = { api: ['API', 'pub'], buscador: ['Buscador (parcial)', 'warn'], no: ['No se puede leer', 'bad'] };
+  const MODE = { apify: ['Apify', 'pub'], meta: ['Meta', 'pub'], api: ['API', 'pub'], buscador: ['Buscador (parcial)', 'warn'], no: ['No se puede leer', 'bad'] };
   const drawSoc = () => api('/api/social').then(d => { $('#fbList').innerHTML = d.watched.filter(x => (x.brand || 'infolinense') === SB).map(s => { const m = MODE[s.access_mode] || ['Sin revisar', '']; const net = s.network || (/instagram/.test(s.url) ? 'instagram' : 'facebook');
       return `<div class="soc-row"><label class="switch"><input type="checkbox" ${s.active ? 'checked' : ''} onchange="toggleSource(${s.id})"></label><span class="net-badge ${net}">${net === 'instagram' ? 'Instagram' : 'Facebook'}</span>
         <div class="grow"><b>${esc(s.name)}</b><a class="small" href="${safeUrl(s.url)}" target="_blank" rel="noopener">${esc(s.url.replace(/^https?:\/\/(www\.)?/, ''))}</a>

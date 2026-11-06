@@ -97,7 +97,7 @@ def configuration():
             'reader_revision': '2026-11-06.2'}
 
 
-def recent():
+def recent(run_id=None):
     items, pages = [], []
     config = configuration()
     provider = config['provider']
@@ -118,7 +118,7 @@ def recent():
                 if provider == 'apify':
                     if external_rows is None and external_error is None:
                         try:
-                            external_rows, extraction_at = facebook_apify.fetch()
+                            external_rows, extraction_at = facebook_apify.fetch(run_id=run_id) if run_id else facebook_apify.fetch()
                         except meta.SocialError as exc:
                             external_error = str(exc)
                     if external_error:
@@ -139,3 +139,45 @@ def recent():
         pages.append(state)
     items.sort(key=lambda p: p['published_at'], reverse=True)
     return {'items': items, 'pages': pages, 'days': 7, 'requirements': requirements, 'provider': provider, 'extraction_at': extraction_at, 'configuration': config, 'error': external_error}
+
+
+def import_recent(run_id=None):
+    """Import verified posts into the normal candidates queue, preserving editorial decisions."""
+    from . import sources
+    result = recent(run_id=run_id) if run_id else recent()
+    added, errors = [], []
+    counts = {page['source_id']: 0 for page in result['pages']}
+    for page in result['pages']:
+        if page['status'] != 'ok':
+            errors.append(page['name'] + ': ' + page['message'])
+            db.exec_('UPDATE sources SET last_checked_at=CURRENT_TIMESTAMP,last_error=? WHERE id=?',
+                     (page['message'], page['source_id']))
+        else:
+            db.exec_("UPDATE sources SET access_mode=?,last_checked_at=CURRENT_TIMESTAMP,last_success_at=CURRENT_TIMESTAMP,last_error=NULL,items_seen=? WHERE id=?",
+                     (result['provider'], page['count'], page['source_id']))
+    for post in result['items']:
+        source = db.row("SELECT * FROM sources WHERE id=? AND active=1 AND official=1 AND brand='cofrade'", (post['source_id'],))
+        if not source:
+            continue
+        remote = str(post['id']).split(':')[-1].split('_')[-1]
+        existing = db.row('SELECT id FROM candidates WHERE url=? OR (facebook_post_id=? AND facebook_page_id=?)',
+                          (post['url'], remote, post['page_id']))
+        if existing:
+            # Refresh metadata without resetting status, priority, or a decision already made.
+            db.exec_('UPDATE candidates SET facebook_post_id=?,facebook_page_id=?,image_hint=?,published_at=?,source_id=?,source_name=?,outlet=?,brand=? WHERE id=?',
+                     (remote, post['page_id'], post.get('image') or '', post['published_at'], source['id'], source['name'], source['name'], 'cofrade', existing['id']))
+            continue
+        title = (post.get('title') or post.get('text') or '').strip() or 'Publicación de ' + source['name']
+        cid = sources.add_candidate(title, post['url'], post.get('text') or post.get('excerpt') or '',
+                                   source['name'], source['id'], post['published_at'],
+                                   dict(source, local_scope=1, official=1), outlet=source['name'],
+                                   image=post.get('image') or '', verified_facebook=True)
+        if cid:
+            db.exec_('UPDATE candidates SET facebook_post_id=?,facebook_page_id=?,raw_text=? WHERE id=?',
+                     (remote, post['page_id'], post.get('text') or '', cid))
+            added.append(cid)
+            counts[source['id']] += 1
+    for sid, count in counts.items():
+        db.exec_('UPDATE sources SET items_added=? WHERE id=?', (count, sid))
+    sources.after_new(added)
+    return {'added': added, 'errors': errors, 'seen': len(result['items'])}

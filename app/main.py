@@ -178,8 +178,11 @@ def _scan_and_plan():
     return r
 
 @app.post('/api/scan',dependencies=[Depends(require_auth)])
-def scan(wait:int=0):
+def scan(wait:int=0,brand:str=''):
     """«Buscar»: empieza en segundo plano (primero Ayuntamiento, edictos y licitaciones) y el panel va mostrando lo que llega."""
+    if brand == 'cofrade':
+        from . import facebook_jobs
+        return facebook_jobs.start(_scan_and_plan)
     if wait: return _scan_and_plan()
     if sources._scan_state['busy'] or sources._scan_lock.locked():
         return {**sources._scan_state,'started':False,'busy':True}
@@ -199,6 +202,10 @@ def news_search(body:NewsSearchIn):
 
 @app.get('/api/scan/status',dependencies=[Depends(require_auth)])
 def scan_status():
+    from . import facebook_jobs
+    general_busy = sources._scan_lock.locked() or (sources._scan_state['busy'] and time.time()-sources._scan_state.get('started_at', 0)<10)
+    if facebook_jobs.state.get('started_at') and (facebook_jobs.state['busy'] or (not general_busy and facebook_jobs.state['finished_at'] > sources._scan_state.get('finished_at', 0))):
+        return dict(facebook_jobs.state)
     st=dict(sources._scan_state)
     # buscando = hay una búsqueda con el candado, o se acaba de pulsar «Buscar» y está arrancando
     st['busy']=bool(sources._scan_lock.locked() or (st['busy'] and time.time()-st.get('started_at',0)<10))
@@ -504,7 +511,7 @@ def triage_candidate(cid:int,body:TriageIn):
 @app.get('/api/candidates',dependencies=[Depends(require_auth)])
 def candidates(status:str='new',brand:str=''):
     base="""SELECT c.*,s.kind AS source_kind,s.official AS source_official,
-                    s.local_scope AS source_local_scope,a.id AS article_id,a.status AS article_status
+                    s.local_scope AS source_local_scope,s.active AS source_active,a.id AS article_id,a.status AS article_status
              FROM candidates c LEFT JOIN sources s ON s.id=c.source_id
              LEFT JOIN articles a ON a.candidate_id=c.id AND a.status!='rejected'"""
     if status=='pending':
@@ -514,12 +521,14 @@ def candidates(status:str='new',brand:str=''):
     now=datetime.now(timezone.utc); out=[]
     for r in rows:
         r['group']=sources.source_group(r)
-        if r['group']=='Redes sociales' and status=='pending': continue  # están en la pestaña Redes
+        if r['group']=='Redes sociales' and status=='pending' and not r.get('facebook_post_id'): continue  # están en la pestaña Redes
         d=sources.publication_datetime(r.get('published_at'))  # solo la fecha real de publicación, nunca la de descubrimiento
         r['date_iso']=d.isoformat() if d else None
         if not d: d=sources.publication_datetime((r.get('created_at') or '').replace(' ','T')+'+00:00')
         keep=r.get('article_id') or (r.get('editorial_priority') or 'undecided') not in ('undecided','')
-        days=sources.WINDOW_DAYS.get(r['group'],sources.MAX_CANDIDATE_AGE_DAYS)
+        if r.get('facebook_post_id') and (not r.get('source_active') or not r.get('source_official')):
+            continue
+        days=7 if r.get('facebook_post_id') else sources.WINDOW_DAYS.get(r['group'],sources.MAX_CANDIDATE_AGE_DAYS)
         if not keep and d and d<now-timedelta(days=days): continue  # antigua: no se muestra
         out.append(r)
     links=sources.links_for([r['id'] for r in out])
@@ -710,7 +719,7 @@ def export_chatgpt(brand:str='',scope:str='publish',download:int=0):
 def _sort_queue(brand=''):
     rows=[r for r in candidates('pending',brand) if not r.get('article_id') and (r.get('editorial_priority') or 'undecided') in ('undecided','')]
     rows+= [r for r in _bf(social.items(),brand) if not r.get('article_id') and (r.get('editorial_priority') or 'undecided') in ('undecided','')]
-    return [r for r in rows if not (r.get('brand') == 'cofrade' and
+    return [r for r in rows if not (r.get('brand') == 'cofrade' and not r.get('facebook_post_id') and
             (urlparse(r.get('url') or '').hostname or '') in {'facebook.com', 'www.facebook.com', 'm.facebook.com'})]
 
 def _drafting(brand=''):

@@ -304,6 +304,13 @@ def scan():
             else:
                 cid = _add(item, sid, src['name'], watched_page=True, src=src)
             if cid: added.append(cid)
+    try:
+        from .facebook_reader import import_recent
+        imported = import_recent()
+        added.extend(imported['added'])
+        errors.extend(imported['errors'])
+    except Exception:
+        errors.append('No se pudieron importar las publicaciones verificadas de las hermandades.')
     # Solo las cuentas autorizadas: ya no se buscan quejas en Facebook en general ni se hace barrido con IA (7.8).
     try:
         sources.after_new(added)

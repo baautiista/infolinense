@@ -1057,7 +1057,9 @@ def _managed_pages():
 def page_posts_for(url, name=''):
     """Publicaciones recientes de una página de Facebook SI la cuenta conectada tiene acceso a ella
     (la hermandad te ha dado acceso). Lanza SocialError si no se puede verificar."""
-    from .facebook_reader import page_posts
+    from .facebook_reader import account, page_posts
+    if not account(url):
+        return None  # Groups remain in the existing non-Cofrade social reader.
     return page_posts(url)
 
 

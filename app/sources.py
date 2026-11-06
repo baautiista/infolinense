@@ -1131,7 +1131,7 @@ def find_decided(title, excerpt='', days=30):
     return None
 
 
-def add_candidate(title, url, excerpt, source_name, source_id=None, published_at='', source_meta=None, local_angle='', outlet='', image=''):
+def add_candidate(title, url, excerpt, source_name, source_id=None, published_at='', source_meta=None, local_angle='', outlet='', image='', verified_facebook=False):
     source_meta = source_meta or {'priority': 60, 'official': 0, 'local_scope': 0}
     title, excerpt = clean(title)[:260], clean(excerpt)[:4000]
     local_angle = clean(local_angle)[:800]
@@ -1139,7 +1139,7 @@ def add_candidate(title, url, excerpt, source_name, source_id=None, published_at
     if source_meta.get('kind') == 'social' and (source_meta.get('brand') or 'infolinense') == 'infolinense' \
             and other_place(title + ' ' + excerpt[:600]):
         return None  # publicación de redes sobre otro pueblo
-    if re.search(r'(^|\.)(facebook|instagram)\.com/', re.sub(r'^https?://(www\.|m\.)?', '', url or '')) and not social_authorized(url, source_meta):
+    if re.search(r'(^|\.)(facebook|instagram)\.com/', re.sub(r'^https?://(www\.|m\.)?', '', url or '')) and not verified_facebook and not social_authorized(url, source_meta):
         return None  # Facebook e Instagram: solo las cuentas que tú has autorizado en Fuentes de redes sociales
     if adaptable_source(source_meta):
         if not adaptable_ok(title) or not recent_enough(published_at):
@@ -1160,7 +1160,7 @@ def add_candidate(title, url, excerpt, source_name, source_id=None, published_at
     elif str(source_meta.get('name') or source_name or '').startswith('Medios nacionales') and not exact_locality(title + ' ' + excerpt[:300]):
         return None  # mención de pasada a La Línea en un medio nacional
     tender = source_meta.get('kind') in ('procurement', 'bop', 'edictos') or bool(re.search(r'licitaci|adjudica|edicto|contrataci', title, re.I))
-    window = WINDOW_DAYS['Licitaciones y edictos'] if tender else None
+    window = 7 if verified_facebook else (WINDOW_DAYS['Licitaciones y edictos'] if tender else None)
     if not title or not url or (not (tender and _open_tender_deadline(title, excerpt)) and not recent_enough(published_at, window)): return None
     if not source_meta.get('local_scope'):
         if tender:
@@ -1555,7 +1555,9 @@ def scan_all():
     try:
         added, errors = [], []
         _deep['n'] = 0; _ctx['n'] = 0
-        active = db.rows('SELECT * FROM sources WHERE active=1 ORDER BY priority DESC')
+        active = [row for row in db.rows('SELECT * FROM sources WHERE active=1 ORDER BY priority DESC')
+                  if not (row.get('brand') == 'cofrade' and row.get('kind') == 'social' and
+                          (urlparse(row.get('url') or '').hostname or '') in {'facebook.com', 'www.facebook.com', 'm.facebook.com'})]
         _scan_state['total'] = len(active)
         first = [s_ for s_ in active if is_priority(s_)]
         rest = [s_ for s_ in active if not is_priority(s_)]
@@ -1641,10 +1643,12 @@ def after_new(ids):
 def archive_off_topic():
     """Retira del radar lo que no es de La Línea (ni de Gibraltar con interés) y nadie ha marcado."""
     n = 0
-    for r in db.rows("""SELECT c.id,c.title,c.excerpt,c.url,c.source_name,c.local_angle,c.adapt_json,c.brand,s.local_scope,s.official,s.kind FROM candidates c LEFT JOIN sources s ON s.id=c.source_id
+    for r in db.rows("""SELECT c.id,c.title,c.excerpt,c.url,c.source_name,c.local_angle,c.adapt_json,c.brand,c.facebook_post_id,s.local_scope,s.official,s.kind FROM candidates c LEFT JOIN sources s ON s.id=c.source_id
                         WHERE c.status IN ('new','researched','needs_config') AND c.editorial_priority IN ('undecided','')
                         AND c.social_type IS NULL"""):
         title, excerpt = r['title'] or '', r['excerpt'] or ''
+        if r.get('facebook_post_id'):
+            continue  # Page/author verified at import; numeric permalinks may differ from the configured username.
         if re.search(r'(facebook|instagram)\.com/', r.get('url') or '') and not social_authorized(r['url']):
             db.exec_("UPDATE candidates SET status='archived',reason='Cuenta de redes no autorizada' WHERE id=?", (r['id'],)); n += 1
             continue
@@ -1680,10 +1684,10 @@ def archive_stale():
     """Retira del radar lo que ya no es actual y nadie ha marcado como útil."""
     now = datetime.now(timezone.utc)
     n = 0
-    for row in db.rows("""SELECT c.id,c.published_at,c.created_at,c.source_name,c.outlet,c.url,c.title,c.excerpt,c.scope,c.social_type,s.kind
+    for row in db.rows("""SELECT c.id,c.published_at,c.created_at,c.source_name,c.outlet,c.url,c.title,c.excerpt,c.scope,c.social_type,c.facebook_post_id,s.kind
                           FROM candidates c LEFT JOIN sources s ON s.id=c.source_id
                           WHERE c.status IN ('new','researched','needs_config') AND c.editorial_priority IN ('undecided','')"""):
-        limit = now - timedelta(days=WINDOW_DAYS.get(source_group(row), MAX_CANDIDATE_AGE_DAYS))
+        limit = now - timedelta(days=7 if row.get('facebook_post_id') else WINDOW_DAYS.get(source_group(row), MAX_CANDIDATE_AGE_DAYS))
         date = publication_datetime(row.get('published_at')) or publication_datetime((row.get('created_at') or '').replace(' ', 'T') + '+00:00')
         if date and date < limit and not _open_tender_deadline(row.get('title'), row.get('excerpt'), now):
             db.exec_("UPDATE candidates SET status='archived' WHERE id=?", (row['id'],)); n += 1

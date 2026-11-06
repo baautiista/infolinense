@@ -1,6 +1,7 @@
 """Read completed Apify task results. Never start or purchase scraping runs."""
 import os
 import re
+import time
 from datetime import datetime, timedelta, timezone
 
 import requests
@@ -41,27 +42,35 @@ def _get(path, token, **params):
         raise meta.SocialError('No se pudo consultar Apify. Comprueba la red y el formato de su respuesta.') from None
 
 
-def fetch(now=None):
+def fetch(now=None, run_id=None):
     """Get a fixed dataset from the latest successful run, once per panel request."""
     now = now or datetime.now(timezone.utc)
     token = os.getenv('APIFY_TOKEN', '').strip()
     task = os.getenv('APIFY_FACEBOOK_TASK_ID', '').strip().replace('/', '~')
     if not token or not re.fullmatch(r'[A-Za-z0-9_-]+(?:~[A-Za-z0-9_-]+)?', task):
         raise meta.SocialError(REQUIREMENTS)
-    # The list endpoint distinguishes an inaccessible task (404) from an existing
-    # task with no successful runs (200, empty items); /runs/last conflates them.
-    response = _get('/actor-tasks/' + task + '/runs', token, status='SUCCEEDED', desc=1, limit=1)
-    data = response.get('data') if isinstance(response, dict) else None
-    runs = data.get('items') if isinstance(data, dict) else None
-    if not isinstance(runs, list):
-        raise meta.SocialError('Apify devolvió una lista de ejecuciones con un formato no reconocido.')
-    if not runs:
-        raise meta.SocialError('La tarea existe, pero no tiene ejecuciones terminadas correctamente. El JSON exportado puede proceder del actor original, no de esta tarea guardada. Comprueba la pestaña Runs de esta tarea en Apify; guardar una tarea no copia las ejecuciones anteriores.')
-    run = runs[0]
-    if not isinstance(run, dict) or run.get('status') != 'SUCCEEDED':
-        raise meta.SocialError('Apify no devolvió una ejecución completada correctamente de esta tarea.')
+    if run_id:
+        if not re.fullmatch(r'[A-Za-z0-9_-]+', run_id):
+            raise meta.SocialError('El identificador de ejecución de Apify no es válido.')
+        data = _get('/actor-runs/' + run_id, token)
+        run = data.get('data') if isinstance(data, dict) else None
+        if not isinstance(run, dict) or run.get('status') != 'SUCCEEDED':
+            raise meta.SocialError('La extracción de Apify todavía no ha terminado correctamente.')
+    else:
+        # The list endpoint distinguishes an inaccessible task (404) from an existing
+        # task with no successful runs (200, empty items); /runs/last conflates them.
+        response = _get('/actor-tasks/' + task + '/runs', token, status='SUCCEEDED', desc=1, limit=1)
+        data = response.get('data') if isinstance(response, dict) else None
+        runs = data.get('items') if isinstance(data, dict) else None
+        if not isinstance(runs, list):
+            raise meta.SocialError('Apify devolvió una lista de ejecuciones con un formato no reconocido.')
+        if not runs:
+            raise meta.SocialError('La tarea existe, pero no tiene ejecuciones terminadas correctamente. El JSON exportado puede proceder del actor original, no de esta tarea guardada. Comprueba la pestaña Runs de esta tarea en Apify; guardar una tarea no copia las ejecuciones anteriores.')
+        run = runs[0]
+        if not isinstance(run, dict) or run.get('status') != 'SUCCEEDED':
+            raise meta.SocialError('Apify no devolvió una ejecución completada correctamente de esta tarea.')
     if run.get('actorTaskId') and run['actorTaskId'] != task and '~' not in task:
-        raise meta.SocialError('La ejecución devuelta por Apify pertenece a otra tarea; no se importan sus resultados.')
+        raise meta.SocialError('La ejecución no pertenece a la tarea configurada; no se importan sus resultados.')
     finished = _date(run.get('finishedAt'))
     dataset = str(run.get('defaultDatasetId') or '')
     if not finished or not now-timedelta(hours=24) <= finished <= now or not re.fullmatch(r'[A-Za-z0-9_-]+', dataset):
@@ -186,3 +195,66 @@ def page_posts(url, rows, now=None):
     if rejected and not items:
         raise meta.SocialError('Se descartaron los registros de esta fuente: falta identidad de página o autor, o pertenecen a terceros. Hay que revisar la salida de la tarea.')
     return sorted(items, key=lambda item: item['published_at'], reverse=True)
+
+
+def run_task(urls, progress):
+    """Explicit user-triggered paid operation. Resume persisted runs instead of duplicating them."""
+    import json
+    token = os.getenv('APIFY_TOKEN', '').strip()
+    task = os.getenv('APIFY_FACEBOOK_TASK_ID', '').strip().replace('/', '~')
+    if not token or not re.fullmatch(r'[A-Za-z0-9_-]+(?:~[A-Za-z0-9_-]+)?', task):
+        raise meta.SocialError(REQUIREMENTS)
+    if not urls:
+        raise meta.SocialError('No hay páginas de hermandades activas y confirmadas como oficiales.')
+    try:
+        saved = json.loads(meta.db.get_setting('facebook_apify_run', '{}') or '{}')
+    except ValueError:
+        raise meta.SocialError('No se pudo recuperar la extracción anterior; revisa sus ejecuciones antes de iniciar otra.')
+    run_id = saved.get('id') if saved.get('task') == task else None
+    if not run_id:
+        try:
+            budget = float(os.getenv('APIFY_FACEBOOK_MAX_CHARGE_USD', '1'))
+            if not 0 < budget <= 100:
+                raise ValueError()
+        except ValueError:
+            raise meta.SocialError('APIFY_FACEBOOK_MAX_CHARGE_USD debe estar entre 0 y 100 dólares.')
+        body = {'startUrls': [{'url': u} for u in dict.fromkeys(urls)], 'captionText': False,
+                'onlyPostsNewerThan': (datetime.now(timezone.utc)-timedelta(days=7)).date().isoformat(),
+                'resultsLimit': 100}
+        # Persist a marker before POST: a network timeout may occur after Apify accepted the run.
+        meta.db.set_setting('facebook_apify_run', json.dumps({'task': task, 'id': 'pending'}))
+        progress('Iniciando extracción de Facebook')
+        try:
+            response = requests.post(API + '/actor-tasks/' + task + '/runs',
+                                    headers={'Authorization': 'Bearer ' + token}, json=body,
+                                    params={'maxTotalChargeUsd': budget}, timeout=30, allow_redirects=False)
+            if response.status_code != 201:
+                if 400 <= response.status_code < 500:
+                    meta.db.set_setting('facebook_apify_run', '{}')
+                raise meta.SocialError('Apify no pudo iniciar la tarea (HTTP %s). Revisa acceso, saldo y límites de la tarea.' % response.status_code)
+            run = response.json().get('data') or {}
+            run_id = run.get('id')
+            if not isinstance(run_id, str) or not re.fullmatch(r'[A-Za-z0-9_-]+', run_id):
+                raise ValueError()
+            meta.db.set_setting('facebook_apify_run', json.dumps({'task': task, 'id': run_id}))
+        except (requests.RequestException, ValueError):
+            raise meta.SocialError('No se pudo confirmar el inicio de Apify. Revisa Runs en Apify antes de repetir; la solicitud podría haberse aceptado.') from None
+    if run_id == 'pending':
+        raise meta.SocialError('El inicio anterior quedó sin confirmar. Revisa Runs en Apify para evitar dos extracciones cobradas; se necesita recuperar su ID.')
+    deadline = time.monotonic() + 900
+    while time.monotonic() < deadline:
+        data = _get('/actor-runs/' + run_id, token)
+        run = data.get('data') if isinstance(data, dict) else None
+        if not isinstance(run, dict):
+            raise meta.SocialError('Apify no devolvió el estado de la extracción.')
+        status = run.get('status')
+        if status == 'SUCCEEDED':
+            return run_id
+        if status in {'FAILED', 'ABORTED', 'TIMED-OUT'}:
+            meta.db.set_setting('facebook_apify_run', '{}')
+            raise meta.SocialError('La extracción de Apify terminó con estado ' + status + '. Revisa el registro y el límite de gasto en Apify.')
+        if status not in {'READY', 'RUNNING', 'ABORTING', 'TIMING-OUT'}:
+            raise meta.SocialError('Apify devolvió un estado de ejecución desconocido; la ejecución pendiente se conserva para revisarla.')
+        progress('Facebook: extracción en curso en Apify')
+        time.sleep(3)
+    raise meta.SocialError('Apify sigue trabajando. Pulsa Buscar más tarde para continuar la consulta sin iniciar otra extracción.')

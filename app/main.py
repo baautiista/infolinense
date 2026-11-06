@@ -17,7 +17,7 @@ from .auth import login, require_auth
 from starlette.concurrency import run_in_threadpool
 from .config import BASE_DIR, RENDER_DIR, UPLOAD_DIR, SCAN_INTERVAL_MINUTES, AUTO_PIPELINE, OPENAI_API_KEY, ADMIN_PASSWORD, JWT_SECRET, PUBLISH_MODE, CORS_ORIGINS, PUBLIC_BASE_URL, AUTO_PUBLISH
 
-VERSION='7.13.1'
+VERSION='7.13.2'
 app=FastAPI(title='InfoLinense Desk',version=VERSION)
 
 from fastapi.responses import JSONResponse as _JR
@@ -459,6 +459,14 @@ def social_items():
 def brotherhood_posts():
     from .facebook_reader import recent
     return recent()
+
+@app.on_event('shutdown')
+def close_private_facebook_browser():
+    from .facebook_browser import call
+    try:
+        call('close')  # Flush the profile without deleting the Facebook session.
+    except social_publish.SocialError:
+        pass
 
 @app.get('/api/facebook/browser/status',dependencies=[Depends(require_auth)])
 def facebook_browser_status():

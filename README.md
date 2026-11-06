@@ -226,3 +226,14 @@ interacción manual se permiten recursos HTTPS de `*.arkoselabs.com` y
 ni durante la lectura automática. El editor completa la comprobación por sí mismo:
 Desk no resuelve desafíos ni contrata servicios de resolución. Si faltan recursos,
 la vista indica únicamente los dominios bloqueados, sin URLs, parámetros o cookies.
+
+Arranque tras redepliegue: el navegador toma un bloqueo exclusivo de Desk sobre el
+perfil mientras está abierto. En Railway con una sola réplica y volumen dedicado,
+puede recuperar los enlaces de coordinación `SingletonLock`, `SingletonSocket` y
+`SingletonCookie` dejados por el contenedor anterior. No elimina las cookies de
+Facebook ni los datos del perfil. Si detecta un Chromium local aún usando ese perfil
+o un bloqueo exclusivo de otro proceso, no lo desbloquea. Fuera de Railway tampoco
+retira automáticamente un bloqueo perteneciente a otro equipo. El cierre normal de
+Desk intenta cerrar Chromium y guardar la sesión antes de liberar el perfil.
+Los errores de arranque distinguen perfil en uso, permisos, disco y terminación por
+el sistema; no se devuelven los argumentos o registros internos del navegador.

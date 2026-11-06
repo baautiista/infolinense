@@ -1,5 +1,7 @@
 """Secure session plumbing tests. No real account, passwords, cookies or paid calls."""
 import os
+import socket
+from pathlib import Path
 import tempfile
 import unittest
 from unittest.mock import patch, Mock
@@ -38,6 +40,62 @@ class BrowserTests(unittest.TestCase):
             if top_level: route.abort.assert_called_once()
             else: route.continue_.assert_called_once()
 
+    def test_stale_container_singletons_recovered_without_touching_cookies(self):
+        with tempfile.TemporaryDirectory() as d, patch.object(browser, '_profile', Path(d)), patch.dict(os.environ, {'RAILWAY_SERVICE_ID': 'fixture'}):
+            cookies = Path(d)/'Default'/'Cookies'
+            cookies.parent.mkdir()
+            cookies.write_bytes(b'fixture-session-do-not-remove')
+            for name in ['SingletonLock','SingletonSocket','SingletonCookie']:
+                (Path(d)/name).symlink_to('previous-container-999999')
+            try:
+                browser._acquire_profile_guard()
+                browser._clear_obsolete_singletons()
+                self.assertFalse((Path(d)/'SingletonLock').is_symlink())
+                self.assertEqual(cookies.read_bytes(), b'fixture-session-do-not-remove')
+            finally:
+                browser._release_profile_guard()
+
+    def test_live_browser_lock_is_not_removed(self):
+        with tempfile.TemporaryDirectory() as d, patch.object(browser, '_profile', Path(d)), patch.object(browser, '_pid_owns_profile', return_value=True):
+            lock=Path(d)/'SingletonLock'
+            lock.symlink_to(socket.gethostname()+'-123')
+            try:
+                browser._acquire_profile_guard()
+                with self.assertRaisesRegex(SocialError, 'usando esta sesión'):
+                    browser._clear_obsolete_singletons()
+                self.assertTrue(lock.is_symlink())
+            finally:
+                browser._release_profile_guard()
+
+    def test_other_process_guard_prevents_recovery(self):
+        import fcntl
+        with tempfile.TemporaryDirectory() as d, patch.object(browser, '_profile', Path(d)):
+            fd=os.open(Path(d)/'.desk-browser.lock',os.O_CREAT|os.O_RDWR,0o600)
+            try:
+                fcntl.flock(fd,fcntl.LOCK_EX|fcntl.LOCK_NB)
+                with self.assertRaisesRegex(SocialError, 'otro proceso'):
+                    browser._acquire_profile_guard()
+                self.assertIsNone(browser._profile_guard)
+            finally:
+                os.close(fd)
+
+    def test_foreign_lock_outside_railway_is_not_removed(self):
+        with tempfile.TemporaryDirectory() as d, patch.object(browser, '_profile', Path(d)), patch.dict(os.environ, {'RAILWAY_SERVICE_ID':'','RAILWAY_DEPLOYMENT_ID':''}):
+            lock=Path(d)/'SingletonLock';lock.symlink_to('foreign-host-123')
+            try:
+                browser._acquire_profile_guard()
+                with self.assertRaisesRegex(SocialError, 'otro equipo'):
+                    browser._clear_obsolete_singletons()
+                self.assertTrue(lock.is_symlink())
+            finally:
+                browser._release_profile_guard()
+
+    def test_startup_error_diagnosis_never_exposes_values(self):
+        for message, expected in [('ProcessSingleton fixture-sensitive','perfil en uso'), ('Permission denied fixture-sensitive','permiso'), ('SIGKILL fixture-sensitive','memoria'), ('unknown fixture-sensitive','motor')]:
+            result=str(browser._startup_failure(RuntimeError(message)))
+            self.assertIn(expected,result)
+            self.assertNotIn('fixture-sensitive',result)
+
     def test_worker_does_not_return_browser_exception_values(self):
         with patch.object(browser, '_execute', side_effect=RuntimeError('fixture-sensitive-input')), self.assertRaises(SocialError) as error:
             browser.call('status')
@@ -45,7 +103,7 @@ class BrowserTests(unittest.TestCase):
 
     def test_input_validation_prevents_commands_and_out_of_bounds_clicks(self):
         page = Mock()
-        with patch.object(browser, '_ensure'), patch.object(browser, '_page', page):
+        with patch.object(browser, '_ensure'), patch.object(browser, '_context', Mock()), patch.object(browser, '_page', page):
             for payload in [{'kind': 'key', 'key': 'F12'}, {'kind': 'click', 'x': -1, 'y': 5},
                             {'kind': 'click', 'x': 1, 'y': 9999}, {'kind': 'text', 'text': 'x'*513}, {'kind': 'evaluate', 'code': 'fixture'}]:
                 with self.assertRaises(SocialError): browser._execute('input', payload)

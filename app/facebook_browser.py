@@ -6,6 +6,8 @@ All Playwright work stays on one worker thread. The profile lives in the data vo
 """
 from concurrent.futures import Future, TimeoutError
 import json
+import fcntl
+import socket
 import os
 from pathlib import Path
 import queue
@@ -22,6 +24,7 @@ _thread = None
 _start_lock = threading.Lock()
 _context = _page = _playwright = None
 _interactive = False
+_profile_guard = None
 _blocked_hosts = set()
 _profile = Path(DATA_DIR) / '.private-facebook-browser'
 
@@ -93,6 +96,92 @@ def _route_request(route):
         route.abort()
 
 
+def _release_profile_guard():
+    global _profile_guard
+    if _profile_guard is not None:
+        fd, _profile_guard = _profile_guard, None
+        try:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        finally:
+            os.close(fd)
+
+
+def _acquire_profile_guard():
+    global _profile_guard
+    if _profile_guard is not None:
+        return
+    fd = os.open(_profile / '.desk-browser.lock', os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        os.close(fd)
+        raise SocialError('La sesión privada está abierta en otro proceso de Desk. No se ha borrado ni modificado tu sesión.') from None
+    except Exception:
+        os.close(fd)
+        raise
+    _profile_guard = fd
+
+
+def _pid_owns_profile(pid):
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True  # Cannot verify ownership: keep the lock.
+    try:
+        args = Path('/proc/%s/cmdline' % pid).read_bytes().split(b'\0')
+    except (OSError, PermissionError):
+        return True
+    profile_arg = os.fsencode(str(_profile.resolve()))
+    return b'--user-data-dir=' + profile_arg in args or any(arg == b'--user-data-dir' and i + 1 < len(args) and args[i + 1] == profile_arg for i, arg in enumerate(args))
+
+
+def _clear_obsolete_singletons():
+    if _profile_guard is None:
+        raise SocialError('No se pudo asegurar el acceso exclusivo al perfil de Facebook.')
+    lock = _profile / 'SingletonLock'
+    if not lock.is_symlink():
+        if lock.exists():
+            raise SocialError('El perfil contiene un bloqueo no reconocido. La sesión se conserva y no se modifican sus archivos.')
+        return
+    owner = os.readlink(lock)
+    try:
+        host, raw_pid = owner.rsplit('-', 1)
+        pid = int(raw_pid)
+        if pid <= 0 or not host:
+            raise ValueError()
+    except (ValueError, TypeError):
+        raise SocialError('El bloqueo del perfil no identifica un proceso válido. No se ha eliminado la sesión.') from None
+    if host == socket.gethostname():
+        if _pid_owns_profile(pid):
+            raise SocialError('Chromium ya está usando esta sesión. Espera a que termine el otro proceso; no se ha borrado la sesión.')
+    elif not (os.getenv('RAILWAY_SERVICE_ID') or os.getenv('RAILWAY_DEPLOYMENT_ID')):
+        raise SocialError('El perfil está marcado como abierto en otro equipo. No se eliminan bloqueos de otro equipo fuera del despliegue de volumen único de Railway.')
+    # Desk requires a single replica with its own persistent Railway volume.
+    # The advisory lock above excludes other current Desk processes. Only remove
+    # Chromium's coordination symlinks left by the previous container, never data.
+    for name in ('SingletonLock', 'SingletonSocket', 'SingletonCookie'):
+        path = _profile / name
+        if path.is_symlink():
+            path.unlink()
+
+
+def _startup_failure(exc):
+    message = str(exc).lower()
+    if any(term in message for term in ('processsingleton', 'singletonlock', 'profile appears to be in use')):
+        return SocialError('Chromium detecta el perfil en uso. La sesión se conserva; comprueba que Desk tenga una sola réplica y no haya otro navegador abierto con ese perfil.')
+    if 'permission denied' in message or 'access is denied' in message or 'read-only file system' in message:
+        return SocialError('Chromium no tiene permiso para usar el volumen de la sesión. Revisa los permisos del volumen de Desk; la sesión no se ha borrado.')
+    if 'no space left' in message:
+        return SocialError('No queda espacio en el volumen para iniciar Chromium. La sesión no se ha borrado.')
+    if any(term in message for term in ('sigkill', 'out of memory', 'oom-kill')):
+        return SocialError('El sistema terminó Chromium al arrancar. Revisa el límite de memoria del servicio en Railway; la sesión se conserva.')
+    if any(term in message for term in ("executable doesn't exist", 'error while loading shared libraries')):
+        return SocialError('La instalación de Chromium o una de sus bibliotecas está incompleta. Comprueba que Railway haya construido el Dockerfile de Desk.')
+    return SocialError('El motor de Chromium no pudo arrancar. La sesión se conserva; revisa los registros y recursos del servicio de Desk.')
+
+
 def _ensure():
     global _context, _page, _playwright
     if _context is not None:
@@ -103,39 +192,55 @@ def _ensure():
         raise SocialError('El navegador privado necesita Playwright y Chromium instalados en el servidor.')
     if not _profile.resolve().is_relative_to(Path(DATA_DIR).resolve()):
         raise SocialError('La carpeta de la sesión de Facebook no está dentro del volumen privado de datos.')
-    _profile.mkdir(parents=True, exist_ok=True, mode=0o700)
-    _profile.chmod(0o700)
+    try:
+        _profile.mkdir(parents=True, exist_ok=True, mode=0o700)
+        _profile.chmod(0o700)
+    except OSError as exc:
+        raise _startup_failure(exc) from None
     executable = os.getenv('FACEBOOK_BROWSER_EXECUTABLE', '/usr/bin/chromium')
     if not Path(executable).is_file():
         raise SocialError('Chromium no está instalado en el servidor de Desk.')
-    _playwright = sync_playwright().start()
     options = {'executable_path': executable, 'headless': True, 'viewport': {'width': _WIDTH, 'height': _HEIGHT},
                'locale': 'es-ES', 'args': ['--no-sandbox', '--disable-dev-shm-usage']}
     proxy = os.getenv('HTTPS_PROXY') or os.getenv('HTTP_PROXY')
     if proxy:
         options['proxy'] = {'server': proxy}
     try:
-        _context = _playwright.chromium.launch_persistent_context(str(_profile), **options)
+        _acquire_profile_guard()
+        _clear_obsolete_singletons()
+        _playwright = sync_playwright().start()
+        _context = _playwright.chromium.launch_persistent_context(str(_profile.resolve()), **options)
         _context.route('**/*', _route_request)
         _page = _context.pages[0] if _context.pages else _context.new_page()
         _page.set_default_timeout(12000)
-    except Exception:
-        if _context:
-            _context.close()
-        _context = None
-        _playwright.stop()
-        _playwright = None
-        raise SocialError('No se pudo iniciar Chromium. Comprueba su instalación y la memoria del servidor.') from None
+    except SocialError:
+        _close()
+        raise
+    except Exception as exc:
+        _close()
+        raise _startup_failure(exc) from None
 
 
 def _close():
     global _context, _page, _playwright, _interactive
     _interactive = False
-    if _context:
-        _context.close()
-    if _playwright:
-        _playwright.stop()
+    context, driver = _context, _playwright
     _context = _page = _playwright = None
+    try:
+        if context:
+            try:
+                context.close()
+            except Exception:
+                pass
+    finally:
+        try:
+            if driver:
+                try:
+                    driver.stop()
+                except Exception:
+                    pass
+        finally:
+            _release_profile_guard()
 
 
 def _execute(action, args):
@@ -144,6 +249,9 @@ def _execute(action, args):
     if action == 'status':
         return {'open': _context is not None, 'enabled': db.get_setting('facebook_browser_enabled', '') == 'true',
                 'width': _WIDTH, 'height': _HEIGHT, 'blocked_hosts': sorted(_blocked_hosts)}
+    if action == 'close':
+        _close()
+        return {'ok': True}
     if action == 'disconnect':
         _close()
         if _profile.exists():

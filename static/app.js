@@ -1367,13 +1367,19 @@ async function settings(v) {
     <section class="panel"><h2>Sitios que no te interesan</h2><p class="muted small">Se aprende por contexto: al descartar una noticia que NO es de La Línea, se guardan los sitios de los que habla (p. ej. Castelldefels, Lima). Solo frenan noticias de esos sitios: lo que sea de La Línea entra siempre, trate del tema que trate. Lo que descartas de La Línea no vuelve a salir desde otro medio, salvo que haya un cambio importante.</p>
       <div class="sources" id="learnList"></div>
       <form id="addLearn" class="row wrap"><input name="label" placeholder="Sitio (p. ej. Castelldefels)" required><button class="btn small">Añadir</button></form></section>
+    ${SB === 'cofrade' ? `<section class="panel"><h2>Conexión privada de lectura de Facebook</h2>
+      <p class="muted small">Abre el navegador privado e inicia sesión tú directamente en Facebook. No introduzcas contraseñas en el chat. Esta conexión permite probar la búsqueda automática sin administrar las páginas ni utilizar Apify; su cobertura aún debe comprobarse.</p>
+      <div class="row wrap"><button class="btn small" id="fbBrowserStart">Abrir Facebook</button><button class="btn small" id="fbBrowserConfirm">Ya he iniciado sesión</button><button class="link small danger" id="fbBrowserOff">Desconectar y borrar sesión</button></div>
+      <p class="small muted" id="fbBrowserStatus">Sin comprobar.</p>
+      <div id="fbBrowserFrame" hidden><p class="small muted">Pulsa sobre el campo de Facebook en la imagen y escribe. Puedes usar Tab, Intro y pegar texto. Si Facebook solicita una comprobación, complétala tú. La sesión se guarda en el volumen privado del servidor.</p><form id="fbBrowserSend" class="row wrap"><input id="fbBrowserText" type="password" autocomplete="new-password" autocapitalize="off" spellcheck="false" maxlength="512" placeholder="Texto para el campo seleccionado en Facebook" aria-label="Texto privado para enviar al campo seleccionado en Facebook"><button class="btn small">Escribir en Facebook</button></form><canvas id="fbBrowserCanvas" tabindex="0" width="1100" height="800" style="width:100%;height:auto;border:1px solid var(--line);border-radius:8px" aria-label="Navegador privado de Facebook"></canvas></div>
+    </section>` : ''}
     <section class="panel"><h2>Fuentes de redes sociales</h2><p class="muted small">Facebook e Instagram: el panel SOLO lee las cuentas de esta lista y no descubre otras. Cómo se lee cada una: <b>API</b> (página que administras o cuenta profesional de Instagram), <b>buscador</b> (lo que Google tenga indexado: parcial) o <b>no se puede leer</b>.</p>
       <div class="sources" id="fbList"></div>
       ${SB === 'cofrade' ? `<div class="stack" style="margin:16px 0"><h3>Buscar páginas de hermandades en Facebook</h3><p class="muted small">Busca por el nombre y abre la página para comprobar que es la oficial. Añadir un resultado no lo verifica. Comprueba que es la página oficial de la hermandad de La Línea, márcala como oficial en Editar y configura el proveedor de lectura.</p><form id="fbBrotherhoodSearch" class="row wrap"><input name="q" placeholder="Nombre de la hermandad" required maxlength="120"><button class="btn small">Buscar páginas</button></form><div id="fbPageResults"></div></div>` : ''}
       <form id="addFb" class="soc-form"><select name="network"><option value="facebook">Facebook</option><option value="instagram">Instagram</option></select><input name="account" placeholder="URL, usuario o identificador" required><input name="name" placeholder="Nombre (p. ej. AVV La Atunara)" required><button class="btn primary small">Añadir</button></form></section>
     <button class="btn" onclick="logout()">Salir</button>`;
   const socUrl = (net, acc) => { acc = acc.trim(); if (/^https?:\/\//i.test(acc)) return acc; acc = acc.replace(/^@/, ''); return net === 'instagram' ? `https://www.instagram.com/${acc}/` : /^\d+$/.test(acc) ? `https://www.facebook.com/profile.php?id=${acc}` : `https://www.facebook.com/${acc}`; };
-  const MODE = { public: ['Lectura gratuita (parcial)', 'warn'], apify: ['Apify', 'pub'], meta: ['Meta', 'pub'], api: ['API', 'pub'], buscador: ['Buscador (parcial)', 'warn'], no: ['No se puede leer', 'bad'] };
+  const MODE = { browser: ['Navegador privado', 'warn'], public: ['Lectura gratuita (parcial)', 'warn'], apify: ['Apify', 'pub'], meta: ['Meta', 'pub'], api: ['API', 'pub'], buscador: ['Buscador (parcial)', 'warn'], no: ['No se puede leer', 'bad'] };
   const drawSoc = () => api('/api/social').then(d => { $('#fbList').innerHTML = d.watched.filter(x => (x.brand || 'infolinense') === SB).map(s => { const m = MODE[s.access_mode] || ['Sin revisar', '']; const net = s.network || (/instagram/.test(s.url) ? 'instagram' : 'facebook');
       return `<div class="soc-row"><label class="switch"><input type="checkbox" ${s.active ? 'checked' : ''} onchange="toggleSource(${s.id})"></label><span class="net-badge ${net}">${net === 'instagram' ? 'Instagram' : 'Facebook'}</span>
         <div class="grow"><b>${esc(s.name)}</b><a class="small" href="${safeUrl(s.url)}" target="_blank" rel="noopener">${esc(s.url.replace(/^https?:\/\/(www\.)?/, ''))}</a>
@@ -1386,6 +1392,7 @@ async function settings(v) {
       sheet.querySelector('#seOk').onclick = async () => { try { await api('/api/sources/' + s.id, { method: 'PUT', body: JSON.stringify({ name: sheet.querySelector('#seName').value, url: sheet.querySelector('#seUrl').value, kind: 'social', priority: s.priority || 60, official: sheet.querySelector('#seOfficial') ? sheet.querySelector('#seOfficial').checked : !!s.official, local_scope: !!s.local_scope, brand: s.brand || 'infolinense' }) }); sheet.remove(); toast('Guardado'); drawSoc() } catch (e) { toast(e.message) } } });
   }).catch(() => { });
   drawSoc();
+  if (SB === 'cofrade') armFacebookBrowser(v);
   const showLearn = d => { $('#learnList').innerHTML = d.items.map(t => `<div class="srcrow"><span title="${esc(t.example || '')}">${esc(t.label)}</span><button class="link small" data-unlearn="${esc(t.term)}">Quitar</button></div>`).join('') || '<p class="muted small">Nada todavía.</p>' };
   api('/api/learned').then(showLearn).catch(() => {});
   drawPush();
@@ -1650,4 +1657,57 @@ async function efemView(v) {
     document.body.appendChild(sheet); sheet.onclick = e => { if (e.target === sheet) sheet.remove() }; sheet.querySelector('#eaNo').onclick = () => sheet.remove();
     sheet.querySelector('#eaOk').onclick = async () => { try { const r = await api('/api/efemerides', { method: 'POST', body: JSON.stringify({ title: $('#eaT').value, year: +$('#eaY').value, month: +$('#eaM').value, day: +$('#eaD').value, category: $('#eaC').value, description: $('#eaX').value, source_url: $('#eaU').value, source_name: 'Añadida a mano' }) }); sheet.remove(); toast(r.new ? 'Guardada' : 'Ya estaba: se ha unido a la existente'); render() } catch (e) { toast(e.message) } };
   };
+}
+
+
+// The editor controls the real Facebook page; credentials never enter chat or source files.
+function armFacebookBrowser(v) {
+  const status = v.querySelector('#fbBrowserStatus'), frame = v.querySelector('#fbBrowserFrame'), canvas = v.querySelector('#fbBrowserCanvas');
+  let polling = false, sequence = Promise.resolve();
+  const command = (action, body = {}) => api('/api/facebook/browser/' + action, { method: 'POST', body: JSON.stringify(body) });
+  const input = body => { sequence = sequence.then(() => command('input', body)).catch(e => { status.textContent = e.message }); return sequence };
+  const refresh = async () => {
+    if (!polling || !canvas.isConnected) { polling = false; return }
+    let temporary;
+    try {
+      const response = await request('/api/facebook/browser/screenshot');
+      temporary = URL.createObjectURL(await response.blob());
+      const img = new Image(); img.src = temporary; await img.decode();
+      canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
+    } catch (e) { if (polling && canvas.isConnected) status.textContent = e.message; polling = false }
+    finally { if (temporary) URL.revokeObjectURL(temporary) }
+    if (polling) setTimeout(refresh, 1200);
+  };
+  v.querySelector('#fbBrowserStart').onclick = async () => {
+    status.textContent = 'Abriendo el navegador privado…';
+    try { await command('start'); frame.hidden = false; status.textContent = 'Inicia sesión en Facebook dentro de la imagen.'; if (!polling) { polling = true; refresh() } }
+    catch (e) { status.textContent = e.message }
+  };
+  v.querySelector('#fbBrowserConfirm').onclick = async () => {
+    try { await sequence; await command('confirm'); status.textContent = 'Sesión preparada. Cierra esta vista y prueba Buscar en Cofrade; se comprobará el historial real.'; polling = false; frame.hidden = true }
+    catch (e) { status.textContent = e.message }
+  };
+  v.querySelector('#fbBrowserOff').onclick = async () => {
+    polling = false;
+    try { await sequence; await command('disconnect'); frame.hidden = true; status.textContent = 'Sesión de Facebook eliminada del servidor.' }
+    catch (e) { status.textContent = e.message }
+  };
+  v.querySelector('#fbBrowserSend').onsubmit = event => {
+    event.preventDefault(); const field = v.querySelector('#fbBrowserText'); const text = field.value; field.value = '';
+    if (text) input({ kind: 'text', text });
+  };
+  canvas.onclick = event => {
+    canvas.focus(); const rect = canvas.getBoundingClientRect();
+    input({ kind: 'click', x: (event.clientX-rect.left)*canvas.width/rect.width, y: (event.clientY-rect.top)*canvas.height/rect.height });
+  };
+  canvas.onkeydown = event => {
+    if (event.ctrlKey || event.metaKey) return;
+    if (event.key.length === 1) { event.preventDefault(); input({ kind: 'text', text: event.key }) }
+    else if (['Enter','Tab','Backspace','Delete','Escape','ArrowUp','ArrowDown','ArrowLeft','ArrowRight','Home','End','PageUp','PageDown'].includes(event.key)) {
+      event.preventDefault(); input({ kind: 'key', key: event.shiftKey && event.key === 'Tab' ? 'Shift+Tab' : event.key });
+    }
+  };
+  canvas.onpaste = event => { event.preventDefault(); const text = event.clipboardData.getData('text'); if (text.length <= 512) input({ kind: 'text', text }) };
+  canvas.addEventListener('wheel', event => { event.preventDefault(); input({ kind: 'scroll', delta: event.deltaY }) }, { passive: false });
+  api('/api/facebook/browser/status').then(data => { if (status.isConnected) status.textContent = data.enabled ? 'Hay una sesión privada preparada. La cobertura se comprueba al buscar.' : 'Sin sesión privada conectada.' }).catch(e => { status.textContent = e.message });
 }

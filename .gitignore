@@ -6,3 +6,6 @@ data/*.db
 uploads/*
 renders/*
 .DS_Store
+
+# Private browser session must never be committed
+.private-facebook-browser/

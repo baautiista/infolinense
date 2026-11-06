@@ -95,10 +95,12 @@ def configuration():
         from .facebook_apify import paid_runs_allowed
         if not paid_runs_allowed():
             provider = 'public'
-    return {'provider': provider if provider in {'meta', 'apify', 'public'} else 'invalid',
+    if provider in {'public', 'browser'} and db.get_setting('facebook_browser_enabled', '') == 'true':
+        provider = 'browser'
+    return {'provider': provider if provider in {'meta', 'apify', 'public', 'browser'} else 'invalid',
             'selection': 'explicit' if configured else 'automatic',
             'apify_token_present': token_present, 'apify_task_present': task_present,
-            'reader_revision': '2026-11-06.free'}
+            'reader_revision': '2026-11-06.browser-draft'}
 
 
 def recent(run_id=None):
@@ -128,13 +130,17 @@ def recent(run_id=None):
                     if external_error:
                         raise meta.SocialError(external_error)
                     posts = facebook_apify.page_posts(source['url'], external_rows)
+                elif provider == 'browser':
+                    from .facebook_browser import call
+                    browser_result = call('read', url=source['url'])
+                    posts = browser_result['items']
                 elif provider == 'public':
                     from . import facebook_public
                     posts = facebook_public.page_posts(source['url'])['items']
                 elif provider == 'meta':
                     posts = page_posts(source['url'])
                 else:
-                    raise meta.SocialError('FACEBOOK_READER_PROVIDER debe ser public, meta o apify.')
+                    raise meta.SocialError('FACEBOOK_READER_PROVIDER debe ser public, browser, meta o apify.')
                 for post in posts:
                     if post['id'] not in seen:
                         items.append(dict(post, brotherhood=source['name'], source_id=source['id']))
@@ -142,6 +148,8 @@ def recent(run_id=None):
                 state.update(status='ok', count=len(posts))
                 if provider == 'public':
                     state.update(status='partial', message=facebook_public.LIMITATION)
+                elif provider == 'browser' and browser_result.get('partial'):
+                    state.update(status='partial', message=browser_result['message'])
             except meta.SocialError as exc:
                 message = str(exc) if provider != 'meta' else 'Meta no permite verificar o leer esta página. ' + REQUIREMENTS
                 state.update(status='unavailable', message=message)

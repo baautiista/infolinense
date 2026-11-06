@@ -32,6 +32,9 @@ class ReaderTests(unittest.TestCase):
         self.env = patch.dict(os.environ, {'FACEBOOK_READER_PROVIDER': 'meta', 'FACEBOOK_ALLOW_PAID': 'false'})
         self.env.start()
         self.addCleanup(self.env.stop)
+        self.browser_setting = patch.object(reader.db, 'get_setting', return_value='')
+        self.browser_setting.start()
+        self.addCleanup(self.browser_setting.stop)
 
     def read(self, pages, url='https://www.facebook.com/test.page', metadata=PAGE):
         calls = []

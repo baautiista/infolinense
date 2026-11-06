@@ -129,16 +129,57 @@ El enfoque del timeline público se contrastó con el
 [código actual de RSS-Bridge](https://github.com/RSS-Bridge/rss-bridge/blob/master/bridges/FacebookBridge.php),
 que documenta esa limitación. El lector de Desk es una implementación propia y más
 restrictiva en autoría. Solo acepta nodos `timeline_list_feed_units`, actor de tipo
-Page cuya identidad coincide con la URL configurada, permalink de esa misma página
+Page (o un perfil vinculado por ID a una página delegada) cuya identidad coincide con la URL configurada, permalink de esa misma página
 y fecha comprobable en los últimos siete días. Rechaza perfiles personales y posts
 compartidos. La foto se toma de adjuntos de la publicación, nunca del avatar.
 
-En el entorno de desarrollo las peticiones reales se rechazaron por la política de
-red antes de llegar a Facebook. Las pruebas de parser usan HTML sintético y no
-certifican cobertura real. Para validación en vivo se necesita permitir HTTPS a
-`www.facebook.com` y probar las URL configuradas. Los dominios necesarios se guardaron
-en el borrador del entorno, pendiente de aplicación por el usuario. No se debe
-prometer cobertura completa o acceso permanente sin una prueba real.
+### Conexión privada dentro de Desk (cambio local, pendiente de despliegue y prueba con cuenta)
+
+Ajustes de Cofrade incorpora un navegador privado de Facebook, accesible solo con
+la autenticación de Desk. El editor abre Facebook dentro de esa vista, elige sus
+cookies e inicia sesión él mismo; nunca envía contraseñas ni cookies al chat. Se
+controla la página real mediante imagen, ratón y teclado. Los datos de entrada no
+se guardan en logs ni se devuelven en errores. Las imágenes no se almacenan en caché.
+Cualquier persona con la contraseña de administración de Desk puede controlar esa
+sesión: no compartir el acceso de Desk si no se quiere compartir este control.
+
+La sesión se mantiene en `DATA_DIR/.private-facebook-browser` (directorio 0700),
+excluido de Git y del contexto Docker; no hay una ruta que exporte cookies o claves.
+Desconectar cierra Chromium, borra ese perfil creado por Desk y desactiva la lectura
+con sesión. El navegador solo permite recursos HTTPS de Facebook y sus CDN. No hay
+puerto de depuración expuesto. No se importan perfiles de navegador personales ya
+existentes. El perfil persistente vive en el volumen del servidor.
+
+La confirmación exige que el navegador haya salido del formulario de acceso y tenga
+los nombres de cookies de una sesión de Facebook, sin leer ni devolver sus valores.
+Tras confirmar se cierra Chromium para ahorrar memoria; vuelve a abrirse durante las
+lecturas y se cierra al terminarlas. Si caduca el acceso hay que iniciar sesión de
+nuevo. El Dockerfile incorpora Chromium y `playwright==1.62.0`; esto requiere recursos
+del servidor de Railway, aunque no usa Apify ni otro proveedor de extracción pagado.
+
+El lector con sesión hace desplazamientos normales de la página y procesa las
+respuestas de timeline que recibe el navegador. No crea consultas privadas ni
+resuelve comprobaciones de Facebook. El editor debe completar por sí mismo cualquier
+inicio de sesión, segundo factor o comprobación que Facebook solicite.
+La cobertura del historial con una cuenta real sigue pendiente: no se declara una
+lectura completa simplemente porque hayan dejado de llegar posts.
+
+Validación real del 6 de noviembre de 2026: las peticiones HTTP simples a las 13
+fuentes devolvieron 11 redirecciones a login y dos HTTP 400. Un Chromium nuevo sin
+cuenta pudo mostrar Entrada Triunfal y Gran Poder, pero solo un post de cada una.
+Tras desplazar Gran Poder ocho veces seguía sin entregar más, aunque el archivo real
+de Apify tenía varios. Se corrigió la identidad de las páginas modernas: Facebook
+las etiqueta `User` y las vincula a `delegate_page`; no se acepta cualquier `User`,
+solo el mismo ID/URL con evidencia de página delegada. El parser recuperó el post
+real de Entrada Triunfal con 846 caracteres y su foto. Esto no demuestra una semana
+completa. La sesión de prueba era vacía y se borró; no se usó ninguna cuenta personal.
+
+El navegador privado muestra la pantalla real de Facebook y rechaza confirmar sin
+sesión. Las pruebas HTTP comprueban autenticación de todas sus rutas, ausencia de
+caché de imágenes y rechazo de comandos/teclas arbitrarios. Se construyó una imagen
+Docker local y se verificó el arranque de FastAPI y Chromium. No se ha publicado esta
+conexión ni se ha probado aún la paginación autenticada: requiere que el editor entre
+en su propia cuenta en un despliegue autorizado.
 
 ### Prohibición por defecto de ejecuciones pagadas
 

@@ -44,26 +44,44 @@ def _owned_link(link, identities):
     return parts[0] in {'permalink.php', 'story.php', 'photo.php'} and account(link) in identities
 
 
+def html_payloads(html):
+    soup = BeautifulSoup(html, 'html.parser')
+    roots = []
+    for script in soup.select('script[type="application/json"]'):
+        raw = script.string or script.get_text()
+        if not raw:
+            continue
+        try:
+            roots.append(json.loads(raw))
+        except (ValueError, TypeError):
+            continue
+    return roots
+
+
 def parse(html, url, now=None):
+    return parse_payloads(html_payloads(html), url, now)
+
+
+def parse_payloads(roots, url, now=None):
+    """Interpret actual browser payloads, including Page-backed profiles typed User by Facebook."""
     from .facebook_reader import account
     now = now or datetime.now(timezone.utc)
     wanted = account(url)
     if not wanted:
-        raise SocialError('La fuente gratuita debe ser una página oficial de Facebook confirmada.')
-    soup = BeautifulSoup(html, 'html.parser')
-    nodes = []
-    for script in soup.select('script[type="application/json"]'):
-        raw = script.string or script.get_text()
-        if not raw or 'timeline_list_feed_units' not in raw:
-            continue
-        try:
-            data = json.loads(raw)
-        except (ValueError, TypeError):
-            continue
-        for value in _walk(data):
+        raise SocialError('La fuente debe identificar una página oficial de Facebook.')
+    nodes, delegated = [], set()
+    for root in roots:
+        for value in _walk(root):
+            profile_id = str(value.get('id') or '')
+            delegate = value.get('delegate_page')
+            if profile_id.isdigit() and isinstance(delegate, dict) and str(delegate.get('id') or '').isdigit():
+                delegated.add(profile_id)
             timeline = value.get('timeline_list_feed_units')
             if isinstance(timeline, dict) and isinstance(timeline.get('edges'), list):
                 nodes.extend(edge['node'] for edge in timeline['edges'] if isinstance(edge, dict) and isinstance(edge.get('node'), dict))
+            # Normal browser timeline responses also return Story nodes directly.
+            if value.get('__typename') == 'Story' and value.get('post_id') and value.get('creation_time'):
+                nodes.append(value)
     if not nodes:
         raise SocialError('Facebook no entregó un timeline público legible sin iniciar sesión. No se encontraron publicaciones verificables y no se ha recurrido a un servicio de pago.')
     items, seen, verified = [], set(), 0
@@ -80,7 +98,7 @@ def parse(html, url, now=None):
         pid = str(actor.get('id') or '')
         actor_url = actor.get('url') or ''
         identities = {pid, account(actor_url) if isinstance(actor_url, str) else ''} - {''}
-        if actor.get('__typename') != 'Page' or not pid.isdigit() or wanted not in identities:
+        if not (actor.get('__typename') == 'Page' or (actor.get('__typename') == 'User' and pid in delegated)) or not pid.isdigit() or wanted not in identities:
             continue
         post_id = str(node.get('post_id') or story.get('post_id') or '')
         stamp = node.get('creation_time', story.get('creation_time'))
@@ -90,7 +108,7 @@ def parse(html, url, now=None):
             date = datetime.fromtimestamp(stamp, timezone.utc)
         except (ValueError, OverflowError, OSError):
             continue
-        link = story.get('wwwURL') or story.get('url') or node.get('wwwURL') or node.get('url') or ''
+        link = node.get('permalink_url') or story.get('permalink_url') or story.get('wwwURL') or story.get('url') or node.get('wwwURL') or node.get('url') or ''
         if not _owned_link(link, identities):
             continue
         verified += 1
@@ -126,6 +144,10 @@ def page_posts(url):
         raise SocialError('La fuente debe ser una página oficial de Facebook, no un grupo o enlace arbitrario.')
     try:
         response = requests.get(url, headers=HEADERS, timeout=20, allow_redirects=False)
+        if response.status_code in {301, 302, 303, 307, 308}:
+            redirect = urlparse(response.headers.get('Location') or '')
+            if (not redirect.hostname or redirect.hostname in HOSTS) and redirect.path.startswith(('/login', '/checkpoint')):
+                raise SocialError('Facebook exige iniciar sesión antes de entregar el contenido de esta página a este lector. No se ha podido comprobar su timeline ni la cobertura de los últimos 7 días; no se ha utilizado un servicio de pago.')
         if response.status_code != 200:
             raise SocialError('No se pudo leer la página pública sin cuenta (HTTP %s). No se ha utilizado ningún servicio de pago.' % response.status_code)
         if len(response.content) > 12_000_000:

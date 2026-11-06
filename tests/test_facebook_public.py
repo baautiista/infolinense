@@ -3,7 +3,7 @@ import json
 import os
 import unittest
 from datetime import datetime, timedelta, timezone
-from unittest.mock import patch
+from unittest.mock import patch, Mock
 from app import facebook_public as public, facebook_reader as reader
 from app.social_publish import SocialError
 
@@ -26,6 +26,11 @@ def html(*nodes):
 
 
 class PublicTests(unittest.TestCase):
+    def setUp(self):
+        setting = patch.object(reader.db, 'get_setting', return_value='')
+        setting.start()
+        self.addCleanup(setting.stop)
+
     def test_owned_post_photo_and_partial_coverage_notice(self):
         result = public.parse(html(node()), URL, NOW)
         self.assertTrue(result['partial'])
@@ -33,6 +38,17 @@ class PublicTests(unittest.TestCase):
         self.assertEqual(result['items'][0]['image'], 'https://example.org/post.jpg')
         self.assertEqual(result['items'][0]['page_id'], '123')
         self.assertIn('no', result['message'].lower())
+
+    def test_facebook_user_backed_by_a_page_is_verified_by_id_not_name(self):
+        story = {'actors': [{'__typename': 'User', 'id': '123', 'url': URL}], 'message': {'text': 'Fixture'}, 'wwwURL': URL+'/posts/456'}
+        post = node(comet_sections={'content': {'story': story}})
+        roots = [{'owner': {'id': '123', 'delegate_page': {'id': '789', 'category_name': 'Religious organization'}},
+                  'timeline_list_feed_units': {'edges': [{'node': post}]}}]
+        result = public.parse_payloads(roots, URL, NOW)
+        self.assertEqual(result['items'][0]['page_id'], '123')
+        roots[0]['owner']['id'] = '999'
+        with self.assertRaises(SocialError):
+            public.parse_payloads(roots, URL, NOW)
 
     def test_personal_profile_wrong_page_and_shared_posts_rejected(self):
         for author in [{'__typename': 'User', 'id': '123', 'url': URL},
@@ -56,6 +72,12 @@ class PublicTests(unittest.TestCase):
     def test_no_paid_implicit_fallback_from_existing_apify_variables(self):
         with patch.dict(os.environ, {'FACEBOOK_READER_PROVIDER': 'apify', 'FACEBOOK_ALLOW_PAID': 'false', 'APIFY_TOKEN': 'fixture', 'APIFY_FACEBOOK_TASK_ID': 'task'}):
             self.assertEqual(reader.configuration()['provider'], 'public')
+
+    def test_login_redirect_reports_access_barrier_not_empty_results(self):
+        response = Mock(status_code=302, headers={'Location': 'https://www.facebook.com/login/?next=fixture'})
+        with patch.object(public.requests, 'get', return_value=response) as get, self.assertRaisesRegex(SocialError, 'exige iniciar sesión'):
+            public.page_posts(URL)
+        self.assertEqual(get.call_count, 1)
 
     def test_public_request_never_follows_redirect_or_uses_credentials(self):
         import requests

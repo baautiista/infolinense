@@ -17,7 +17,7 @@ from .auth import login, require_auth
 from starlette.concurrency import run_in_threadpool
 from .config import BASE_DIR, RENDER_DIR, UPLOAD_DIR, SCAN_INTERVAL_MINUTES, AUTO_PIPELINE, OPENAI_API_KEY, ADMIN_PASSWORD, JWT_SECRET, PUBLISH_MODE, CORS_ORIGINS, PUBLIC_BASE_URL, AUTO_PUBLISH
 
-VERSION='7.12.1'
+VERSION='7.13.0'
 app=FastAPI(title='InfoLinense Desk',version=VERSION)
 
 from fastapi.responses import JSONResponse as _JR
@@ -459,6 +459,30 @@ def social_items():
 def brotherhood_posts():
     from .facebook_reader import recent
     return recent()
+
+@app.get('/api/facebook/browser/status',dependencies=[Depends(require_auth)])
+def facebook_browser_status():
+    from .facebook_browser import call
+    return call('status')
+
+@app.get('/api/facebook/browser/screenshot',dependencies=[Depends(require_auth)])
+def facebook_browser_screenshot():
+    from .facebook_browser import call
+    from fastapi.responses import Response
+    try:
+        return Response(call('screenshot'), media_type='image/png', headers={'Cache-Control':'no-store', 'Pragma':'no-cache'})
+    except social_publish.SocialError as exc:
+        raise HTTPException(400, str(exc))
+
+@app.post('/api/facebook/browser/{action}',dependencies=[Depends(require_auth)])
+def facebook_browser_action(action:str, body:dict):
+    from .facebook_browser import call
+    if action not in {'start', 'input', 'confirm', 'disconnect'}:
+        raise HTTPException(400, 'Operación no admitida')
+    try:
+        return call(action, **body) if action == 'input' else call(action)
+    except social_publish.SocialError as exc:
+        raise HTTPException(400, str(exc))
 
 @app.get('/api/social/facebook/pages/search',dependencies=[Depends(require_auth)])
 def search_facebook_pages(q:str=''):

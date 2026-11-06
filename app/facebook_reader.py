@@ -94,7 +94,7 @@ def configuration():
     return {'provider': provider if provider in {'meta', 'apify'} else 'invalid',
             'selection': 'explicit' if configured else 'automatic',
             'apify_token_present': token_present, 'apify_task_present': task_present,
-            'reader_revision': '2026-11-06.1'}
+            'reader_revision': '2026-11-06.2'}
 
 
 def recent():
@@ -138,4 +138,4 @@ def recent():
                 state.update(status='unavailable', message=message)
         pages.append(state)
     items.sort(key=lambda p: p['published_at'], reverse=True)
-    return {'items': items, 'pages': pages, 'days': 7, 'requirements': requirements, 'provider': provider, 'extraction_at': extraction_at, 'configuration': config}
+    return {'items': items, 'pages': pages, 'days': 7, 'requirements': requirements, 'provider': provider, 'extraction_at': extraction_at, 'configuration': config, 'error': external_error}

@@ -28,6 +28,11 @@ def _get(path, token, **params):
                                 params=params, timeout=30, allow_redirects=False)
         if response.status_code in (401, 403):
             raise meta.SocialError('Apify rechazó el acceso. Revisa APIFY_TOKEN y los permisos de lectura de la tarea y su dataset.')
+        if response.status_code == 404:
+            if path.startswith('/actor-tasks/'):
+                raise meta.SocialError('Apify no encuentra la tarea para este token (HTTP 404). Comprueba que APIFY_FACEBOOK_TASK_ID es el ID de la tarea y que APIFY_TOKEN pertenece a una cuenta con acceso a ella.')
+            if path.startswith('/datasets/'):
+                raise meta.SocialError('La tarea existe, pero Apify no encuentra su dataset de resultados (HTTP 404). Puede haber sido eliminado o no ser accesible con este token.')
         if response.status_code != 200:
             raise meta.SocialError('Apify no pudo entregar la extracción completada (HTTP %s).' % response.status_code)
         return response.json()
@@ -43,10 +48,20 @@ def fetch(now=None):
     task = os.getenv('APIFY_FACEBOOK_TASK_ID', '').strip().replace('/', '~')
     if not token or not re.fullmatch(r'[A-Za-z0-9_-]+(?:~[A-Za-z0-9_-]+)?', task):
         raise meta.SocialError(REQUIREMENTS)
-    run = _get('/actor-tasks/' + task + '/runs/last', token, status='SUCCEEDED')
-    run = run.get('data') if isinstance(run, dict) else None
+    # The list endpoint distinguishes an inaccessible task (404) from an existing
+    # task with no successful runs (200, empty items); /runs/last conflates them.
+    response = _get('/actor-tasks/' + task + '/runs', token, status='SUCCEEDED', desc=1, limit=1)
+    data = response.get('data') if isinstance(response, dict) else None
+    runs = data.get('items') if isinstance(data, dict) else None
+    if not isinstance(runs, list):
+        raise meta.SocialError('Apify devolvió una lista de ejecuciones con un formato no reconocido.')
+    if not runs:
+        raise meta.SocialError('La tarea existe, pero no tiene ejecuciones terminadas correctamente. El JSON exportado puede proceder del actor original, no de esta tarea guardada. Comprueba la pestaña Runs de esta tarea en Apify; guardar una tarea no copia las ejecuciones anteriores.')
+    run = runs[0]
     if not isinstance(run, dict) or run.get('status') != 'SUCCEEDED':
-        raise meta.SocialError('La tarea de Apify todavía no tiene una ejecución completada correctamente.')
+        raise meta.SocialError('Apify no devolvió una ejecución completada correctamente de esta tarea.')
+    if run.get('actorTaskId') and run['actorTaskId'] != task and '~' not in task:
+        raise meta.SocialError('La ejecución devuelta por Apify pertenece a otra tarea; no se importan sus resultados.')
     finished = _date(run.get('finishedAt'))
     dataset = str(run.get('defaultDatasetId') or '')
     if not finished or not now-timedelta(hours=24) <= finished <= now or not re.fullmatch(r'[A-Za-z0-9_-]+', dataset):

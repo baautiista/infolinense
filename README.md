@@ -236,3 +236,10 @@ se elige Apify cuando están presentes token y tarea; un `meta` explícito se re
 Las comillas exteriores en el selector se toleran. Si Railway muestra variables
 pero el panel indica que faltan, comprobar el servicio, entorno y despliegue que
 atienden al dominio abierto; la configuración guardada puede no ser la del proceso.
+
+Diagnóstico de HTTP 404 (revisión `2026-11-06.2`): se consulta la lista de
+ ejecuciones correctas de la tarea, ordenada de más reciente a más antigua.
+Una tarea accesible sin ejecuciones devuelve una lista vacía y un mensaje específico;
+una tarea inaccesible devuelve el error de tarea, y un dataset eliminado o inaccesible
+el error de dataset. Guardar una tarea desde un actor no copia las ejecuciones previas
+hechas directamente con ese actor. No se inician extracciones automáticamente.

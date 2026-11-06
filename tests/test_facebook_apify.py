@@ -64,7 +64,7 @@ class ApifyTests(unittest.TestCase):
 
     def test_fetch_resolves_fixed_dataset_and_paginates_without_starting_runs(self):
         env = {'APIFY_TOKEN': 'fixture-secret', 'APIFY_FACEBOOK_TASK_ID': 'fixture-task'}
-        run = {'data': {'status': 'SUCCEEDED', 'finishedAt': NOW.isoformat(), 'defaultDatasetId': 'fixed-id'}}
+        run = {'data': {'items': [{'status': 'SUCCEEDED', 'finishedAt': NOW.isoformat(), 'defaultDatasetId': 'fixed-id'}]}}
         with patch.dict(os.environ, env), patch.object(apify, '_get', side_effect=[run, [post()]*500, [post('2')]]) as get:
             rows, finished = apify.fetch(NOW)
         self.assertEqual(len(rows), 501)
@@ -74,16 +74,33 @@ class ApifyTests(unittest.TestCase):
 
     def test_console_task_name_with_slash_is_accepted(self):
         env = {'APIFY_TOKEN': 'fixture', 'APIFY_FACEBOOK_TASK_ID': 'fixture_user/task-name'}
-        run = {'data': {'status': 'SUCCEEDED', 'finishedAt': NOW.isoformat(), 'defaultDatasetId': 'fixed-id'}}
+        run = {'data': {'items': [{'status': 'SUCCEEDED', 'finishedAt': NOW.isoformat(), 'defaultDatasetId': 'fixed-id'}]}}
         with patch.dict(os.environ, env), patch.object(apify, '_get', side_effect=[run, []]) as get:
             apify.fetch(NOW)
-        self.assertEqual(get.call_args_list[0].args[0], '/actor-tasks/fixture_user~task-name/runs/last')
+        self.assertEqual(get.call_args_list[0].args[0], '/actor-tasks/fixture_user~task-name/runs')
 
     def test_stale_failed_or_malformed_run(self):
         env = {'APIFY_TOKEN': 'fixture', 'APIFY_FACEBOOK_TASK_ID': 'fixture-task'}
         for data in [{'status': 'RUNNING'}, {'status': 'SUCCEEDED', 'finishedAt': (NOW-timedelta(days=2)).isoformat(), 'defaultDatasetId': 'id'}]:
-            with patch.dict(os.environ, env), patch.object(apify, '_get', return_value={'data': data}), self.assertRaises(SocialError):
+            with patch.dict(os.environ, env), patch.object(apify, '_get', return_value={'data': {'items': [data]}}), self.assertRaises(SocialError):
                 apify.fetch(NOW)
+
+    def test_existing_task_without_runs_explains_actor_task_difference(self):
+        with patch.dict(os.environ, {'APIFY_TOKEN': 'fixture', 'APIFY_FACEBOOK_TASK_ID': 'fixture-task'}), patch.object(apify, '_get', return_value={'data': {'items': []}}) as get, self.assertRaisesRegex(SocialError, 'guardar una tarea no copia'):
+            apify.fetch(NOW)
+        self.assertEqual(get.call_count, 1)
+        self.assertEqual(get.call_args.kwargs, {'status': 'SUCCEEDED', 'desc': 1, 'limit': 1})
+
+    def test_task_and_dataset_404_have_distinct_safe_messages(self):
+        for path, expected in [('/actor-tasks/fixture/runs', 'no encuentra la tarea'),
+                               ('/datasets/fixture/items', 'no encuentra su dataset')]:
+            with patch.object(apify.requests, 'get', return_value=Mock(status_code=404)), self.assertRaisesRegex(SocialError, expected) as error:
+                apify._get(path, 'fixture-secret')
+            self.assertNotIn('fixture-secret', str(error.exception))
+
+    def test_malformed_run_listing_is_not_reported_as_no_runs(self):
+        with patch.dict(os.environ, {'APIFY_TOKEN': 'fixture', 'APIFY_FACEBOOK_TASK_ID': 'fixture-task'}), patch.object(apify, '_get', return_value={'data': {}}), self.assertRaisesRegex(SocialError, 'formato no reconocido'):
+            apify.fetch(NOW)
 
     def test_token_in_header_only_and_errors_redacted(self):
         response = Mock(status_code=403)

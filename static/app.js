@@ -225,7 +225,7 @@ function cofradePagesWidget() {
       (cofradeFeed.pages || []).some(p => p.status === 'unavailable') ? 'No se ha podido completar la lectura. Revisa el motivo que aparece debajo de cada página.' :
       !(cofradeFeed.pages || []).length ? 'No hay páginas oficiales activas configuradas para leer.' :
       'Lectura completada: no hay publicaciones propias de estas páginas dentro de los últimos 7 días.'}</p>` : ''}
-    ${(cofradeFeed.pages || []).filter(p => p.status !== 'ok').map(p => `<p class="cofrade-pages-note"><b>${esc(p.name)}:</b> ${esc(p.message)}</p>`).join('')}
+    ${(cofradeFeed.pages || []).filter(p => p.status !== 'ok' && p.message !== cofradeFeed.error).map(p => `<p class="cofrade-pages-note"><b>${esc(p.name)}:</b> ${esc(p.message)}</p>`).join('')}
   </section>`;
 }
 function armGpt(v) {

@@ -17,7 +17,7 @@ from .auth import login, require_auth
 from starlette.concurrency import run_in_threadpool
 from .config import BASE_DIR, RENDER_DIR, UPLOAD_DIR, SCAN_INTERVAL_MINUTES, AUTO_PIPELINE, OPENAI_API_KEY, ADMIN_PASSWORD, JWT_SECRET, PUBLISH_MODE, CORS_ORIGINS, PUBLIC_BASE_URL, AUTO_PUBLISH
 
-VERSION='7.13.4'
+VERSION='7.13.5'
 app=FastAPI(title='InfoLinense Desk',version=VERSION)
 
 from fastapi.responses import JSONResponse as _JR
@@ -2048,6 +2048,15 @@ def share_kit(aid:int):
 def facebook_check(brand:str='infolinense'):
     with social_publish.use_brand(brand):
         return social_publish.facebook_check()
+
+@app.get('/api/networks/facebook/diagnose',dependencies=[Depends(require_auth)])
+def facebook_diagnose(brand:str='infolinense',photo_ids:str=''):
+    ids = [item.strip() for item in photo_ids.split(',') if item.strip()]
+    if len(ids)>2 or any(not re.fullmatch(r'[0-9]{1,30}', item) for item in ids):
+        raise HTTPException(400, 'Indica como máximo dos IDs numéricos de fotos, separados por coma.')
+    from .facebook_diagnostics import diagnose
+    with social_publish.use_brand(brand):
+        return diagnose(ids)
 
 @app.get('/api/networks/facebook/audit',dependencies=[Depends(require_auth)])
 def facebook_audit():

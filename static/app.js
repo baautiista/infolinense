@@ -1337,7 +1337,7 @@ async function settings(v) {
           ${nets.instagram && nets.instagram.stories_via_buffer ? '<button class="link" id="igStoryOff">Desconectar canal de Stories</button>' : ''}
         </details></div>
       <div class="netrow"><b>Facebook</b>
-        ${nets.facebook && nets.facebook.connected ? `<p>Página: ${esc(nets.facebook.name || 'conectada')}. Se publica automático.</p><div class="row wrap"><button class="btn small" id="fbCheck">Comprobar permisos</button><button class="link" id="metaOff">Desconectar página</button></div><div id="fbCheckOut"></div>
+        ${nets.facebook && nets.facebook.connected ? `<p>Página: ${esc(nets.facebook.name || 'conectada')}. Se publica automático.</p><div class="row wrap"><button class="btn small" id="fbCheck">Comprobar permisos</button><button class="link" id="metaOff">Desconectar página</button></div><div id="fbCheckOut"></div><details class="alts"><summary>Diagnosticar visibilidad de publicaciones</summary><p class="muted small">Solo lectura. Compara la app del token, la página y hasta dos fotos. No publica ni cambia contenido.</p><input id="fbDiagnosticIds" placeholder="IDs de fotos separados por coma" autocomplete="off"><button class="btn small" id="fbDiagnose">Generar diagnóstico</button><div id="fbDiagnoseOut"></div></details>
           <details class="alts"><summary>Pegar un token nuevo</summary><form id="metaTok" class="stack"><input name="token" placeholder="Token del Explorador de la API Graph" autocomplete="off"><button class="btn small">Conectar con este token</button></form></details>` : `<p>Sin conectar. Conecta la página de Facebook de ${esc(B.name)} (tienes que ser administrador). Tu perfil personal no se toca.</p>
           ${nets.meta_login ? `<button class="btn small" id="metaConn">Conectar página de Facebook</button>
           <details class="alts"><summary>Solo si el botón da error: pegar un token (normalmente no hace falta)</summary><form id="metaTok" class="stack"><input name="token" placeholder="Token del Explorador de la API Graph" autocomplete="off"><button class="btn small">Conectar con este token</button></form></details>` : '<p class="muted small">Faltan META_APP_ID y META_APP_SECRET en Railway.</p>'}`}
@@ -1438,6 +1438,18 @@ async function settings(v) {
     try { await api('/api/brands/' + SB, { method: 'PUT', body: JSON.stringify(body) }); await loadBrands(); toast('Guardado'); render() } catch (er) { toast(er.message) }
   };
   if ($('#metaConn')) $('#metaConn').onclick = () => conn('meta');
+  if ($('#fbDiagnose')) $('#fbDiagnose').onclick = async () => {
+    const button = $('#fbDiagnose'); button.disabled = true;
+    $('#fbDiagnoseOut').textContent = 'Consultando Meta sin modificar contenido…';
+    try {
+      const ids = $('#fbDiagnosticIds').value.trim();
+      const data = await api('/api/networks/facebook/diagnose' + q + '&photo_ids=' + encodeURIComponent(ids));
+      const report = JSON.stringify(data, null, 2);
+      $('#fbDiagnoseOut').innerHTML = '<p class="muted small">Copia este informe para comparar los medios. No contiene tokens.</p><button class="btn small" id="fbCopyDiagnostic">Copiar informe</button><pre style="white-space:pre-wrap;overflow-wrap:anywhere">' + esc(report) + '</pre>';
+      $('#fbCopyDiagnostic').onclick = async () => { try { await navigator.clipboard.writeText(report); toast('Informe copiado') } catch { toast('Selecciona y copia el informe mostrado') } };
+    } catch (e) { $('#fbDiagnoseOut').textContent = e.message }
+    finally { button.disabled = false }
+  };
   if ($('#fbCheck')) $('#fbCheck').onclick = async () => { $('#fbCheckOut').innerHTML = '<p class="muted small">Comprobando…</p>'; try { const r = await api('/api/networks/facebook/check' + q); $('#fbCheckOut').innerHTML = `<p class="${r.ok ? '' : 'error'} small">${r.ok ? '✓ ' : ''}${esc(r.message || '')}</p>${r.scopes && r.scopes.length ? `<p class="muted small">Permisos: ${esc(r.scopes.join(', '))}</p>` : ''}` } catch (e) { $('#fbCheckOut').innerHTML = `<p class="error small">${esc(e.message)}</p>` } };
   if ($('#metaTok')) $('#metaTok').onsubmit = async e => { e.preventDefault(); const b = e.target.querySelector('button'); b.disabled = true; b.textContent = 'Conectando…'; try { const r = await api('/api/networks/meta/token' + q, { method: 'POST', body: JSON.stringify({ token: e.target.token.value }) }); toast('Conectado: ' + r.name + (r.instagram ? ' · @' + r.instagram : '')); render() } catch (er) { toast(er.message); b.disabled = false; b.textContent = 'Conectar con este token' } };
   if ($('#bufferTikTok')) $('#bufferTikTok').onsubmit = async e => { e.preventDefault(); const f = e.target, b = f.querySelector('button'); b.disabled = true; b.textContent = 'Comprobando…'; try { const r = await api('/api/networks/tiktok/buffer' + q, { method: 'POST', body: JSON.stringify(Object.fromEntries(new FormData(f))) }); toast('TikTok conectado mediante Buffer: ' + r.name); render() } catch (er) { toast(er.message); b.disabled = false; b.textContent = 'Conectar TikTok con Buffer' } };

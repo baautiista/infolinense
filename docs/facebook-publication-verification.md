@@ -78,3 +78,33 @@ No se han creado publicaciones reales para las pruebas ni desplegado cambios.
 Prueba anónima desde este entorno: ambas fotos responden HTTP 200 con formulario
 de inicio de sesión. Esto no permite distinguir su visibilidad; un HTTP 200 de
 Facebook no acredita que el contenido sea público.
+
+## Investigación del 7 de noviembre: comparación entre medios
+
+El usuario confirma que InfoLinense Panel está activa desde el 13 de octubre.
+El modo Desarrollo de esa app no es una causa válida del incidente. No se ha
+confirmado todavía si los tokens actuales y la entrada fallida pertenecen a
+esa misma app.
+
+Repetida la consulta anónima mediante `/plugins/post.php`: la foto
+1163216032910095 devuelve «publicación no disponible», mientras la foto
+1119644583933907 y la entrada pfbid aportada muestran contenido y autor.
+Esto confirma una diferencia de acceso, pero no distingue retirada, bloqueo o
+restricciones. Compartir álbum y parámetros de envío no demuestra igualdad de
+estado real en Meta. HTTP 200 tampoco basta para acreditar visibilidad.
+
+`GET /api/networks/facebook/diagnose?brand=cofrade&photo_ids=1163216032910095,1119644583933907`
+requiere autenticación y realiza exclusivamente GET a Meta. En Ajustes →
+El Cofrade Linense → Facebook → Diagnosticar visibilidad de publicaciones se
+puede generar y copiar el informe sin abrir herramientas de desarrollador.
+
+El informe distingue la app configurada, la app emisora del token y la app
+creadora de la entrada (`application`). Resuelve cada foto a su `page_story_id`
+y consulta cada campo de estado por separado para conservar evidencia aunque
+un campo no esté disponible. Añade la pertenencia a las últimas 100 entradas
+publicadas, indicando si existe paginación pendiente. Consulta solo ajustes de
+edad/país; que no aparezcan no demuestra ausencia de restricciones.
+
+Se puede repetir sin IDs para InfoLinense y comparar la identidad de conexión.
+No devuelve tokens ni secretos, no registra respuestas completas, no modifica
+estados locales ni publicaciones y no genera publicaciones de prueba.

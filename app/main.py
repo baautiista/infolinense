@@ -17,7 +17,7 @@ from .auth import login, require_auth
 from starlette.concurrency import run_in_threadpool
 from .config import BASE_DIR, RENDER_DIR, UPLOAD_DIR, SCAN_INTERVAL_MINUTES, AUTO_PIPELINE, OPENAI_API_KEY, ADMIN_PASSWORD, JWT_SECRET, PUBLISH_MODE, CORS_ORIGINS, PUBLIC_BASE_URL, AUTO_PUBLISH
 
-VERSION='7.13.3'
+VERSION='7.13.4'
 app=FastAPI(title='InfoLinense Desk',version=VERSION)
 
 from fastapi.responses import JSONResponse as _JR
@@ -2048,6 +2048,11 @@ def share_kit(aid:int):
 def facebook_check(brand:str='infolinense'):
     with social_publish.use_brand(brand):
         return social_publish.facebook_check()
+
+@app.get('/api/networks/facebook/audit',dependencies=[Depends(require_auth)])
+def facebook_audit():
+    from .facebook_publishing import audit
+    return {'accounts': audit()}
 
 @app.post('/api/networks/meta/token',dependencies=[Depends(require_auth)])
 def meta_token(t:TokenIn,brand:str='infolinense'):

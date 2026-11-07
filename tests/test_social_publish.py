@@ -116,13 +116,23 @@ class SocialPublishTests(unittest.TestCase):
         calls = []
         def fake(method, url, **kw):
             calls.append((method, url, kw.get('data') or kw.get('params')))
-            return Resp({'id': '1', 'post_id': 'PAGE_9'})
+            if url.endswith('/me'): return Resp({'id': 'PAGE', 'is_published': True})
+            if url.endswith('/photos'): return Resp({'id': 'PHOTO_ASSET'})
+            if url.endswith('/feed'): return Resp({'id': 'PAGE_9'})
+            if url.endswith('/published_posts'): return Resp({'data': [{'id': 'PAGE_9'}]})
+            return Resp({'id': 'PAGE_9', 'from': {'id': 'PAGE'}, 'is_published': True,
+                         'is_hidden': False, 'privacy': {'value': 'EVERYONE'},
+                         'permalink_url': 'https://www.facebook.com/PAGE_9'})
         with patch.object(sp.requests, 'request', side_effect=fake):
             r = sp.publish('facebook', self.article)
         self.assertTrue(r['ok'])
         self.assertEqual(r['url'], 'https://www.facebook.com/PAGE_9')
-        self.assertTrue(calls[0][1].endswith('/PAGE/photos'))
-        self.assertNotIn('19 patinetes', calls[0][2]['message']); self.assertIn('Texto de la noticia', calls[0][2]['message'])
+        uploads = [c for c in calls if c[0] == 'POST']
+        self.assertEqual(uploads[0][2]['published'], 'false')
+        self.assertEqual(uploads[1][2]['published'], 'true')
+        self.assertIn('PHOTO_ASSET', uploads[1][2]['attached_media[0]'])
+        self.assertNotIn('19 patinetes', uploads[1][2]['message'])
+        self.assertIn('Texto de la noticia', uploads[1][2]['message'])
 
     def test_instagram_waits_and_publishes_once(self):
         def fake(method, url, **kw):

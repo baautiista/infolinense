@@ -166,9 +166,12 @@ def _meta():
     page = acc.get('page') or {}
     if page.get('access_token'):
         return page
-    if META_PAGE_ID and META_PAGE_TOKEN and _is_default():
-        return {'id': META_PAGE_ID, 'name': '', 'access_token': META_PAGE_TOKEN,
-                'instagram_id': INSTAGRAM_USER_ID, 'instagram_username': ''}
+    prefix = brands.BRANDS[current_brand()]['env']
+    configured_id = os.getenv(prefix + 'META_PAGE_ID', '').strip() if prefix else META_PAGE_ID
+    configured_token = os.getenv(prefix + 'META_PAGE_TOKEN', '').strip() if prefix else META_PAGE_TOKEN
+    if configured_id and configured_token:
+        return {'id': configured_id, 'name': '', 'access_token': configured_token,
+                'instagram_id': INSTAGRAM_USER_ID if _is_default() else '', 'instagram_username': ''}
     return {}
 
 
@@ -248,10 +251,15 @@ def _graph(method, path, base=None, **kw):
         r = requests.request(method, (base or GRAPH) + path, timeout=60, **kw)
         data = r.json()
     except (requests.RequestException, ValueError) as exc:
-        raise SocialError('Meta no responde: %s' % str(exc)[:150])
+        raise SocialError('Meta no responde; el resultado de la operación no está confirmado (%s)' % type(exc).__name__) from None
     if not r.ok or (isinstance(data, dict) and data.get('error')):
         err = (data or {}).get('error') or {}
-        exc = SocialError('Meta: %s' % (err.get('error_user_msg') or err.get('message') or 'HTTP %s' % r.status_code)[:300])
+        message = str(err.get('error_user_msg') or err.get('message') or 'HTTP %s' % r.status_code)
+        for source in (kw.get('params') or {}, kw.get('data') or {}):
+            for key, value in source.items():
+                if any(part in key for part in ('token', 'secret')) and value:
+                    message = message.replace(str(value), '[redactado]')
+        exc = SocialError('Meta: %s' % message[:300])
         exc.code, exc.subcode = err.get('code'), err.get('error_subcode')
         raise exc
     return data
@@ -306,11 +314,8 @@ def _page_for_brand(pages):
     plain = lambda t: ''.join(c for c in unicodedata.normalize('NFD', (t or '').lower()) if c.isalnum())
     b = brands.settings(_brand.get())
     keys = [plain(b['name']), plain(b.get('short')), plain(_brand.get())]
-    for p in pages:
-        name = plain(p.get('name')) + plain(p.get('instagram_username'))
-        if any(k and k in name for k in keys):
-            return p
-    return None
+    matches = [p for p in pages if plain(p.get('name')) == keys[0]]
+    return matches[0] if len(matches) == 1 else None
 
 
 def meta_from_user_token(short):
@@ -336,7 +341,10 @@ def meta_from_user_token(short):
     if not pages:
         raise SocialError('Tu usuario de Facebook no administra ninguna página o no diste permiso a la página.')
     chosen = next((p for p in pages if p['id'] == PREFERRED_PAGES.get(_brand.get())), None) \
-        or _page_for_brand(pages) or next((p for p in pages if p['instagram_id']), None) or pages[0]
+        or _page_for_brand(pages)
+    if not chosen:
+        _save_account('meta', {'pages': pages, 'page': {}})
+        raise SocialError('Selecciona explícitamente la página de este medio en Ajustes → Redes sociales.')
     _save_account('meta', {'pages': pages, 'page': chosen})
     return chosen
 
@@ -610,22 +618,18 @@ def _fb_photo(pid, token, path, **data):
                   files={'source': ('imagen.jpg', jpeg_bytes(path), 'image/jpeg')})
 
 
-def _facebook_post(pid, token, message, paths):
-    if len(paths) == 1:
-        d = _fb_photo(pid, token, paths[0], message=message, published='true')
-        post_id = d.get('post_id') or d.get('id')
-    else:
-        ids = [_fb_photo(pid, token, p, published='false')['id'] for p in paths]
-        form = {'message': message, 'access_token': token}
-        for i, mid in enumerate(ids):
-            form['attached_media[%d]' % i] = json.dumps({'media_fbid': mid})
-        post_id = _graph('POST', '/%s/feed' % pid, data=form)['id']
-    link = 'https://www.facebook.com/' + str(post_id)
-    try:  # enlace real de la publicación (para comprobar que está y en qué página)
-        link = _graph('GET', '/%s' % post_id, params={'fields': 'permalink_url', 'access_token': token}).get('permalink_url') or link
-    except SocialError:
-        pass
-    return post_id, link
+def _facebook_post(pid, token, message, paths, link=None):
+    # Una foto es un recurso, no una entrada. Creamos siempre la entrada del muro.
+    ids = [_fb_photo(pid, token, p, published='false')['id'] for p in paths]
+    form = {'message': message, 'access_token': token, 'published': 'true'}
+    if link and not ids:
+        form['link'] = link
+    for i, mid in enumerate(ids):
+        form['attached_media[%d]' % i] = json.dumps({'media_fbid': mid})
+    post_id = _graph('POST', '/%s/feed' % pid, data=form).get('id')
+    if not post_id:
+        raise SocialError('Meta no devolvió el ID de la entrada; no se repetirá el envío automáticamente.')
+    return str(post_id), 'https://www.facebook.com/' + str(post_id)
 
 
 def _ig_wait(container, token, seconds=90, base=None):
@@ -958,6 +962,9 @@ def publish(network, article):
 
 
 def _publish(network, article):
+    if network == 'facebook':
+        from .facebook_publishing import publish as facebook_publish
+        return facebook_publish(article)
     if network not in NETWORKS:
         raise SocialError('Red desconocida')
     done = db.row("SELECT * FROM social_posts WHERE article_id=? AND network=? AND status IN ('published','pending','processing','publishing')", (article['id'], network))
@@ -1148,14 +1155,14 @@ def _publish_video(network, article, v):
                 up = st.get('upload_url') or 'https://rupload.facebook.com/video-upload/%s/%s' % (META_GRAPH_VERSION, vid)
                 r = requests.post(up, headers={'Authorization': 'OAuth ' + token, 'file_url': url}, timeout=180)
                 if not r.ok:
-                    raise SocialError('Facebook no pudo recibir el vídeo (%s)' % r.text[:150])
+                    raise SocialError('Facebook no pudo recibir el vídeo (HTTP %s)' % r.status_code)
                 _graph('POST', '/%s/video_reels' % pid, data={'upload_phase': 'finish', 'video_id': vid, 'video_state': 'PUBLISHED',
                                                               'description': caption(article, 60000), 'access_token': token})
                 link, kind = 'https://www.facebook.com/reel/%s' % vid, 'Reel'
             else:
                 d = _graph('POST', '/%s/videos' % pid, base='https://graph-video.facebook.com/' + META_GRAPH_VERSION,
                            data={'file_url': url, 'description': caption(article, 60000), 'title': (article.get('headline') or '')[:250],
-                                 'access_token': token})
+                                 'access_token': token, 'published': 'true'})
                 vid = d['id']
                 link, kind = 'https://www.facebook.com/%s/videos/%s' % (pid, vid), 'vídeo'
             _post_state(aid, network, 'processing', 'fbv:%s' % vid, link, 'Facebook está procesando el %s' % kind)
@@ -1186,6 +1193,8 @@ def _publish_video(network, article, v):
         _post_state(aid, network, 'manual', message=str(exc))
         return {'network': network, 'ok': False, 'manual': True, 'message': str(exc)}
     except Exception as exc:
+        if network == 'facebook':
+            exc = SocialError('El envío del vídeo no está confirmado; requiere comprobación en Meta.')
         _post_state(aid, network, 'error', message=str(exc)[:400])
         return {'network': network, 'ok': False, 'message': str(exc)[:300]}
 
@@ -1193,10 +1202,17 @@ def _publish_video(network, article, v):
 def check_processing():
     """Revisa los vídeos que las redes están procesando: cuando terminan, se publican (Instagram) o se marcan publicados."""
     db.exec_("""UPDATE social_posts SET status='error',message='Se cortó mientras se publicaba: pulsa reintentar'
-                WHERE status='publishing' AND updated_at<datetime('now','-15 minutes')""")
+                WHERE network!='facebook' AND status='publishing' AND updated_at<datetime('now','-15 minutes')""")
     db.exec_("""UPDATE social_posts SET status='error',message='La red tardó más de un día en procesar el vídeo: reintenta'
-                WHERE status='processing' AND updated_at<datetime('now','-1 day')""")
+                WHERE network!='facebook' AND status='processing' AND updated_at<datetime('now','-1 day')""")
     done = 0
+    from .facebook_publishing import publish as confirm_facebook
+    for pending in db.rows("""SELECT p.*,a.brand FROM social_posts p JOIN articles a ON a.id=p.article_id
+            WHERE p.network='facebook' AND p.status='verification_pending' AND length(p.remote_id)>0
+            AND p.updated_at<=datetime('now','-2 minutes') LIMIT 10"""):
+        with use_brand(pending.get('brand') or brands.DEFAULT):
+            if confirm_facebook(dict(pending, id=pending['article_id'])).get('confirmed'):
+                done += 1
     for p in db.rows("""SELECT p.*,a.brand FROM social_posts p JOIN articles a ON a.id=p.article_id WHERE p.status='processing'
                         AND p.updated_at>=datetime('now','-1 day')"""):
         rid = p.get('remote_id') or ''
@@ -1217,12 +1233,9 @@ def check_processing():
                     elif code in ('ERROR', 'EXPIRED'):
                         _post_state(p['article_id'], 'instagram', 'error', rid, '', 'Instagram no pudo procesar el vídeo (%s)' % (st.get('status') or code))
                 elif rid.startswith('fbv:'):
-                    page = _meta()
-                    st = _graph('GET', '/' + rid[4:], params={'fields': 'status', 'access_token': page.get('access_token')}).get('status') or {}
-                    if st.get('video_status') == 'ready':
-                        _post_state(p['article_id'], 'facebook', 'published', rid[4:], p.get('url') or '', 'Vídeo publicado en Facebook'); done += 1
-                    elif st.get('video_status') == 'error':
-                        _post_state(p['article_id'], 'facebook', 'error', rid, '', 'Facebook no pudo procesar el vídeo')
+                    from .facebook_publishing import publish as confirm_facebook
+                    if confirm_facebook(dict(p, id=p['article_id'])).get('confirmed'):
+                        done += 1
                 elif rid.startswith('ttv:'):
                     st = _tiktok('/post/publish/status/fetch/', {'publish_id': rid[4:]})
                     if st.get('status') == 'PUBLISH_COMPLETE':

@@ -17,7 +17,7 @@ from .auth import login, require_auth
 from starlette.concurrency import run_in_threadpool
 from .config import BASE_DIR, RENDER_DIR, UPLOAD_DIR, SCAN_INTERVAL_MINUTES, AUTO_PIPELINE, OPENAI_API_KEY, ADMIN_PASSWORD, JWT_SECRET, PUBLISH_MODE, CORS_ORIGINS, PUBLIC_BASE_URL, AUTO_PUBLISH
 
-VERSION='7.13.5'
+VERSION='7.13.6'
 app=FastAPI(title='InfoLinense Desk',version=VERSION)
 
 from fastapi.responses import JSONResponse as _JR
@@ -467,6 +467,8 @@ def close_private_facebook_browser():
         call('close')  # Flush the profile without deleting the Facebook session.
     except social_publish.SocialError:
         pass
+    finally:
+        call('restart')  # Also recover a hung worker during service shutdown.
 
 @app.get('/api/facebook/browser/status',dependencies=[Depends(require_auth)])
 def facebook_browser_status():
@@ -482,17 +484,21 @@ def facebook_browser_screenshot():
         hosts = call('status').get('blocked_hosts', [])
         return Response(image, media_type='image/png', headers={'Cache-Control':'no-store', 'Pragma':'no-cache', 'X-Facebook-Blocked-Hosts': ', '.join(hosts)})
     except social_publish.SocialError as exc:
-        raise HTTPException(400, str(exc))
+        from .facebook_browser_runtime import BrowserBusy
+        raise HTTPException(409 if isinstance(exc, BrowserBusy) else 400, str(exc),
+                            headers={'Retry-After': '2'} if isinstance(exc, BrowserBusy) else None)
 
 @app.post('/api/facebook/browser/{action}',dependencies=[Depends(require_auth)])
 def facebook_browser_action(action:str, body:dict):
     from .facebook_browser import call
-    if action not in {'start', 'input', 'confirm', 'disconnect'}:
+    if action not in {'start', 'input', 'confirm', 'disconnect', 'restart'}:
         raise HTTPException(400, 'Operación no admitida')
     try:
         return call(action, **body) if action == 'input' else call(action)
     except social_publish.SocialError as exc:
-        raise HTTPException(400, str(exc))
+        from .facebook_browser_runtime import BrowserBusy
+        raise HTTPException(409 if isinstance(exc, BrowserBusy) else 400, str(exc),
+                            headers={'Retry-After': '2'} if isinstance(exc, BrowserBusy) else None)
 
 @app.get('/api/social/facebook/pages/search',dependencies=[Depends(require_auth)])
 def search_facebook_pages(q:str=''):

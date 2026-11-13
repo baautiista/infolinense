@@ -113,9 +113,14 @@ class BrowserTests(unittest.TestCase):
             self.assertNotIn('fixture-sensitive',result)
 
     def test_worker_does_not_return_browser_exception_values(self):
-        with patch.object(browser, '_execute', side_effect=RuntimeError('fixture-sensitive-input')), self.assertRaises(SocialError) as error:
-            browser.call('status')
-        self.assertNotIn('fixture-sensitive-input', str(error.exception))
+        from app.facebook_browser_runtime import _worker
+        connection = Mock()
+        connection.recv.side_effect = [('input', {'kind': 'text', 'text': 'fixture-sensitive-input'}), EOFError()]
+        with patch.object(browser, '_execute', side_effect=[RuntimeError('fixture-sensitive-input'), {'open': False}]), patch.object(browser, '_close'), patch.object(browser, '_profile'):
+            _worker(connection, '/tmp/fixture-unused-browser')
+        response = connection.send.call_args.args[0]
+        self.assertFalse(response['ok'])
+        self.assertNotIn('fixture-sensitive-input', str(response))
 
     def test_input_validation_prevents_commands_and_out_of_bounds_clicks(self):
         page = Mock()
@@ -142,7 +147,8 @@ class BrowserTests(unittest.TestCase):
         for method, path, kwargs in [('GET', '/api/facebook/browser/status', {}),
                                      ('GET', '/api/facebook/browser/screenshot', {}),
                                      ('POST', '/api/facebook/browser/start', {'json': {}}),
-                                     ('POST', '/api/facebook/browser/input', {'json': {'kind': 'text', 'text': 'fixture'}})]:
+                                     ('POST', '/api/facebook/browser/input', {'json': {'kind': 'text', 'text': 'fixture'}}),
+                                     ('POST', '/api/facebook/browser/restart', {'json': {}})]:
             with patch.object(browser, 'call') as call:
                 response = client.request(method, path, **kwargs)
             self.assertIn(response.status_code, (401, 503))

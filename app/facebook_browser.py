@@ -2,26 +2,22 @@
 
 Uses a dedicated profile created by Desk, never an existing personal browser profile.
 No password/cookie export endpoints, remote debugging ports, or credential logging.
-All Playwright work stays on one worker thread. The profile lives in the data volume.
+All Playwright work stays in one supervised child process. The profile lives in the data volume.
 """
-from concurrent.futures import Future, TimeoutError
 import json
 import fcntl
 import socket
 import os
 from pathlib import Path
-import queue
 import shutil
-import threading
 from urllib.parse import urlparse
 
 from .config import DATA_DIR
 from .social_publish import SocialError
+from .facebook_browser_runtime import BrowserRuntime
 
 _WIDTH, _HEIGHT = 1100, 800
-_commands = queue.Queue(maxsize=32)
-_thread = None
-_start_lock = threading.Lock()
+_runtime = BrowserRuntime()
 _context = _page = _playwright = None
 _interactive = False
 _profile_guard = None
@@ -29,36 +25,8 @@ _blocked_hosts = set()
 _profile = Path(DATA_DIR) / '.private-facebook-browser'
 
 
-def _worker():
-    while True:
-        future, action, args = _commands.get()
-        if not future.set_running_or_notify_cancel():
-            continue
-        try:
-            future.set_result(_execute(action, args))
-        except SocialError as exc:
-            future.set_exception(exc)
-        except Exception:
-            # Browser errors may contain URLs or input values: do not return/log them.
-            future.set_exception(SocialError('No se pudo completar la operación del navegador privado de Facebook.'))
-
-
 def call(action, **args):
-    global _thread
-    with _start_lock:
-        if _thread is None or not _thread.is_alive():
-            _thread = threading.Thread(target=_worker, daemon=True, name='facebook-private-browser')
-            _thread.start()
-    future = Future()
-    try:
-        _commands.put_nowait((future, action, args))
-    except queue.Full:
-        raise SocialError('El navegador está ocupado; espera a que termine la operación actual.')
-    try:
-        return future.result(timeout=180 if action == 'read' else 60)
-    except TimeoutError:
-        future.cancel()
-        raise SocialError('El navegador sigue ocupado. Espera antes de repetir la operación.') from None
+    return _runtime.call(action, _profile, **args)
 
 
 def _allowed_url(url):
@@ -332,7 +300,10 @@ def _read(url):
         raise SocialError('La sesión privada no está iniciada o ha caducado. Vuelve a conectar Facebook en Ajustes.')
     payloads = []
 
-    def receive(response):
+    def receive(request):
+        response = request.response()
+        if response is None:
+            return
         if '/api/graphql/' not in response.url:
             return
         try:
@@ -349,7 +320,7 @@ def _read(url):
         except Exception:
             pass
 
-    _page.on('response', receive)
+    _page.on('requestfinished', receive)
     try:
         _page.goto(url, wait_until='domcontentloaded', timeout=45000)
         _page.wait_for_timeout(1000)
@@ -378,4 +349,4 @@ def _read(url):
         return {'items': sorted(items.values(), key=lambda post: post['published_at'], reverse=True),
                 'partial': True, 'message': 'Lectura con sesión privada. La cobertura del historial sigue pendiente de verificar; detener el desplazamiento no demuestra que Facebook haya entregado todos los posts.'}
     finally:
-        _page.remove_listener('response', receive)
+        _page.remove_listener('requestfinished', receive)

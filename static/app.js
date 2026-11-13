@@ -58,7 +58,7 @@ async function request(url, opt = {}) {
   const headers = { ...(opt.body instanceof FormData ? {} : { 'Content-Type': 'application/json' }), ...(token ? { Authorization: `Bearer ${token}` } : {}) };
   const r = await fetch(url, { ...opt, headers });
   if (r.status === 401 && url !== '/api/auth/login') { logout(); throw new Error('La sesión ha caducado') }
-  if (!r.ok) { let d = await r.text(); try { d = JSON.parse(d).detail || d } catch { } throw new Error(typeof d === 'string' ? d : JSON.stringify(d)) }
+  if (!r.ok) { let d = await r.text(); try { d = JSON.parse(d).detail || d } catch { } const error = new Error(typeof d === 'string' ? d : JSON.stringify(d)); error.status = r.status; throw error }
   return r;
 }
 async function api(url, opt) { const r = await request(url, opt); return r.headers.get('content-type')?.includes('json') ? r.json() : r.text() }
@@ -1369,7 +1369,7 @@ async function settings(v) {
       <form id="addLearn" class="row wrap"><input name="label" placeholder="Sitio (p. ej. Castelldefels)" required><button class="btn small">Añadir</button></form></section>
     ${SB === 'cofrade' ? `<section class="panel"><h2>Conexión privada de lectura de Facebook</h2>
       <p class="muted small">Abre el navegador privado e inicia sesión tú directamente en Facebook. No introduzcas contraseñas en el chat. Esta conexión permite probar la búsqueda automática sin administrar las páginas ni utilizar Apify; su cobertura aún debe comprobarse.</p>
-      <div class="row wrap"><button class="btn small" id="fbBrowserStart">Abrir Facebook</button><button class="btn small" id="fbBrowserConfirm">Ya he iniciado sesión</button><button class="link small danger" id="fbBrowserOff">Desconectar y borrar sesión</button></div>
+      <div class="row wrap"><button class="btn small" id="fbBrowserStart">Abrir Facebook</button><button class="btn small" id="fbBrowserConfirm">Ya he iniciado sesión</button><button class="btn small" id="fbBrowserRestart">Recuperar navegador sin borrar sesión</button><button class="link small danger" id="fbBrowserOff">Desconectar y borrar sesión</button></div>
       <p class="small muted" id="fbBrowserStatus">Sin comprobar.</p>
       <div id="fbBrowserFrame" hidden><p class="small muted">Pulsa sobre el campo de Facebook en la imagen y escribe. Puedes usar Tab, Intro y pegar texto. Si Facebook solicita una comprobación, complétala tú. La sesión se guarda en el volumen privado del servidor.</p><form id="fbBrowserSend" class="row wrap"><input id="fbBrowserText" type="password" autocomplete="new-password" autocapitalize="off" spellcheck="false" maxlength="512" placeholder="Texto para el campo seleccionado en Facebook" aria-label="Texto privado para enviar al campo seleccionado en Facebook"><button class="btn small">Escribir en Facebook</button></form><canvas id="fbBrowserCanvas" tabindex="0" width="1100" height="800" style="width:100%;height:auto;border:1px solid var(--line);border-radius:8px" aria-label="Navegador privado de Facebook"></canvas></div>
     </section>` : ''}
@@ -1675,27 +1675,37 @@ async function efemView(v) {
 // The editor controls the real Facebook page; credentials never enter chat or source files.
 function armFacebookBrowser(v) {
   const status = v.querySelector('#fbBrowserStatus'), frame = v.querySelector('#fbBrowserFrame'), canvas = v.querySelector('#fbBrowserCanvas');
-  let polling = false, sequence = Promise.resolve();
+  let polling = false, sequence = Promise.resolve(), generation = 0;
   const command = (action, body = {}) => api('/api/facebook/browser/' + action, { method: 'POST', body: JSON.stringify(body) });
-  const input = body => { sequence = sequence.then(() => command('input', body)).catch(e => { status.textContent = e.message }); return sequence };
+  const input = body => { const current = generation; sequence = sequence.then(() => current === generation && canvas.isConnected && !frame.hidden ? command('input', body) : undefined).catch(e => { if (current === generation) status.textContent = e.message }); return sequence };
   const refresh = async () => {
     if (!polling || !canvas.isConnected) { polling = false; return }
     let temporary;
     try {
+      const state = await api('/api/facebook/browser/status');
+      if (state.busy) { status.textContent = state.action === 'read' ? 'Leyendo publicaciones de las hermandades…' : 'El navegador está atendiendo otra operación…'; return }
+      if (!state.open) { polling = false; frame.hidden = true; return }
       const response = await request('/api/facebook/browser/screenshot');
       const blocked = response.headers.get('X-Facebook-Blocked-Hosts');
       if (blocked) status.textContent = 'Facebook necesita recursos que el navegador ha bloqueado: ' + blocked + '. Comunica estos dominios, sin enviar contraseñas ni cookies.';
       temporary = URL.createObjectURL(await response.blob());
       const img = new Image(); img.src = temporary; await img.decode();
       canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
-    } catch (e) { if (polling && canvas.isConnected) status.textContent = e.message; polling = false }
-    finally { if (temporary) URL.revokeObjectURL(temporary) }
-    if (polling) setTimeout(refresh, 1200);
+    } catch (e) { if (polling && canvas.isConnected) status.textContent = e.message; if (e.status !== 409) polling = false }
+    finally { if (temporary) URL.revokeObjectURL(temporary); if (polling && canvas.isConnected) setTimeout(refresh, 1200) }
   };
-  v.querySelector('#fbBrowserStart').onclick = async () => {
+  v.querySelector('#fbBrowserStart').onclick = async event => {
+    event.target.disabled = true; const current = ++generation;
     status.textContent = 'Abriendo el navegador privado…';
-    try { await command('start'); frame.hidden = false; status.textContent = 'Inicia sesión en Facebook dentro de la imagen.'; if (!polling) { polling = true; refresh() } }
+    try { await command('start'); if (current !== generation || !canvas.isConnected) return; frame.hidden = false; status.textContent = 'Inicia sesión en Facebook dentro de la imagen.'; if (!polling) { polling = true; refresh() } }
     catch (e) { status.textContent = e.message }
+    finally { event.target.disabled = false }
+  };
+  v.querySelector('#fbBrowserRestart').onclick = async event => {
+    polling = false; generation++; sequence = Promise.resolve(); event.target.disabled = true;
+    try { await command('restart'); frame.hidden = true; status.textContent = 'Navegador recuperado. La sesión guardada se conserva. Puedes volver a Buscar.' }
+    catch (e) { status.textContent = e.message }
+    finally { event.target.disabled = false }
   };
   v.querySelector('#fbBrowserConfirm').onclick = async () => {
     try { await sequence; await command('confirm'); status.textContent = 'Sesión preparada. Cierra esta vista y prueba Buscar en Cofrade; se comprobará el historial real.'; polling = false; frame.hidden = true }

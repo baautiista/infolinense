@@ -480,7 +480,24 @@ def create_carousel_designs(article, slides, selected_photos):
     }
 
 
-def _autofill_text_only(article):
+def create_text_design(article, content_hash):
+    """Crea una plantilla editable que queda en revisión hasta incorporar la foto."""
+    if not ready() or not connected():
+        raise ValueError('Conecta tu cuenta de Canva desde Ajustes')
+    from . import brands
+    title = brands.settings(article.get('brand'))['name'] + ' · ' + (article.get('headline') or '')[:100]
+    design_id, page = _autofill_text_only(article, title=title)
+    url = 'https://www.canva.com/design/%s/edit' % design_id
+    db.exec_(
+        """INSERT OR REPLACE INTO canva_designs(article_id,design_id,url,exported,content_hash,updated_at)
+           VALUES(?,?,?,0,?,CURRENT_TIMESTAMP)""",
+        (article['id'], design_id, url, content_hash),
+    )
+    _keep_only_page(design_id, page)
+    return {'url': url}
+
+
+def _autofill_text_only(article, title=None):
     """Diseño de la noticia con titular, entradilla y sección (sin foto). Devuelve (design_id, página)."""
     texts = design_fields(article, strict=False)
     template_id = texts['template']
@@ -491,7 +508,7 @@ def _autofill_text_only(article):
               if schema.get(k, {}).get('type') == 'text' and texts.get(k)}
     fields.update(size_variants(schema, texts, 'auto'))
     job = _api('POST', '/autofills', json={'type': 'create_from_brand_template', 'brand_template_id': template_id,
-                                          'title': 'Lote · ' + (article.get('headline') or '')[:80], 'data': fields})
+                                          'title': title or 'Lote · ' + (article.get('headline') or '')[:80], 'data': fields})
     design = _design_from_job(_wait('/autofills/' + job['job']['id'], job, tries=120))
     if not design.get('id'):
         raise ValueError('Canva no devolvió el diseño')

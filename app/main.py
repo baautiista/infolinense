@@ -13,12 +13,14 @@ from . import db, sources, pipeline, publishers, photos, canva, ai, planner, lay
 from . import video as videos
 from . import efemerides
 from . import review as checks
+from .chatgpt_import import router as chatgpt_import_router
 from .auth import login, require_auth
 from starlette.concurrency import run_in_threadpool
 from .config import BASE_DIR, RENDER_DIR, UPLOAD_DIR, SCAN_INTERVAL_MINUTES, AUTO_PIPELINE, OPENAI_API_KEY, ADMIN_PASSWORD, JWT_SECRET, PUBLISH_MODE, CORS_ORIGINS, PUBLIC_BASE_URL, AUTO_PUBLISH
 
 VERSION='7.13.6'
 app=FastAPI(title='InfoLinense Desk',version=VERSION)
+app.include_router(chatgpt_import_router)
 
 from fastapi.responses import JSONResponse as _JR
 @app.exception_handler(OSError)

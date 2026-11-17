@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Enviar a Desk · InfoLinense</title>
+  <link rel="stylesheet" href="/static/styles.css">
+  <script src="/static/send-to-desk.js" defer></script>
+</head>
+<body>
+  <main class="login">
+    <section class="login-card">
+      <div class="logo" aria-hidden="true">IL</div>
+      <h1>Enviar a Desk</h1>
+      <p id="headline" hidden></p>
+      <p id="status" role="status">Abriendo el envío…</p>
+      <form id="loginForm" class="stack" hidden>
+        <label for="password">Contraseña de Desk</label>
+        <input id="password" type="password" autocomplete="current-password" required>
+        <button type="submit" class="btn primary">Entrar y enviar</button>
+      </form>
+      <button id="retry" class="btn primary" type="button" hidden>Reintentar</button>
+      <a id="edit" class="btn" hidden>Abrir noticia en Desk</a>
+      <a id="canva" class="btn primary" hidden>Abrir en Canva</a>
+    </section>
+  </main>
+</body>
+</html>

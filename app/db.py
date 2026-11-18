@@ -62,6 +62,10 @@ def init_db():
       exported INTEGER NOT NULL DEFAULT 0, content_hash TEXT,
       updated_at TEXT DEFAULT CURRENT_TIMESTAMP
     );
+    CREATE TABLE IF NOT EXISTS republications(
+      article_id INTEGER NOT NULL, request_id TEXT NOT NULL, previous_posts TEXT NOT NULL,
+      result TEXT, PRIMARY KEY(article_id,request_id)
+    );
     CREATE TABLE IF NOT EXISTS carousel_designs(
       article_id INTEGER NOT NULL, slide_index INTEGER NOT NULL,
       design_id TEXT NOT NULL, url TEXT NOT NULL, exported INTEGER NOT NULL DEFAULT 0,
@@ -140,6 +144,8 @@ def init_db():
         'hidden':'INTEGER DEFAULT 0',
         'brand':"TEXT NOT NULL DEFAULT 'infolinense'",
         'scheduled_networks':'TEXT',
+        'scheduled_web':'INTEGER NOT NULL DEFAULT 1',
+        'web_published':'INTEGER',
         'schedule_error':'TEXT',
         'carousel_reason':'TEXT',
         'carousel_json':'TEXT',

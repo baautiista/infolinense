@@ -523,7 +523,7 @@ async function drawLaunch() {
           <label class="lb-change">${it.has_web_photo ? 'Cambiar' : 'Añadir'} foto<input type="file" accept="image/*" data-web="${it.id}"></label></p>
         <details class="alts"><summary>Carrusel de fotos · hasta 20</summary><div class="stack"><p class="muted small" data-carousel-count>No has subido un carrusel.</p><label>Imágenes JPG, PNG o WEBP<input type="file" accept="image/jpeg,image/png,image/webp" multiple data-carousel-files="${it.id}"></label><button class="btn small" type="button" data-carousel-upload="${it.id}">Subir carrusel</button><p class="muted small">Instagram admite hasta 20 con Buffer; Facebook y TikTok usan las 10 primeras.</p></div></details>
         <div class="row wrap">${whenPicker(it.id, nextQuarter(15 * i))}</div>
-        ${networkPicker(it.id, availableNetworks(networkByBrand[it.brand || 'infolinense']))}
+        ${networkPicker(it, availableNetworks(networkByBrand[it.brand || 'infolinense']))}
         ${storySummary(it)}
         <div class="rv-actions"><button class="btn small primary" data-now="${it.id}">Publicar ya</button><button class="btn small" data-sched="${it.id}">Programar</button>${storyAction(it)}</div></div></article>`).join('')}</div>`;
   launchItems.forEach(async it => {
@@ -533,9 +533,8 @@ async function drawLaunch() {
     try { const u = await blobUrl(preview); const img = $('#img-' + it.id); if (img) img.innerHTML = `<img src="${u}" alt="">` } catch (e) { }
   });
   const mark = (id, t) => { const it = launchItems.find(x => x.id === id); if (it) it.state = t; const el = $('#st-' + id); if (el) el.textContent = t };
-  box.querySelectorAll('.netpick[data-aid] input').forEach(input => input.onchange = () => rememberNetworks(input.closest('.netpick').dataset.aid, [...input.closest('.netpick').querySelectorAll('input:checked')].map(x => x.value)));
-  const pubNow = async id => { mark(id, 'Publicando…'); try { const r = await api(`/api/articles/${id}/publish`, { method: 'POST', body: JSON.stringify({ networks: pickedNets(id) }) }); const bad = (r.results || []).filter(x => !x.ok && !x.skipped); mark(id, bad.length ? 'Error: ' + bad.map(x => x.message).join(' · ').slice(0, 120) : 'Publicada') } catch (e) { mark(id, 'Error: ' + e.message) } };
-  const sched = async (id, at) => { try { const r = await api(`/api/articles/${id}/schedule`, { method: 'POST', body: JSON.stringify({ at, networks: pickedNets(id) }) }); mark(id, 'Programada ' + whenText(r.scheduled_at)) } catch (e) { mark(id, 'Error: ' + e.message) } };
+  const pubNow = async id => { mark(id, 'Publicando…'); try { const r = await api(`/api/articles/${id}/publish`, { method: 'POST', body: JSON.stringify(publishTargets(id)) }); const bad = (r.results || []).filter(x => !x.ok && !x.skipped); mark(id, bad.length ? 'Error: ' + bad.map(x => x.message).join(' · ').slice(0, 120) : 'Publicada') } catch (e) { mark(id, 'Error: ' + e.message) } };
+  const sched = async (id, at) => { try { const r = await api(`/api/articles/${id}/schedule`, { method: 'POST', body: JSON.stringify({ at, ...publishTargets(id) }) }); mark(id, 'Programada ' + whenText(r.scheduled_at)) } catch (e) { mark(id, 'Error: ' + e.message) } };
   const atOf = id => $('#d-' + id).value + 'T' + $('#t-' + id).value;
   box.querySelectorAll('[data-now]').forEach(b => b.onclick = () => pubNow(+b.dataset.now));
   box.querySelectorAll('[data-sched]').forEach(b => b.onclick = () => { const at = atOf(b.dataset.sched); if (at <= madridNow()) return toast('Elige una hora futura'); sched(+b.dataset.sched, at) });
@@ -577,6 +576,7 @@ async function quickView(v) {
   const b0 = netBrand();
   const quickNetworkState = { [b0]: await api('/api/networks?brand=' + encodeURIComponent(b0)).catch(() => ({})) };
   let quickSelectedNetworks = null;
+  let quickWeb = true;
   const brandOpts = BRANDS.map(b => `<label><input type="radio" name="brand" value="${b.slug}" ${b.slug === b0 ? 'checked' : ''}><span>${esc(b.name)}</span></label>`).join('');
   v.innerHTML = `${modeSwitch()}<form class="up" id="qForm">
     <div><h2>Lanzadera</h2><p class="muted small">Pones tu titular, texto e imagen y se publica tal cual en la web y en las redes del medio. No se cambia nada.</p></div>
@@ -594,7 +594,7 @@ async function quickView(v) {
     <label id="qWebWrap" ${quickImageMode === 'ready' ? '' : 'hidden'}>Foto para la portada de la web (sin textos ni gráficos)
       <input type="file" id="qWeb" accept="image/jpeg,image/png,image/webp">
       <span class="muted small">La imagen de Canva solo va a las redes. Sin esta foto, la noticia sale en la web sin portada.</span></label>
-    <div><p class="small" style="font-weight:700;margin:0 0 6px">Redes de esta noticia</p><div id="qNetworks" class="row wrap"><span class="muted small">Cargando redes…</span></div><p class="muted small">Puedes desmarcarlas todas para publicar solo en la web. Facebook y TikTok usan como máximo 10 fotos; Instagram permite 20 con Buffer.</p></div>
+    <div><p class="small" style="font-weight:700;margin:0 0 6px">Dónde publicar</p><div id="qNetworks" class="row wrap"><span class="muted small">Cargando destinos…</span></div><p class="muted small">Facebook y TikTok usan hasta 10 fotos. Instagram admite 20 con Buffer.</p></div>
     <details class="alts"><summary>Enlace de la fuente (opcional)</summary>
       <label>Enlace<input name="link" type="url" placeholder="https://…"></label></details>
     <div><p class="small" style="font-weight:700;margin:0 0 6px">¿Cuándo?</p><div class="seg" id="qWhen">
@@ -611,10 +611,13 @@ async function quickView(v) {
     const available = availableNetworks(quickNetworkState[brand]);
     if (quickSelectedNetworks === null) quickSelectedNetworks = new Set(available);
     else quickSelectedNetworks = new Set([...quickSelectedNetworks].filter(n => available.includes(n)));
-    $('#qNetworks').innerHTML = SOCIAL_NETS.map(n => available.includes(n)
+    $('#qNetworks').innerHTML = webChoice(webAvailable(brand), quickWeb) + SOCIAL_NETS.map(n => available.includes(n)
       ? `<label class="switch"><input type="checkbox" value="${n}" ${quickSelectedNetworks.has(n) ? 'checked' : ''}> ${NET_NAMES[n]}</label>`
       : `<a class="switch off" href="#settings" title="Sin conectar">${NET_NAMES[n]}: sin conectar</a>`).join('');
-    $('#qNetworks').querySelectorAll('input').forEach(input => input.onchange = () => { quickSelectedNetworks = new Set([...$('#qNetworks').querySelectorAll('input:checked')].map(x => x.value)) });
+    $('#qNetworks').querySelectorAll('input').forEach(input => input.onchange = () => {
+      if (input.value === 'web') quickWeb = input.checked;
+      else quickSelectedNetworks = new Set([...$('#qNetworks').querySelectorAll('input:checked')].map(x => x.value).filter(n => n !== 'web'));
+    });
   };
   await drawQuickNetworks(b0);
   // Varias imágenes = carrusel: la primera es la portada; se pueden reordenar y quitar
@@ -662,11 +665,13 @@ async function quickView(v) {
   $('#qForm').onsubmit = async e => {
     e.preventDefault();
     if (!files.length) return toast(quickImageMode === 'ready' ? 'Falta el diseño' : 'Falta la foto');
+    if (!(webAvailable(brandSel()) && quickWeb) && !quickSelectedNetworks?.size) return toast('Marca al menos un destino.');
     if ($('#qWhen input:checked').value === 'later' && !(e.target.at.value > madridNow())) return toast('Elige un día y una hora futuros');
     const storyAt = $('#qStoryToggle').checked ? $('#qStoryAt').value : '';
     if (storyAt && storyAt <= madridNow()) return toast('Elige un día y una hora futura para la Story');
     const fd = new FormData(e.target); fd.set('brand', brandSel()); fd.append('photo', files[0].f); files.slice(1).forEach(x => fd.append('extra', x.f)); fd.delete('qkind'); fd.delete('qwhen');
     fd.set('networks', [...(quickSelectedNetworks || [])].join(',')); fd.set('networks_explicit', '1'); fd.delete('story_at');
+    fd.set('publish_web', String(webAvailable(brandSel()) && quickWeb));
     if (quickImageMode === 'photo') fd.set('photo_only', '1');
     if (quickImageMode === 'ready') { fd.set('ready', '1'); if ($('#qWeb').files[0]) fd.append('web_photo', $('#qWeb').files[0]) }
     const b = $('#qBtn'); b.disabled = true; b.textContent = e.target.at.value ? 'Programando…' : quickImageMode === 'canva' ? 'Creando diseño y publicando…' : 'Publicando…';
@@ -783,26 +788,36 @@ window.discardCandidate = async (cid, aid) => {
 const NET_NAMES = { web: 'Web', instagram: 'Instagram', facebook: 'Facebook', tiktok: 'TikTok' };
 const PUBLISH_PREFS_KEY = 'infolinense_publish_networks';
 let publishNetworkPrefs = (() => { try { return JSON.parse(localStorage.getItem(PUBLISH_PREFS_KEY) || '{}') || {} } catch (e) { return {} } })();
+const WEB_PREFS_KEY = 'infolinense_publish_web';
+let publishWebPrefs = (() => { try { return JSON.parse(localStorage.getItem(WEB_PREFS_KEY) || '{}') || {} } catch (e) { return {} } })();
 const SOCIAL_NETS = ['instagram', 'facebook', 'tiktok'];
 function availableNetworks(state) { return SOCIAL_NETS.filter(n => state && state[n] && state[n].connected) }
-function selectedNetworks(id, available) {
-  const key = String(id);
+function webAvailable(brand) { return brandOf(brand).web?.enabled ?? (!brand || brand === 'infolinense') }
+function webChoice(enabled, checked) {
+  return enabled ? `<label class="switch"><input type="checkbox" value="web" ${checked ? 'checked' : ''}> Web</label>` : '';
+}
+function selectedNetworks(row, available) {
+  const key = String(row.id);
   return Object.prototype.hasOwnProperty.call(publishNetworkPrefs, key)
     ? (publishNetworkPrefs[key] || []).filter(n => available.includes(n))
-    : [...available];
+    : row.scheduled_at ? (jparse(row.scheduled_networks, []) || []).filter(n => available.includes(n)) : [...available];
 }
 function rememberNetworks(id, selected) {
   publishNetworkPrefs[String(id)] = selected;
   try { localStorage.setItem(PUBLISH_PREFS_KEY, JSON.stringify(publishNetworkPrefs)) } catch (e) { }
 }
-function networkPicker(id, available) {
-  const chosen = selectedNetworks(id, available);
+function networkPicker(row, available) {
+  const chosen = selectedNetworks(row, available);
   const choices = SOCIAL_NETS.map(n => available.includes(n)
     ? '<label class="switch"><input type="checkbox" value="' + n + '"' + (chosen.includes(n) ? ' checked' : '') + '> ' + NET_NAMES[n] + '</label>'
     : '<a class="switch off" href="#settings" title="Sin conectar">' + NET_NAMES[n] + ': sin conectar</a>').join('');
-  return '<div class="netpick row wrap" data-aid="' + id + '"><span class="muted small">Redes de esta noticia:</span>' + choices +
-    '<span class="muted small">Sin marcar ninguna: no se publica en redes.</span></div>';
+  const web = webChoice(webAvailable(row.brand), publishWebPrefs[row.id] ?? (!row.scheduled_at || row.scheduled_web !== 0));
+  return `<div class="netpick row wrap" data-aid="${row.id}"><span class="muted small">Dónde publicar</span>${web}${choices}</div>`;
 }
+document.addEventListener('change', event => {
+  const picker = event.target.closest('.netpick[data-aid]');
+  if (picker && event.target.type === 'checkbox') publishTargets(picker.dataset.aid);
+});
 function storySummary(r) {
   if (r.story_error) return '<p class="error small">Falló la Story de Instagram: ' + esc(r.story_error) + '</p>';
   if (r.story_scheduled_at) return '<p class="muted small">Story Instagram ' + (r.story_status === 'scheduled' ? 'programada' : r.story_status === 'publishing' ? 'enviándose' : 'enviada a Buffer') + ' · ' + whenText(r.story_scheduled_at) + '</p>';
@@ -856,7 +871,7 @@ async function publishView(v) {
       ${r.schedule_error ? `<p class="error small">No salió a su hora: ${esc(r.schedule_error)}</p>` : ''}
       ${storySummary(r)}
       ${(r.brand || 'infolinense') !== 'infolinense' && noNets(r.brand) ? `<p class="error small">${esc(bname(r.brand))} sin redes. <a href="#settings">Conectar</a></p>` : ''}
-      ${networkPicker(r.id, netsForCard)}
+      ${networkPicker(r, netsForCard)}
       <div class="q-actions"><button class="btn small primary" onclick="placeSheet(${r.id})">Elegir hora</button>${sug ? `<button class="btn small ${sugLabel.startsWith('Mejor') ? 'lime' : ''}" onclick="placeAt(${r.id},'${sug.slice(0, 10)}','${sug.slice(11, 16)}')">${esc(sugLabel)}</button>` : ''}<button class="btn small" onclick="publishNow(${r.id},this)">Publicar ya</button>${storyAction(r)}<button class="btn small danger icon" title="Eliminar" aria-label="Eliminar" onclick="removeArticle(${r.id})">×</button></div></article>`;
   };
   const scard = r => {
@@ -866,6 +881,8 @@ async function publishView(v) {
       <h3 class="go" data-go="#editor/${r.id}">${esc(r.headline)}</h3>
       ${done ? `<div class="row wrap">${r.publish_url ? `<a class="net ok" href="${safeUrl(r.publish_url)}" target="_blank" rel="noopener">Web ✓</a>` : ''}${netStatus(r)}</div>`
         : `<div class="s-actions"><span class="muted small">${schedNets(r)}</span><button class="link small" onclick="publishNow(${r.id},this)">Publicar ya</button><button class="link small" onclick="placeSheet(${r.id})">Cambiar hora</button><button class="link small" onclick="unschedule(${r.id})">Quitar hora</button></div>`}
+      ${networkPicker(r, availableNetworks(byBrand[r.brand || 'infolinense']))}
+      ${done ? `<button class="btn small" onclick="republishNow(${r.id},this)">Volver a publicar</button>` : ''}
       ${storySummary(r)}<div class="s-actions">${storyAction(r)}</div></article>`;
   };
   const dayHtml = () => {
@@ -909,7 +926,7 @@ async function publishView(v) {
         return `<button class="mo-day ${d === today ? 'today' : ''} ${d.slice(0, 7) !== calMonth ? 'other' : ''} ${d < today ? 'past' : ''}" data-open="${d}"><span>${+d.slice(8, 10)}</span>${n ? `<b class="mo-n">${n}</b>` : ''}</button>`;
       }).join('')}</div><p class="muted small">El número es cuántas noticias hay programadas o publicadas ese día. Pulsa un día para organizarlo.</p>`;
   };
-  v.innerHTML = rows.length || pubMode !== 'day' ? `<div class="pub-top">${modes}${statsLink}<span class="muted small">Elige las redes en cada noticia; la web sigue la configuración de cada medio.</span></div>${pubMode === 'week' ? weekHtml() : pubMode === 'month' ? monthHtml() : dayHtml()}`
+  v.innerHTML = rows.length || pubMode !== 'day' ? `<div class="pub-top">${modes}${statsLink}<span class="muted small">Elige dónde sale cada noticia.</span></div>${pubMode === 'week' ? weekHtml() : pubMode === 'month' ? monthHtml() : dayHtml()}`
     : `<p class="empty">Aún no hay noticias listas para publicar. Llegan aquí cuando están revisadas y tienen imagen.</p>${nextPhase('Ir a Revisar', 'review')}`;
   v.querySelectorAll('[name=pubmode]').forEach(i => i.onchange = () => { pubMode = i.value; if (pubMode === 'month') calMonth = pubDay.slice(0, 7); render() });
   v.querySelectorAll('[data-dstep]').forEach(b => b.onclick = () => { pubDay = addDays(pubDay, +b.dataset.dstep); render() });
@@ -917,10 +934,6 @@ async function publishView(v) {
   v.querySelectorAll('[data-wstep]').forEach(b => b.onclick = () => { pubDay = addDays(pubDay, +b.dataset.wstep); render() });
   v.querySelectorAll('[data-mstep]').forEach(b => b.onclick = () => { calMonth = addMonths(calMonth, +b.dataset.mstep); render() });
   v.querySelectorAll('[data-open]').forEach(b => b.onclick = () => { pubDay = b.dataset.open; pubMode = 'day'; render() });
-  v.querySelectorAll('.netpick[data-aid] input').forEach(input => {
-    input.onchange = () => rememberNetworks(input.closest('.netpick').dataset.aid,
-      [...input.closest('.netpick').querySelectorAll('input:checked')].map(x => x.value));
-  });
   v.querySelectorAll('.q-card,.s-card[draggable="true"]').forEach(c => { c.ondragstart = e => { e.dataTransfer.setData('text/plain', c.dataset.aid); c.classList.add('dragging') }; c.ondragend = () => c.classList.remove('dragging') });
   v.querySelectorAll('.slot[data-time]').forEach(z => {
     z.ondragover = e => { e.preventDefault(); z.classList.add('over') };
@@ -950,7 +963,7 @@ window.placeAt = async (aid, date, time, quiet) => {
   if (!quiet) toast('Programando…');
   try {
     await api(`/api/articles/${aid}/move`, { method: 'POST', body: JSON.stringify({ date, slot: slotOf(at), time }) });
-    const r = await api(`/api/articles/${aid}/schedule`, { method: 'POST', body: JSON.stringify({ at, networks: pickedNets(aid) }) });
+    const r = await api(`/api/articles/${aid}/schedule`, { method: 'POST', body: JSON.stringify({ at, ...publishTargets(aid) }) });
     if (!quiet) { toast('Programada: se publicará sola ' + whenText(r.scheduled_at)); render(); counts() }
   } catch (e) { if (quiet) throw e; toast(e.message); render() }
 };
@@ -1004,18 +1017,18 @@ window.scheduleAt = async (id, at, b) => {
   });
   if (!when) return;
   b.disabled = true; b.textContent = 'Programando…';
-  try { const r = await api(`/api/articles/${id}/schedule`, { method: 'POST', body: JSON.stringify({ at: when, networks: pickedNets(id) }) }); toast('Programada: se publicará sola ' + whenText(r.scheduled_at)); render(); counts() }
+  try { const r = await api(`/api/articles/${id}/schedule`, { method: 'POST', body: JSON.stringify({ at: when, ...publishTargets(id) }) }); toast('Programada: se publicará sola ' + whenText(r.scheduled_at)); render(); counts() }
   catch (e) { toast(e.message); b.disabled = false; b.textContent = 'Programar' }
 };
 // Programar: la noticia se publica sola a esa hora (web + redes marcadas). Facebook personal se comparte a mano.
 function madridNow() { return new Date().toLocaleString('sv-SE', { timeZone: 'Europe/Madrid' }).replace(' ', 'T').slice(0, 16) }
 function defaultWhen(planned) { const p = String(planned || '').slice(0, 16); const now = madridNow(); return p && p > now ? p : now.slice(0, 11) + String(Math.min(23, +now.slice(11, 13) + 1)).padStart(2, '0') + ':00' }
 function whenText(iso) { const d = String(iso).slice(0, 10), t = String(iso).slice(11, 16); const today = madridNow().slice(0, 10); const tomorrow = new Date(Date.now() + 864e5).toLocaleDateString('sv-SE', { timeZone: 'Europe/Madrid' }); return (d === today ? 'hoy' : d === tomorrow ? 'mañana' : 'el ' + d.slice(8, 10) + '/' + d.slice(5, 7)) + ' a las ' + t }
-function schedNets(r) { let n = []; try { n = JSON.parse(r.scheduled_networks || '[]') } catch (e) { } return ['Web', ...n.map(x => NET_NAMES[x])].join(' + ') }
+function schedNets(r) { return [...(r.scheduled_web !== 0 && webAvailable(r.brand) ? ['Web'] : []), ...(jparse(r.scheduled_networks, []) || []).map(n => NET_NAMES[n])].join(' + ') }
 window.scheduleNow = async (id, b) => {
   const at = ($('#when-' + id) || {}).value; if (!at) return toast('Elige día y hora');
   b.disabled = true; b.textContent = 'Programando…';
-  try { const r = await api(`/api/articles/${id}/schedule`, { method: 'POST', body: JSON.stringify({ at, networks: pickedNets(id) }) }); toast('Programada: se publicará sola ' + whenText(r.scheduled_at)); render(); counts() }
+  try { const r = await api(`/api/articles/${id}/schedule`, { method: 'POST', body: JSON.stringify({ at, ...publishTargets(id) }) }); toast('Programada: se publicará sola ' + whenText(r.scheduled_at)); render(); counts() }
   catch (e) { toast(e.message); b.disabled = false; b.textContent = 'Programar' }
 };
 window.unschedule = async id => { try { await api(`/api/articles/${id}/unschedule`, { method: 'POST' }); toast('Programación cancelada'); render() } catch (e) { toast(e.message) } };
@@ -1024,7 +1037,7 @@ window.scheduleStory = async (id, b) => {
   const when = await new Promise(res => {
     const sheet = document.createElement('div'); sheet.className = 'sheet-bg';
     sheet.innerHTML = `<div class="sheet" role="dialog" aria-label="Programar Story"><h2>Programar Story de Instagram</h2>
-      <p class="muted small">Se usará la imagen final de Canva de esta noticia.</p>
+      <p class="muted small">Se usará la imagen disponible para redes.</p>
       <label>Día y hora<input type="datetime-local" id="storyWhen" min="${madridNow()}" value="${defaultWhen(previous && previous.story_scheduled_at)}"></label>
       <div class="row"><button class="btn" id="storyNo">Cancelar</button><button class="btn primary" id="storyOk">Programar Story</button></div></div>`;
     document.body.appendChild(sheet);
@@ -1047,21 +1060,42 @@ window.unscheduleStory = async (id, b) => {
   catch (e) { toast(e.message); if (b) { b.disabled = false; b.textContent = 'Cancelar Story' } }
 };
 window.setTime = async (id, p, value) => { if (!value) return; try { await api(`/api/candidates/${id}/triage`, { method: 'POST', body: JSON.stringify({ priority: p, planned_at: value + ':00' }) }); toast('Hora fijada'); render() } catch (e) { toast(e.message) } };
-function pickedNets(id) {
+function publishTargets(id) {
   const picker = document.querySelector('.netpick[data-aid="' + id + '"]');
   if (picker) {
-    const selected = [...picker.querySelectorAll('input:checked')].map(i => i.value);
+    const selected = [...picker.querySelectorAll('input:checked')].map(i => i.value).filter(n => n !== 'web');
     rememberNetworks(id, selected);
-    return selected;
+    const web = Boolean(picker.querySelector('input[value="web"]:checked'));
+    publishWebPrefs[id] = web;
+    try { localStorage.setItem(WEB_PREFS_KEY, JSON.stringify(publishWebPrefs)) } catch (e) { }
+    return { networks: selected, publish_web: web };
   }
   const key = String(id);
-  if (Object.prototype.hasOwnProperty.call(publishNetworkPrefs, key)) return publishNetworkPrefs[key] || [];
   const row = PUB && (PUB.rows || []).find(r => String(r.id) === key);
-  if (row && PUB.byBrand) return selectedNetworks(id, availableNetworks(PUB.byBrand[row.brand || 'infolinense']));
-  return null;
+  const networks = row ? selectedNetworks(row, availableNetworks(PUB.byBrand[row.brand || 'infolinense'])) : publishNetworkPrefs[key] ?? null;
+  return { networks, publish_web: publishWebPrefs[key] ?? null };
 }
 function publishReport(r) { const lines = (r.results || []).filter(x => x.message).map(x => (x.ok ? '✓ ' : '') + x.message); toast(lines.join(' · ') || (r.published ? 'Publicada' : r.message || 'Aprobada')) }
-window.publishNow = async (id, b) => { b.disabled = true; b.textContent = 'Publicando…'; try { const r = await api(`/api/articles/${id}/publish`, { method: 'POST', body: JSON.stringify({ networks: pickedNets(id) }) }); publishReport(r); render(); counts() } catch (e) { toast(e.message); b.disabled = false; b.textContent = 'Publicar' } };
+window.publishNow = async (id, b) => { b.disabled = true; b.textContent = 'Publicando…'; try { const r = await api(`/api/articles/${id}/publish`, { method: 'POST', body: JSON.stringify(publishTargets(id)) }); publishReport(r); render(); counts() } catch (e) { toast(e.message); b.disabled = false; b.textContent = 'Publicar' } };
+window.republishNow = async (id, button, fromEditor = false) => {
+  button.disabled = true;
+  button.textContent = 'Volviendo a publicar…';
+  try {
+    if (fromEditor) await saveArticle();
+    const requestId = button.dataset.requestId || crypto.randomUUID();
+    button.dataset.requestId = requestId;
+    const result = await api(`/api/articles/${id}/republish`, {
+      method: 'POST', body: JSON.stringify({ ...publishTargets(id), request_id: requestId }),
+    });
+    publishReport(result);
+    render();
+    counts();
+  } catch (error) {
+    toast(error.message);
+    button.disabled = false;
+    button.textContent = 'Volver a publicar';
+  }
+};
 // Facebook personal: Meta no deja publicar en perfiles por programa, así que se comparte a mano.
 // 1.ª pulsación: prepara imagen y texto. 2.ª: abre el menú «Compartir» del móvil (o descarga la imagen y abre Facebook).
 const shareKits = {};
@@ -1117,6 +1151,7 @@ window.aiWrite = async b => {
 };
 async function editor(v) {
   const [a, kit] = await Promise.all([api(`/api/articles/${editorId}`), api(`/api/articles/${editorId}/kit`)]);
+  const networkState = await api('/api/networks?brand=' + encodeURIComponent(a.brand || 'infolinense')).catch(() => ({}));
   cache.article = a; cache.kit = kit;
   const options = jparse(a.headline_options_json, []), missing = jparse(a.missing_data_json, []), srcs = jparse(a.sources_json, []);
   const published = a.status === 'published';
@@ -1157,10 +1192,11 @@ async function editor(v) {
     ${['instagram', 'facebook', 'tiktok'].map(n => `<label>${NET_NAMES[n]} <span class="muted small" id="ntc-${n}"></span><textarea rows="5" data-nt="${n}" maxlength="2200">${esc((jparse(a.network_texts, {}) || {})[n] || '')}</textarea></label>`).join('')}
     <p class="muted small">Los hashtags del medio se añaden solos al final. Puedes poner más aquí.</p><button class="btn small" onclick="saveNetTexts()">Guardar textos</button></details>
   <section class="panel checks" id="checks"><div class="row"><h2 class="grow">Revisión automática</h2><button class="btn small" onclick="runChecks(0)">Volver a revisar</button><button class="btn small lime" onclick="runChecks(1)">Revisar con IA</button></div><div id="checkList"><p class="muted small">Revisando…</p></div></section>
+  ${networkPicker(a, availableNetworks(networkState))}
   <div class="actions">
     <button class="btn" onclick="save(true)">Guardar</button>
     <button class="btn" onclick="copyText()">Copiar</button>
-    ${published ? '<span class="muted">Publicada</span>' : a.status === 'draft' ? `<button class="btn primary" onclick="reviewed()">Revisada</button>` : `<button class="btn primary" id="pubBtn" onclick="publish()">Publicar</button>`}
+    ${published ? `<button class="btn primary" id="pubBtn" onclick="republishNow(${a.id},this,true)">Volver a publicar</button>` : a.status === 'draft' ? `<button class="btn primary" onclick="reviewed()">Revisada</button>` : `<button class="btn primary" id="pubBtn" onclick="publish()">Publicar</button>`}
     <button class="btn danger" onclick="removeArticle(${a.id})">${published ? 'Quitar del panel' : 'Eliminar'}</button>
   </div>`;
   setTimeout(() => { runChecks(0); drawVideo(a) }, 0);
@@ -1195,7 +1231,11 @@ function sectionOptions(brand, current) {
 }
 function freeSection(brand) { return brand && brand !== 'infolinense' ? brandOf(brand).free_title_section || '' : '' }
 function values() { const o = {}; ['section', 'headline', 'subtitle', 'body', 'brand', 'section_label'].forEach(k => { const el = $(`#f-${k}`); if (el) o[k] = el.value }); return o }
-async function saveArticle(say) { await api(`/api/articles/${editorId}`, { method: 'PUT', body: JSON.stringify(values()) }); if (say) toast('Guardado') }
+async function saveArticle(say) {
+  const changes = Object.fromEntries(Object.entries(values()).filter(([key, value]) => value !== String(cache.article?.[key] ?? (key === 'brand' ? 'infolinense' : ''))));
+  if (Object.keys(changes).length) cache.article = await api(`/api/articles/${editorId}`, { method: 'PUT', body: JSON.stringify(changes) });
+  if (say) toast('Guardado');
+}
 window.save = s => saveArticle(s).catch(e => toast(e.message));
 window.shortenHead = async () => { try { await saveArticle(); const r = await api(`/api/articles/${editorId}/shorten`, { method: 'POST' }); $('#f-headline').value = r.headline; $('#f-headline').dispatchEvent(new Event('input')); toast('Titular acortado') } catch (e) { toast(e.message) } };
 window.copyText = async () => { const o = values(); await navigator.clipboard.writeText([o.headline, o.subtitle, o.body].filter(Boolean).join('\n\n')); toast('Texto copiado') };
@@ -1210,8 +1250,10 @@ window.syncCanva = async () => {
   const changed = ['headline','subtitle','section','brand','section_label'].some(k => valuesNow[k] != null && String(valuesNow[k]) !== String(current[k] ?? ''));
   if (changed) { toast('Guarda los cambios del texto y crea un diseño nuevo antes de actualizarlo'); return }
   b.disabled = true; b.textContent = 'Actualizando…';
+  const publishButton = $('#pubBtn');
+  if (publishButton) publishButton.disabled = true;
   try { await api(`/api/articles/${editorId}/canva/export`, { method: 'POST' }); toast('Imagen actualizada desde Canva'); render() }
-  catch (e) { toast(e.message); b.disabled = false; b.textContent = 'Actualizar imagen desde Canva' }
+  catch (e) { toast(e.message); b.disabled = false; b.textContent = 'Actualizar imagen desde Canva'; if (publishButton) publishButton.disabled = false }
 };
 let checkErrors = 0, checkForce = 0;
 window.runChecks = async ai => {
@@ -1241,7 +1283,14 @@ window.reviewed = async () => {
 };
 window.publish = async () => {
   const b = $('#pubBtn'); b.disabled = true; b.textContent = 'Publicando…';
-  try { await saveArticle(); const r = await api(`/api/articles/${editorId}/publish`, { method: 'POST', body: JSON.stringify({ networks: pickedNets(editorId) }) }); publishReport(r); if (r.published && !fbDone(r)) offerFacebook(editorId); render() }
+  try {
+    await saveArticle();
+    const targets = publishTargets(editorId);
+    const r = await api(`/api/articles/${editorId}/publish`, { method: 'POST', body: JSON.stringify(targets) });
+    publishReport(r);
+    if (r.published && (targets.networks === null || targets.networks.includes('facebook')) && !fbDone(r)) offerFacebook(editorId);
+    render();
+  }
   catch (e) { toast(e.message); b.disabled = false; b.textContent = 'Publicar' }
 };
 window.autoPhoto = async () => {

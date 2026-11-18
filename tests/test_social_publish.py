@@ -208,9 +208,9 @@ class SocialPublishTests(unittest.TestCase):
         self.assertIn('Media format rejected', result['message'])
         self.assertEqual(db.row("SELECT status FROM social_posts WHERE article_id=77 AND network='tiktok'")['status'], 'error')
 
-    def test_missing_canva_image(self):
+    def test_missing_social_image(self):
         r = sp.publish('facebook', dict(self.article, id=78, render_path=''))
-        self.assertFalse(r['ok']); self.assertIn('Canva', r['message'])
+        self.assertFalse(r['ok']); self.assertIn('Sube una foto', r['message'])
 
     def test_pasted_user_token_connects_page(self):
         sp.META_APP_ID, sp.META_APP_SECRET = '1', 's'

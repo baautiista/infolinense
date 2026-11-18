@@ -497,6 +497,16 @@ TIKTOK_ERRORS = {
 
 # ---------- imágenes públicas para las redes ----------
 
+UPLOADED_PHOTO_KINDS = ('user_upload', 'web_photo')
+
+
+def uploaded_photo(article):
+    path = article.get('image_local')
+    if article.get('image_kind') in UPLOADED_PHOTO_KINDS and path and Path(path).is_file():
+        return path
+    return None
+
+
 def jpeg_bytes(path, max_width=1440, max_bytes=7_500_000):
     """La imagen en JPG (lo que aceptan todas las redes): como mucho 1440 px de ancho (el máximo de Instagram)
     y menos de 8 MB (si no, Instagram no la descarga)."""
@@ -530,7 +540,7 @@ def public_image(path):
     """Copia en JPG la imagen y devuelve una URL pública temporal (las redes la descargan desde aquí)."""
     src = Path(path or '')
     if not src.is_file():
-        raise SocialError('Falta la imagen final. Crea la imagen en Canva antes de publicar en redes.')
+        raise SocialError('No se encuentra la imagen para redes. Vuelve a subirla.')
     if not PUBLIC_BASE_URL.startswith('https://'):
         raise SocialError('Falta PUBLIC_BASE_URL (https://…) en Railway: las redes necesitan descargar la imagen')
     cleanup_expired_public_media()
@@ -562,17 +572,19 @@ def article_images(article):
     paths = [RENDER_DIR / ('article_%s_carousel_%s.png' % (article['id'], s['slide_index'])) for s in slides]
     paths = [str(p) for p in paths if p.is_file()]
     uploaded = any(s.get('design_id') == 'upload' for s in slides)  # imágenes subidas en la Lanzadera: van todas
+    render = article.get('render_path')
+    render = render if render and Path(render).is_file() else None
+    photo = uploaded_photo(article)
+    if not photo and article.get('image_kind') == 'final_image':
+        local = article.get('image_local')
+        photo = local if local and Path(local).is_file() else None
     if len(paths) >= 2 or (uploaded and paths):
-        main = article.get('render_path') or ''
-        cover = [main] if main and Path(main).is_file() else []
+        main = render or (photo if uploaded else None)
+        cover = [main] if main else []
         return cover + paths[:max(0, 20 - len(cover))]
-    if article.get('render_path') and Path(article['render_path']).is_file():
-        return [article['render_path']]
-    if article.get('image_kind') == 'final_image' and article.get('image_local') and Path(article['image_local']).is_file():
-        return [article['image_local']]  # la «foto» guardada ES la imagen terminada (con titular y entradilla)
-    # Nunca se manda a las redes la foto limpia de la web (sin titular ni entradilla)
-    raise SocialError('Falta la imagen final con el titular (la de Canva). Créala o súbela antes de publicar en redes: '
-                      'la foto limpia de la web no se publica en redes.')
+    if render or photo:
+        return [render or photo]
+    raise SocialError('Sube una foto o añade una imagen para publicar en redes.')
 
 
 # ---------- textos ----------
@@ -813,14 +825,11 @@ def _buffer_tiktok_post(article, urls):
 
 
 def story_image(article):
-    """La Story usa la imagen de Canva; si falta, la primera imagen del carrusel subido."""
+    """Escoge el diseño o la primera foto disponible para redes."""
     render = article.get('render_path') or ''
     if render and Path(render).is_file():
         return render
-    images = article_images(article)
-    if not images:
-        raise SocialError('Falta una imagen para la Story. Crea la imagen en Canva o sube fotos al carrusel.')
-    return images[0]
+    return article_images(article)[0]
 
 
 def _buffer_instagram_post(article, paths):

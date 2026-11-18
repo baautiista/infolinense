@@ -991,15 +991,52 @@ class BlogHemerotecaTests(unittest.TestCase):
             self.assertEqual(ef.harvest_blogs(max_posts=2), 0)  # ya procesadas: no se repiten
 
 
-class SocialNeverWebPhotoTests(unittest.TestCase):
-    def test_web_photo_never_goes_to_social(self):
-        import tempfile
-        from PIL import Image
+class UploadedSocialPhotoTests(unittest.TestCase):
+    def test_uploaded_web_photo_can_go_to_social(self):
         from app import social_publish as sp
-        f = tempfile.mktemp(suffix='.jpg'); Image.new('RGB', (100, 100)).save(f)
-        with self.assertRaises(sp.SocialError):
-            sp.article_images({'id': 999991, 'render_path': '', 'image_local': f, 'image_kind': 'web_photo'})
-        self.assertEqual(sp.article_images({'id': 999992, 'render_path': '', 'image_local': f, 'image_kind': 'final_image'}), [f])
+        with tempfile.TemporaryDirectory() as temp:
+            photo = str(Path(temp) / 'foto.jpg')
+            render = str(Path(temp) / 'diseno.png')
+            Image.new('RGB', (100, 100)).save(photo)
+            Image.new('RGB', (100, 100)).save(render)
+            for kind in ('web_photo', 'user_upload', 'final_image'):
+                with self.subTest(kind=kind):
+                    article = {'id': 999991, 'image_local': photo, 'image_kind': kind}
+                    self.assertEqual(sp.article_images(article), [photo])
+                    self.assertEqual(sp.story_image(article), photo)
+                    self.assertEqual(sp.article_images(dict(article, render_path=render)), [render])
+            with self.assertRaises(sp.SocialError):
+                sp.article_images({'id': 999991, 'image_kind': 'web_photo', 'image_local': photo + '.missing'})
+
+    def test_launcher_uses_the_uploaded_photos_in_order_without_canva(self):
+        from fastapi.testclient import TestClient
+
+        photo = BytesIO()
+        Image.new('RGB', (200, 200), 'red').save(photo, 'PNG')
+        extra = BytesIO()
+        Image.new('RGB', (200, 200), 'blue').save(extra, 'PNG')
+        with (
+            patch.dict(main.app.dependency_overrides, {main.require_auth: lambda: None}),
+            patch.object(main.canva, 'ready', return_value=True),
+            patch.object(main.canva, 'connected', return_value=True),
+            patch.object(main.canva, 'create_design', side_effect=AssertionError('Canva es opcional')),
+            patch.object(main, 'publish', return_value={'published': True}),
+        ):
+            response = TestClient(main.app).post(
+                '/api/quick',
+                data={'headline': 'Titular completo de la noticia', 'body': 'Texto de la noticia.', 'photo_only': '1'},
+                files=[('photo', ('portada.png', photo.getvalue(), 'image/png')),
+                       ('extra', ('segunda.png', extra.getvalue(), 'image/png'))],
+            )
+        self.assertEqual(response.status_code, 200)
+        result = response.json()
+        article = main.article(result['id'])
+        images = main.social_publish.article_images(article)
+        self.assertEqual(len(images), 2)
+        self.assertEqual(images[0], article['image_local'])
+        self.assertEqual(Path(images[1]).name, f'article_{article["id"]}_carousel_1.png')
+        self.assertEqual(main.publishers.clean_cover(article), Path(images[0]))
+        self.assertEqual(result['canva'], '')
 
     def test_text_edit_keeps_uploaded_final_image(self):
         from app import db, main

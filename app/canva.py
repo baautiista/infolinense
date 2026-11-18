@@ -331,10 +331,9 @@ def export_design(article):
     design = db.row('SELECT * FROM canva_designs WHERE article_id=?', (article['id'],))
     if not design:
         raise ValueError('Primero crea el diseño con la plantilla de Canva')
-    if design.get('content_hash') != _content_hash(article):
+    content_hash = _content_hash(article)
+    if design.get('content_hash') not in (content_hash, 'text:' + content_hash):
         raise ValueError('La noticia o la foto cambió; vuelve a crear el diseño de Canva')
-    db.exec_('UPDATE canva_designs SET exported=0 WHERE article_id=?', (article['id'],))
-    db.exec_('UPDATE articles SET render_path=NULL,status=CASE WHEN status="approved" THEN "review_ready" ELSE status END WHERE id=?', (article['id'],))
     _export_png(article, design['design_id'], page=1 if _page_count(design['design_id']) == 1 else _page_for(article))
     return {'url': design['url'], 'design_id': design['design_id'], 'exported': True}
 

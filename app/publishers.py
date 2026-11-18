@@ -13,12 +13,13 @@ def slugify(text):
     return re.sub(r'[^a-z0-9]+', '-', text).strip('-')[:90] or 'noticia'
 
 
-def _b64_image(path, fmt, width, limit=2_500_000):
-    """Imagen en base64 para la web; si es muy grande se reduce (las enormes hacen fallar el guardado en la web)."""
+def _image_bytes(path, fmt, width, limit=2_500_000):
+    """Adapta el archivo al formato y tamaño que espera la web."""
     if not path.is_file():
         return None
     raw = path.read_bytes()
-    if len(raw) > limit:
+    signature = b'\xff\xd8\xff' if fmt=='JPEG' else b'\x89PNG\r\n\x1a\n'
+    if len(raw) > limit or not raw.startswith(signature):
         from io import BytesIO
         from PIL import Image
         with Image.open(path) as im:
@@ -28,7 +29,12 @@ def _b64_image(path, fmt, width, limit=2_500_000):
             buf = BytesIO()
             im.save(buf, fmt, **({'quality': 85, 'optimize': True} if fmt == 'JPEG' else {'optimize': True}))
             raw = buf.getvalue()
-    return base64.b64encode(raw).decode()
+    return raw
+
+
+def _b64_image(path, fmt, width):
+    raw = _image_bytes(path, fmt, width)
+    return base64.b64encode(raw).decode() if raw else None
 
 
 def clean_cover(article):
@@ -40,10 +46,20 @@ def clean_cover(article):
     return photo if photo.is_file() else None
 
 
+def website_cover(article):
+    photo = clean_cover(article)
+    if photo and article.get('image_kind') in ('user_upload', 'web_photo'):
+        return photo
+    render = Path(article.get('render_path') or '')
+    if article.get('image_kind') != 'final_image' and render.is_file():
+        return render
+    return photo
+
+
 def web_payload(article):
     """Noticia lista para la web de InfoLinense (Lovable)."""
     family = layout.family_for(article.get('section'), article.get('headline'))
-    photo = clean_cover(article)
+    photo = website_cover(article)
     card = Path(article.get('render_path') or '')
     try: sources = json.loads(article.get('sources_json') or '[]')
     except Exception: sources = []
@@ -69,7 +85,7 @@ def web_payload(article):
     }
 
 
-def publish(article):
+def publish(article, refresh=False):
     """Publica en la web del medio de la noticia (InfoLinense, El Cofrade Linense o Carnavalinense)."""
     from . import brands
     slug = brands.valid(article.get('brand'))
@@ -80,7 +96,7 @@ def publish(article):
     if mode == 'wordpress':
         if not (cfg['wp_url'].startswith('https://') and cfg['wp_user'] and cfg['wp_password']):
             raise RuntimeError('Configura %sWORDPRESS_URL, %sWORDPRESS_USERNAME y %sWORDPRESS_APP_PASSWORD en Railway' % (pre, pre, pre))
-        cover = clean_cover(article)  # portada limpia: la foto, sin los gráficos de Canva
+        cover = website_cover(article)
         endpoint = cfg['wp_url'] + '/wp-json/wp/v2'
         credentials = (cfg['wp_user'], cfg['wp_password'])
         identifier = str(article['id'])
@@ -88,16 +104,17 @@ def publish(article):
         existing = requests.get(endpoint + '/posts', params={'slug': slug_wp, 'status': 'any', 'context': 'edit'}, auth=credentials, timeout=20)
         existing.raise_for_status()
         posts = existing.json()
-        if posts: return posts[0]['link']
+        if posts and not refresh: return posts[0]['link']
         media_id = None
         if cover:
-            photo = requests.post(endpoint + '/media', data=cover.read_bytes(), auth=credentials,
+            photo = requests.post(endpoint + '/media', data=_image_bytes(cover, 'JPEG', 1600), auth=credentials,
                                   headers={'Content-Disposition': 'attachment; filename="%s-%s.jpg"' % (slugify(name), identifier),
                                            'Content-Type': 'image/jpeg'}, timeout=45)
             photo.raise_for_status()
             media_id = photo.json()['id']
         paragraphs = ''.join('<p>' + html.escape(p.strip()) + '</p>' for p in (article.get('body') or '').split('\n') if p.strip())
-        post = requests.post(endpoint + '/posts', auth=credentials, json={
+        post_endpoint = endpoint + '/posts' + (f"/{posts[0]['id']}" if posts else '')
+        post = requests.post(post_endpoint, auth=credentials, json={
             'title': article.get('headline') or name,
             'excerpt': article.get('subtitle') or article.get('graphic_summary') or '',
             'content': paragraphs, 'slug': slug_wp, 'status': 'publish',

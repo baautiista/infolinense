@@ -4,6 +4,8 @@ from urllib.parse import urlparse
 from zoneinfo import ZoneInfo
 from io import BytesIO
 from pathlib import Path
+from uuid import UUID
+from contextlib import closing
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Depends, Request
 from fastapi.responses import FileResponse, RedirectResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -18,7 +20,7 @@ from .auth import login, require_auth
 from starlette.concurrency import run_in_threadpool
 from .config import BASE_DIR, RENDER_DIR, UPLOAD_DIR, SCAN_INTERVAL_MINUTES, AUTO_PIPELINE, OPENAI_API_KEY, ADMIN_PASSWORD, JWT_SECRET, PUBLISH_MODE, CORS_ORIGINS, PUBLIC_BASE_URL, AUTO_PUBLISH
 
-VERSION='7.13.8'
+VERSION='7.13.9'
 app=FastAPI(title='InfoLinense Desk',version=VERSION)
 app.include_router(chatgpt_import_router)
 
@@ -44,8 +46,13 @@ social_publish.init_tables()
 brands.init_tables()
 
 class LoginIn(BaseModel): password:str
-class PublishIn(BaseModel): networks:list[str]|None=None
-class ScheduleIn(BaseModel): at:str; networks:list[str]|None=None
+class PublishIn(BaseModel):
+    networks:list[str]|None=None
+    publish_web:bool|None=None
+class RepublishIn(PublishIn):
+    request_id:UUID
+class ScheduleIn(PublishIn):
+    at:str
 class StoryScheduleIn(BaseModel): at:str
 class MoveIn(BaseModel): date:str; slot:str='morning'; time:str|None=None
 class PageIn(BaseModel): page_id:str
@@ -139,10 +146,11 @@ def create_canva_design(aid:int):
     except ValueError as e: raise HTTPException(400,str(e))
 @app.post('/api/articles/{aid}/canva/export',dependencies=[Depends(require_auth)])
 def export_canva_design(aid:int):
-    a=db.row('SELECT * FROM articles WHERE id=?',(aid,))
-    if not a: raise HTTPException(404)
-    try: return canva.export_design(a)
-    except ValueError as e: raise HTTPException(400,str(e))
+    with _publication_locks[aid % len(_publication_locks)]:
+        a=db.row('SELECT * FROM articles WHERE id=?',(aid,))
+        if not a: raise HTTPException(404)
+        try: return canva.export_design(a)
+        except ValueError as e: raise HTTPException(400,str(e))
 @app.get('/api/dashboard',dependencies=[Depends(require_auth)])
 def dashboard():
     return {'counts':{'new':db.row("SELECT COUNT(*) n FROM candidates WHERE status='new'")['n'],
@@ -1067,7 +1075,7 @@ async def article_web_photo(aid:int,photo:UploadFile=File(...)):
 async def quick_publish(headline:str=Form(...),subtitle:str=Form(''),body:str=Form(''),section:str=Form(''),brand:str=Form('infolinense'),
                         link:str=Form(''),at:str=Form(''),networks:str=Form(''),networks_explicit:str=Form(''),ready:str=Form(''),photo:UploadFile=File(...),
                         extra:list[UploadFile]=File(default=[]),web_photo:UploadFile|None=File(None),
-                        photo_only:bool=Form(False)):
+                        photo_only:bool=Form(False),publish_web:bool|None=Form(None)):
     """Lanzadera: la redacción trae su noticia ya escrita (titular, entradilla, texto y foto). No se reescribe nada:
     se hace la imagen de Canva y se publica al momento (o a la hora indicada) en la web y en las redes del medio.
     Con ready=1 la imagen subida ya es la definitiva (hecha en Canva por la redacción) y se publica tal cual.
@@ -1138,11 +1146,12 @@ async def quick_publish(headline:str=Form(...),subtitle:str=Form(''),body:str=Fo
     selected=[n.strip() for n in (networks.split(',') if networks else []) if n.strip() in ('instagram','facebook','tiktok')]
     explicit=isinstance(networks_explicit,str) and networks_explicit.strip().lower() in ('1','true','yes','si','sí','on')
     nets=selected if explicit else (selected or None)
+    use_web=publish_web if isinstance(publish_web,bool) else None
     if at.strip():
-        try: res=await run_in_threadpool(schedule_article,aid,ScheduleIn(at=at.strip(),networks=nets))
+        try: res=await run_in_threadpool(schedule_article,aid,ScheduleIn(at=at.strip(),networks=nets,publish_web=use_web))
         except HTTPException as e: return {'ok':False,'id':aid,'message':str(e.detail),'canva':canva_msg}
         return {'ok':True,'id':aid,'scheduled_at':res['scheduled_at'],'canva':canva_msg,'message':'Programada'}
-    try: res=await run_in_threadpool(publish,aid,PublishIn(networks=nets))
+    try: res=await run_in_threadpool(publish,aid,PublishIn(networks=nets,publish_web=use_web))
     except HTTPException as e: return {'ok':False,'id':aid,'message':str(e.detail),'canva':canva_msg}
     return {**res,'id':aid,'canva':canva_msg}
 
@@ -1206,7 +1215,7 @@ def mark_ready(aid:int):
 @app.get('/api/to-publish',dependencies=[Depends(require_auth)])
 def to_publish(brand:str=''):
     rows=db.rows(f"""SELECT a.id,a.brand,COALESCE(NULLIF(a.headline,''),''||c.title) headline,a.section,a.status,a.image_local,a.image_kind,a.publish_url,c.planned_at,c.editorial_priority,c.id candidate_id,c.format,c.carousel_state,
-                      a.scheduled_at,a.scheduled_networks,a.schedule_error,a.updated_at,d.exported canva_exported,
+                      a.scheduled_at,a.scheduled_networks,a.scheduled_web,a.schedule_error,a.updated_at,d.exported canva_exported,
                       (SELECT scheduled_at FROM scheduled_stories s WHERE s.article_id=a.id AND s.status IN ('scheduled','publishing','pending') ORDER BY s.id DESC LIMIT 1) story_scheduled_at,
                       (SELECT status FROM scheduled_stories s WHERE s.article_id=a.id AND s.status IN ('scheduled','publishing','pending','published','error') ORDER BY s.id DESC LIMIT 1) story_status,
                       (SELECT error FROM scheduled_stories s WHERE s.article_id=a.id AND s.status='error' ORDER BY s.id DESC LIMIT 1) story_error,
@@ -1496,7 +1505,8 @@ def download_carousel(aid:int):
 def kit(aid:int):
     a=article(aid)
     design=db.row('SELECT url,exported FROM canva_designs WHERE article_id=?',(aid,)) or {}
-    exported=bool(design.get('exported')) and (RENDER_DIR/f'article_{aid}.png').is_file()
+    render=RENDER_DIR/f'article_{aid}.png'
+    exported=bool(design.get('exported')) and render.is_file()
     body=(a.get('body') or '')[:2200]
     copy_text='\n\n'.join(x for x in [a.get('headline') or '',a.get('subtitle') or '',body] if x.strip())
     try: options=json.loads(a.get('headline_options_json') or '[]')
@@ -1509,7 +1519,7 @@ def kit(aid:int):
     carousel=db.rows('SELECT slide_index,exported FROM carousel_designs WHERE article_id=? ORDER BY slide_index',(aid,))
     return {'id':aid,'section':a.get('section'),'headline':a.get('headline'),'subtitle':a.get('subtitle'),'text':body,'chars':len(body),
             'copy_text':copy_text,'headline_options':options,'missing_data':missing,'sources':srcs,
-            'image_url':f'/media/render/{aid}.png' if exported else None,'status':a.get('status'),'source_url':a.get('source_url'),
+            'image_url':f'/media/render/{aid}.png?v={render.stat().st_mtime_ns}' if exported else None,'status':a.get('status'),'source_url':a.get('source_url'),
             'image_source':a.get('image_source'),'image_license':a.get('image_license'),'image_author':a.get('image_author') or '',
             'image_kind':a.get('image_kind') or '','image_credit':photo_credit(a),
             'photo_query':a.get('photo_query') or photos.photo_query_for(a.get('headline') or '',a.get('section') or ''),
@@ -1542,15 +1552,18 @@ def edit_article(aid:int,body:EditArticle):
     def norm_section(v):
         if brand==brands.DEFAULT: return layout.normalize_section(v)
         return brands.find_section(brand,v) or re.sub(r'\s+',' ',str(v or '')).strip()[:60] or (brands.settings(brand)['sections'] or ['Noticias'])[0]
+    norm=lambda x: re.sub(r'\s+',' ',str(x or '')).strip()
+    changes={}
     for k,v in body.model_dump(exclude_none=True).items():
         if k=='brand':
-            if v not in brands.BRANDS: continue
+            if v not in brands.BRANDS or v==(original.get('brand') or brands.DEFAULT): continue
         if k=='headline_size' and v not in ('auto','small','large'):
             raise HTTPException(400,'Tamaño de titular no válido')
         if k=='photo_zoom': v=max(1.0,min(2.5,float(v)))
         if k in ('photo_x','photo_y'): v=max(0.0,min(100.0,float(v)))
         if k=='section':
             v=norm_section(v)
+            if brand==(original.get('brand') or brands.DEFAULT) and v==norm_section(original.get('section')): continue
         if k=='section_label':
             v=re.sub(r'\s+',' ',v).strip()[:40]
         if k=='network_texts':
@@ -1558,13 +1571,14 @@ def edit_article(aid:int,body:EditArticle):
             except (ValueError,AttributeError): raise HTTPException(400,'Textos por red no válidos')
         if k=='body':
             v=v[:2200]
+            if v==(original.get('body') or ''): continue
             fields.append('social_text=?'); vals.append(v)
+        if k in ('headline','subtitle','section_label') and norm(v)==norm(original.get(k)): continue
+        if original.get(k)==v: continue
         fields.append(f'{k}=?'); vals.append(v)
+        changes[k]=v
     if fields:
         # La imagen de Canva solo se invalida si cambia algo que aparece en ella (titular, entradilla, sección).
-        changes=body.model_dump(exclude_none=True)
-        if 'section' in changes: changes['section']=norm_section(changes['section'])
-        norm=lambda x: re.sub(r'\s+',' ',str(x or '')).strip()  # espacios o saltos de línea distintos no cambian la imagen
         uploaded_final=bool(db.row("SELECT 1 FROM canva_designs WHERE article_id=? AND design_id='upload'",(aid,)))
         image_changed=not uploaded_final and any(k in changes and norm(changes[k])!=norm(original.get(k)) for k in ('headline','headline_size','subtitle','section','brand','section_label')) or not uploaded_final and any(
             k in changes and abs(float(changes[k])-float(original.get(k) if original.get(k) is not None else default))>0.001
@@ -1701,60 +1715,120 @@ def research_more(aid:int):
     db.exec_('DELETE FROM articles WHERE id=?',(aid,)); db.exec_("UPDATE candidates SET status='new' WHERE id=?",(a['candidate_id'],))
     new_aid=pipeline.process_candidate(a['candidate_id'],force_research=True)
     return db.row('SELECT * FROM articles WHERE id=?',(new_aid,))
+def _has_media(a):
+    return any(path and Path(path).is_file() for path in (a.get('render_path'), a.get('image_local')))
+
+
 def _ready_to_publish(a,nets):
     if not (a.get('headline') or '').strip() or not (a.get('body') or '').strip(): raise HTTPException(400,'Falta el titular o el texto')
-    if not a.get('image_local') or not Path(a['image_local']).is_file(): raise HTTPException(400,'Elige una foto antes de publicar')
+    if not _has_media(a): raise HTTPException(400,'Elige una foto o una imagen antes de publicar')
     if nets:
+        video=videos.get(a['id'])
+        if video and Path(video['path']).is_file(): return
         try: social_publish.article_images(a)
         except social_publish.SocialError as e: raise HTTPException(400,str(e))
 
-def do_publish(aid,nets):
-    """Publica en la web y en las redes indicadas. Lo usan el botón «Publicar» y la publicación programada."""
+_publication_locks = [threading.Lock() for _ in range(64)]
+
+
+def _start_republication(aid, request_id, networks):
+    if 'facebook' in networks:
+        from . import facebook_publishing
+        facebook_publishing._init()
+    with closing(db.conn()) as connection, connection:
+        connection.execute('BEGIN IMMEDIATE')
+        posts = [dict(row) for row in connection.execute(
+            "SELECT * FROM social_posts WHERE article_id=? AND status='published'", (aid,)
+        ) if row['network'] in networks]
+        connection.execute(
+            'INSERT INTO republications(article_id,request_id,previous_posts) VALUES(?,?,?)',
+            (aid, request_id, json.dumps(posts)),
+        )
+        for post in posts:
+            connection.execute('DELETE FROM social_posts WHERE article_id=? AND network=?',
+                               (aid, post['network']))
+            if post['network']=='facebook':
+                connection.execute('DELETE FROM facebook_delivery WHERE article_id=?', (aid,))
+
+
+def do_publish(aid,nets,publish_web=True,request_id=None):
+    with _publication_locks[aid % len(_publication_locks)]:
+        return _deliver_article(aid,nets,publish_web,request_id)
+
+
+def _deliver_article(aid,nets,publish_web,request_id):
     a=db.row('SELECT a.*,c.url source_url,c.source_name,c.outlet FROM articles a LEFT JOIN candidates c ON c.id=a.candidate_id WHERE a.id=?',(aid,))
     if not a: raise HTTPException(404)
-    results=[]
-    web={'network':'web','ok':a['status']=='published','url':a.get('publish_url') or ''}
-    if a['status']!='published':
+    previously_published = a['status']=='published'
+    if request_id:
+        previous = db.row('SELECT result FROM republications WHERE article_id=? AND request_id=?', (aid,request_id))
+        if previous:
+            if previous['result']: return json.loads(previous['result'])
+            raise HTTPException(409,'Comprueba el estado del envío anterior en las redes seleccionadas.')
+        if not previously_published: raise HTTPException(409,'La noticia aún está pendiente de publicar')
+    if request_id or not previously_published:
         if not (a.get('headline') or '').strip() or not (a.get('body') or '').strip(): raise HTTPException(400,'Falta el titular o el texto')
-        if not a.get('image_local') or not Path(a['image_local']).is_file(): raise HTTPException(400,'Elige una foto antes de publicar')
-        db.exec_("UPDATE articles SET status='approved',updated_at=CURRENT_TIMESTAMP WHERE id=?",(aid,))
-        db.exec_("UPDATE candidates SET status='review_ready' WHERE id=?",(a['candidate_id'],))
-        if not brands.web_enabled(a.get('brand')):
-            web={'network':'web','ok':False,'skipped':True,'message':'' if brands.valid(a.get('brand'))!=brands.DEFAULT else 'La web no está configurada en Railway'}
+        if not _has_media(a): raise HTTPException(400,'Elige una foto o una imagen antes de publicar')
+    if request_id and nets:
+        # Validate media before opening a new round of delivery for already published posts.
+        _ready_to_publish(a,nets)
+    if request_id:
+        _start_republication(aid,request_id,nets)
+
+    url=a.get('publish_url') or ''
+    web={'network':'web','ok':False,'skipped':True}
+    if publish_web and brands.web_enabled(a.get('brand')):
+        if not request_id and (a.get('web_published') or url):
+            web={'network':'web','ok':True,'url':url,'message':'Ya estaba en la web'}
         else:
             try:
-                url=publishers.publish(a)
-                db.exec_("UPDATE articles SET status='published',publish_url=?,updated_at=CURRENT_TIMESTAMP WHERE id=?",(url,aid))
+                new_url=publishers.publish(a,refresh=True) if request_id else publishers.publish(a)
+                url=new_url or url
+                db.exec_("UPDATE articles SET publish_url=?,web_published=1 WHERE id=?",(url,aid))
                 db.log('publish',f'Noticia {aid} publicada en la web')
-                db.exec_("UPDATE candidates SET status='published' WHERE id=?",(a['candidate_id'],))
-                web={'network':'web','ok':True,'url':url,'message':'Publicada en la web'}
+                web={'network':'web','ok':True,'url':url,'message':'Actualizada en la web' if request_id else 'Publicada en la web'}
             except Exception as e:
                 web={'network':'web','ok':False,'message':'La web no aceptó la noticia: '+str(e)[:250]}
-    results.append(web)
+    results=[web]
     for n in nets: results.append(social_publish.publish(n,a))
-    if not web['ok'] and web.get('skipped') and any(r['ok'] for r in results[1:]):
-        db.exec_("UPDATE articles SET status='published',updated_at=CURRENT_TIMESTAMP WHERE id=?",(aid,))
-        db.exec_("UPDATE candidates SET status='published' WHERE id=?",(a['candidate_id'],))
     published=any(r['ok'] for r in results)
-    if published: db.exec_("UPDATE articles SET scheduled_at=NULL,schedule_error=NULL WHERE id=?",(aid,))
+    if published:
+        db.exec_("""UPDATE articles SET status='published',scheduled_at=NULL,schedule_error=NULL,
+                    updated_at=CURRENT_TIMESTAMP WHERE id=?""",(aid,))
+        db.exec_("UPDATE candidates SET status='published' WHERE id=?",(a['candidate_id'],))
     summary='; '.join(r.get('message') or '' for r in results if r.get('message'))
-    return {'ok':True,'published':published,'url':web.get('url') or '','results':results,'message':summary or 'Aprobada'}
+    result={'ok':True,'published':published,'url':url,'results':results,'message':summary or 'Pendiente de publicación'}
+    if request_id:
+        db.exec_('UPDATE republications SET result=? WHERE article_id=? AND request_id=?',(json.dumps(result),aid,request_id))
+    return result
 
 @app.post('/api/articles/{aid}/publish',dependencies=[Depends(require_auth)])
 def publish(aid:int,body:PublishIn|None=None):
     """«Publicar ahora»: publica en la web y en las redes elegidas (solo al pulsar el botón)."""
-    a=db.row('SELECT brand FROM articles WHERE id=?',(aid,))
+    return _publish_selected(aid,body)
+
+
+@app.post('/api/articles/{aid}/republish',dependencies=[Depends(require_auth)])
+def republish(aid:int,body:RepublishIn):
+    return _publish_selected(aid,body,str(body.request_id))
+
+
+def _publish_selected(aid,body,request_id=None):
+    a=db.row('SELECT brand,scheduled_at,scheduled_web FROM articles WHERE id=?',(aid,))
     if not a: raise HTTPException(404)
     brand=a.get('brand') or brands.DEFAULT
     ok=social_publish.connected_networks(brand)  # solo las redes de su medio que estén conectadas
     wanted=ok if body is None or body.networks is None else list(body.networks)
-    nets=[n for n in wanted if n in ok]
+    nets=list(dict.fromkeys(n for n in wanted if n in ok))
     missing=[n for n in wanted if n not in ok and n in social_publish.NETWORKS]
-    if not nets and not brands.web_enabled(brand):
-        name=brands.settings(brand)['name']
-        raise HTTPException(400,f'{name} no tiene ninguna red conectada, así que no se puede publicar. '
-                                f'Ve a Ajustes, elige «{name}» arriba y pulsa «Conectar» en Instagram y Facebook.')
-    out=do_publish(aid,nets)
+    use_web=body.publish_web if body and body.publish_web is not None else (bool(a['scheduled_web']) if a['scheduled_at'] else True)
+    has_web=brands.web_enabled(brand)
+    if not nets and not (use_web and has_web):
+        if not ok and not has_web:
+            name=brands.settings(brand)['name']
+            raise HTTPException(400,f'{name} no tiene un destino activo. Ve a Ajustes → {name} → Conectar.')
+        raise HTTPException(400,'Marca la web o al menos una red conectada para publicar.')
+    out=do_publish(aid,nets,publish_web=use_web,request_id=request_id)
     name=brands.settings(brand)['name']
     for n in missing:
         out['results'].append({'network':n,'ok':False,'message':f'{social_publish.NAMES[n]} de {name} sin conectar (Ajustes → {name} → Conectar)'})
@@ -1775,17 +1849,16 @@ def schedule_article(aid:int,body:ScheduleIn):
     if when<datetime.now(timezone.utc)-timedelta(minutes=2): raise HTTPException(400,'Esa hora ya ha pasado: elige una hora futura o pulsa «Publicar ahora»')
     ok=social_publish.connected_networks(a.get('brand') or brands.DEFAULT)
     nets=ok if body.networks is None else [n for n in body.networks if n in ok]  # sin elegir: todas las de su medio
-    if not nets and brands.valid(a.get('brand'))!=brands.DEFAULT and not brands.web_enabled(a.get('brand')):
-        name=brands.BRANDS[brands.valid(a.get('brand'))]['name']
-        raise HTTPException(400,f'{name} no tiene web: marca al menos una red conectada (Instagram, Facebook o TikTok) para programarla.' if ok
-                            else f'{name} no tiene web ni redes conectadas todavía. Conéctalas en Ajustes → Redes sociales.')
+    use_web=body.publish_web if body.publish_web is not None else (bool(a['scheduled_web']) if a['scheduled_at'] else True)
+    if not nets and not (use_web and brands.web_enabled(a.get('brand'))) and (body.publish_web is not None or brands.valid(a.get('brand'))!=brands.DEFAULT):
+        raise HTTPException(400,'Marca la web o al menos una red conectada para programar.')
     _ready_to_publish(a,nets)
     local=when.astimezone(MADRID).isoformat(timespec='minutes')
-    db.exec_("UPDATE articles SET status='approved',scheduled_at=?,scheduled_networks=?,schedule_error=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=?",
-             (local,json.dumps(nets),aid))
+    db.exec_("UPDATE articles SET status='approved',scheduled_at=?,scheduled_networks=?,scheduled_web=?,schedule_error=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=?",
+             (local,json.dumps(nets),int(use_web),aid))
     db.exec_("UPDATE candidates SET planned_at=?,plan_locked=1 WHERE id=?",(local,a['candidate_id']))
     db.log('schedule',f'Noticia {aid} programada para {local}')
-    return {'ok':True,'scheduled_at':local,'networks':nets}
+    return {'ok':True,'scheduled_at':local,'networks':nets,'publish_web':use_web}
 
 @app.post('/api/articles/{aid}/unschedule',dependencies=[Depends(require_auth)])
 def unschedule_article(aid:int):
@@ -1878,7 +1951,7 @@ def publish_stories_due():
 def publish_due():
     """Publica lo programado cuya hora ya ha llegado."""
     now=datetime.now(timezone.utc); done=[]
-    for a in db.rows("SELECT id,scheduled_at,scheduled_networks FROM articles WHERE scheduled_at IS NOT NULL AND status!='published' AND status!='rejected'"):
+    for a in db.rows("SELECT id,scheduled_at,scheduled_networks,scheduled_web FROM articles WHERE scheduled_at IS NOT NULL AND status!='published' AND status!='rejected'"):
         try: when=datetime.fromisoformat(a['scheduled_at'])
         except ValueError: continue
         if when.tzinfo is None: when=when.replace(tzinfo=MADRID)
@@ -1886,7 +1959,7 @@ def publish_due():
         try: nets=[n for n in json.loads(a['scheduled_networks'] or '[]') if n in social_publish.NETWORKS]
         except ValueError: nets=[]
         try:
-            r=do_publish(a['id'],nets)
+            r=do_publish(a['id'],nets,publish_web=bool(a['scheduled_web']))
             if not r['published']:
                 why='; '.join(x.get('message') or '' for x in r['results'] if not x.get('ok') and not x.get('skipped') and x.get('message')) or 'No había web ni redes donde publicarla'
                 db.exec_("UPDATE articles SET scheduled_at=NULL,schedule_error=? WHERE id=?",(why[:400],a['id']))
@@ -1919,10 +1992,11 @@ def publish_loop():
 @app.post('/api/articles/{aid}/networks/{network}',dependencies=[Depends(require_auth)])
 def publish_network(aid:int,network:str):
     """Reintentar o publicar en una sola red."""
-    a=db.row('SELECT * FROM articles WHERE id=?',(aid,))
-    if not a: raise HTTPException(404)
-    if network not in social_publish.NETWORKS: raise HTTPException(404)
-    return social_publish.publish(network,a)
+    with _publication_locks[aid % len(_publication_locks)]:
+        a=db.row('SELECT * FROM articles WHERE id=?',(aid,))
+        if not a: raise HTTPException(404)
+        if network not in social_publish.NETWORKS: raise HTTPException(404)
+        return social_publish.publish(network,a)
 
 @app.get('/privacidad')
 def legal_privacy(): return FileResponse(BASE_DIR/'static'/'legal'/'privacidad.html',media_type='text/html')

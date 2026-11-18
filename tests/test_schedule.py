@@ -46,14 +46,39 @@ class ScheduleTests(unittest.TestCase):
         a = db.row('SELECT status,publish_url,scheduled_at FROM articles WHERE id=?', (self.aid,))
         self.assertEqual((a['status'], a['publish_url'], a['scheduled_at']), ('published', 'https://web/x', None))
 
-    def test_past_time_and_missing_canva_are_rejected(self):
+    def test_past_time_and_internet_photo_without_social_image_are_rejected(self):
         with self.assertRaises(HTTPException):
             main.schedule_article(self.aid, main.ScheduleIn(at='2020-01-01T10:00'))
         future = (datetime.now() + timedelta(days=1)).strftime('%Y-%m-%dT10:00')
-        # sin la imagen final (con titular) no se programa en redes: la foto limpia de la web nunca va a las redes
+        db.exec_("UPDATE articles SET image_kind='web' WHERE id=?", (self.aid,))
         with patch.object(sp, 'connected_networks', return_value=['instagram']):
             with self.assertRaises(HTTPException):
                 main.schedule_article(self.aid, main.ScheduleIn(at=future, networks=['instagram']))
+
+    def test_uploaded_photo_can_be_approved_scheduled_and_published(self):
+        db.exec_("UPDATE articles SET image_kind='user_upload' WHERE id=?", (self.aid,))
+        db.exec_("UPDATE candidates SET editorial_priority='today' WHERE id=(SELECT candidate_id FROM articles WHERE id=?)", (self.aid,))
+        self.assertIn(self.aid, [row['id'] for row in main.to_publish()])
+        self.assertNotIn(self.aid, [row['article_id'] for row in main.drafting()])
+        self.assertEqual(main.workflow()['publish'], 1)
+        self.assertTrue(main.approve(self.aid)['ok'])
+        future = (datetime.now(timezone.utc) + timedelta(hours=2)).isoformat()
+        with patch.object(sp, 'connected_networks', return_value=['instagram']):
+            scheduled = main.schedule_article(self.aid, main.ScheduleIn(at=future, networks=['instagram']))
+        self.assertEqual(scheduled['networks'], ['instagram'])
+
+        db.exec_("UPDATE articles SET scheduled_at=? WHERE id=?", ((datetime.now(timezone.utc) - timedelta(minutes=1)).isoformat(), self.aid))
+        with (
+            patch.object(main.brands, 'web_enabled', return_value=True),
+            patch.object(main.publishers, 'publish', return_value='https://web/x') as publish_web,
+            patch.object(sp, 'public_image', return_value='https://web/media.jpg') as public_image,
+            patch.object(sp, '_instagram', return_value=('IG1', 'https://instagram.com/p/test')) as instagram,
+        ):
+            self.assertEqual(main.publish_due(), [self.aid])
+        photo = publish_web.call_args.args[0]['image_local']
+        self.assertIsNotNone(main.publishers.web_payload(publish_web.call_args.args[0])['image_base64'])
+        public_image.assert_called_once_with(photo)
+        self.assertEqual(instagram.call_args.args[2], [photo])
 
     def test_failed_scheduled_publish_is_reported(self):
         db.exec_("UPDATE articles SET scheduled_at=?,scheduled_networks='[]' WHERE id=?", (NOW, self.aid))

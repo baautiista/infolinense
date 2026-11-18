@@ -18,7 +18,7 @@ from .auth import login, require_auth
 from starlette.concurrency import run_in_threadpool
 from .config import BASE_DIR, RENDER_DIR, UPLOAD_DIR, SCAN_INTERVAL_MINUTES, AUTO_PIPELINE, OPENAI_API_KEY, ADMIN_PASSWORD, JWT_SECRET, PUBLISH_MODE, CORS_ORIGINS, PUBLIC_BASE_URL, AUTO_PUBLISH
 
-VERSION='7.13.6'
+VERSION='7.13.7'
 app=FastAPI(title='InfoLinense Desk',version=VERSION)
 app.include_router(chatgpt_import_router)
 
@@ -764,16 +764,22 @@ def _sort_queue(brand=''):
     return [r for r in rows if not (r.get('brand') == 'cofrade' and not r.get('facebook_post_id') and
             (urlparse(r.get('url') or '').hostname or '') in {'facebook.com', 'www.facebook.com', 'm.facebook.com'})]
 
+_PUBLISH_IMAGE_SQL = """(
+    (COALESCE(a.render_path,'')!='' AND EXISTS (SELECT 1 FROM canva_designs d WHERE d.article_id=a.id AND d.exported=1))
+    OR (COALESCE(a.image_local,'')!='' AND a.image_kind IN (?,?))
+)"""
+
+
 def _drafting(brand=''):
-    rows=db.rows("""SELECT c.id,c.brand,c.title,a.section,a.subtitle,a.section_label,a.image_local IS NOT NULL AND a.image_local!='' has_photo,c.source_name,c.outlet,c.editorial_priority,c.planned_at,c.work_state,c.work_step,c.work_error,
+    rows=db.rows(f"""SELECT c.id,c.brand,c.title,a.section,a.subtitle,a.section_label,a.image_local IS NOT NULL AND a.image_local!='' has_photo,c.source_name,c.outlet,c.editorial_priority,c.planned_at,c.work_state,c.work_step,c.work_error,
                       a.id article_id,a.status article_status,a.headline,c.format,c.format_reason,c.format_by,c.carousel_state,
                       (a.status IN ('review_ready','approved')) needs_image
                       FROM candidates c LEFT JOIN articles a ON a.candidate_id=c.id AND a.status!='rejected'
                       WHERE c.status NOT IN ('archived','published') AND c.editorial_priority IN ('urgent','today','this_week','future')
                         AND (a.id IS NULL OR a.status='draft'
                              OR (a.status IN ('review_ready','approved') AND COALESCE(a.hidden,0)=0 AND a.scheduled_at IS NULL
-                                 AND NOT (COALESCE(a.render_path,'')!='' AND EXISTS (SELECT 1 FROM canva_designs d WHERE d.article_id=a.id AND d.exported=1))
-                                 AND NOT EXISTS (SELECT 1 FROM videos v WHERE v.article_id=a.id)))""")
+                                 AND NOT COALESCE({_PUBLISH_IMAGE_SQL},0)
+                                 AND NOT EXISTS (SELECT 1 FROM videos v WHERE v.article_id=a.id)))""", social_publish.UPLOADED_PHOTO_KINDS)
     rows=_bf(rows,brand)
     order={'urgent':0,'today':1,'this_week':2,'future':3}
     rows.sort(key=lambda r:(order.get(r['editorial_priority'],9),r.get('planned_at') or '9999'))
@@ -785,9 +791,10 @@ def _drafting(brand=''):
 def workflow(brand:str=''):
     """Cuántas piezas hay en cada fase del día."""
     drafting=_drafting(brand)
-    publish=_bf(db.rows("""SELECT a.id,a.brand FROM articles a LEFT JOIN canva_designs d ON d.article_id=a.id
+    publish=_bf(db.rows(f"""SELECT a.id,a.brand FROM articles a
                            WHERE a.status IN ('review_ready','approved') AND COALESCE(a.hidden,0)=0 AND a.scheduled_at IS NULL
-                           AND ((d.exported=1 AND COALESCE(a.render_path,'')!='') OR EXISTS (SELECT 1 FROM videos v WHERE v.article_id=a.id))"""),brand)  # en la cola de Publicar (sin hora)
+                           AND ({_PUBLISH_IMAGE_SQL} OR EXISTS (SELECT 1 FROM videos v WHERE v.article_id=a.id))""",
+                         social_publish.UPLOADED_PHOTO_KINDS),brand)
     published=len(_bf(db.rows("SELECT id,brand FROM articles WHERE status='published' AND updated_at>=date('now')"),brand))
     return {'sort':len(_sort_queue(brand)),'drafting':sum(1 for r in drafting if r['state']!='ready'),
             'errors':sum(1 for r in drafting if r['state']=='error'),'review':sum(1 for r in drafting if r['state']=='ready'),
@@ -895,7 +902,7 @@ def _natkey(name):
 
 # Portada de la web: nunca lleva los gráficos de Canva (logo, sección, titular ni entradilla).
 # image_kind='final_image' → la foto de la noticia ES la imagen terminada: va a las redes, pero no a la web.
-# image_kind='web_photo'   → foto limpia subida por la redacción para la portada de la web.
+# image_kind='web_photo'   → foto limpia de la redacción, también utilizable en redes.
 WEB_PHOTO_RE=re.compile(r'(foto|limpia|portada|web|original)',re.I)
 
 def _keeps_clean_photo(a):
@@ -925,7 +932,7 @@ def _set_final_image(aid, im):
     db.exec_("INSERT OR REPLACE INTO canva_designs(article_id,design_id,url,exported,content_hash) VALUES(?,'upload','',1,'upload')",(aid,))
 
 def _set_web_photo(aid, im):
-    """Foto limpia (sin textos ni gráficos) para la portada de la web. No toca la imagen de las redes."""
+    """Guarda una foto limpia para la web y como opción para redes."""
     from uuid import uuid4
     UPLOAD_DIR.mkdir(parents=True,exist_ok=True)
     photo=UPLOAD_DIR/(uuid4().hex+'.jpg'); _fit_width(im.convert('RGB'),1600).save(photo,'JPEG',quality=90)
@@ -1059,12 +1066,14 @@ async def article_web_photo(aid:int,photo:UploadFile=File(...)):
 @app.post('/api/quick',dependencies=[Depends(require_auth)])
 async def quick_publish(headline:str=Form(...),subtitle:str=Form(''),body:str=Form(''),section:str=Form(''),brand:str=Form('infolinense'),
                         link:str=Form(''),at:str=Form(''),networks:str=Form(''),networks_explicit:str=Form(''),ready:str=Form(''),photo:UploadFile=File(...),
-                        extra:list[UploadFile]=File(default=[]),web_photo:UploadFile|None=File(None)):
+                        extra:list[UploadFile]=File(default=[]),web_photo:UploadFile|None=File(None),
+                        photo_only:bool=Form(False)):
     """Lanzadera: la redacción trae su noticia ya escrita (titular, entradilla, texto y foto). No se reescribe nada:
     se hace la imagen de Canva y se publica al momento (o a la hora indicada) en la web y en las redes del medio.
     Con ready=1 la imagen subida ya es la definitiva (hecha en Canva por la redacción) y se publica tal cual.
     «extra»: más imágenes (hasta 19) que van detrás de la primera como carrusel; Instagram admite hasta 20 con Buffer.
-    «web_photo»: con ready=1, la foto limpia para la portada de la web (la imagen de Canva nunca va a la web)."""
+    «photo_only»: usa la foto subida directamente para web y redes.
+    «web_photo»: con ready=1, la foto limpia para la portada de la web."""
     from uuid import uuid4
     headline=re.sub(r'\s+',' ',headline).strip(); subtitle=re.sub(r'\s+',' ',subtitle).strip(); body=(body or '').strip()
     if len(headline)<8: raise HTTPException(400,'Escribe el titular')
@@ -1114,19 +1123,20 @@ async def quick_publish(headline:str=Form(...),subtitle:str=Form(''),body:str=Fo
             try: wim=Image.open(BytesIO(raw)); wim.load()
             except Exception: raise HTTPException(400,'La foto para la web no es válida')
             _set_web_photo(aid,wim)
-    elif canva.ready() and canva.connected():
-        try:
-            r=await run_in_threadpool(canva.create_design,a)
-            if not r.get('exported'): canva_msg=r.get('export_error') or 'Canva no exportó la imagen'
-        except ValueError as e: canva_msg=str(e)
-    else: canva_msg='Canva no está conectado'
+    elif photo_only is not True:
+        if canva.ready() and canva.connected():
+            try:
+                r=await run_in_threadpool(canva.create_design,a)
+                if not r.get('exported'): canva_msg=r.get('export_error') or 'Canva no exportó la imagen'
+            except ValueError as e: canva_msg=str(e)
+        else: canva_msg='Canva no está conectado'
     if slides:  # carrusel: las demás imágenes van tal cual detrás de la primera
         RENDER_DIR.mkdir(parents=True,exist_ok=True)
         for i,sim in enumerate(slides,1):
             sim.save(RENDER_DIR/f'article_{aid}_carousel_{i}.png','PNG')
             db.exec_("INSERT OR REPLACE INTO carousel_designs(article_id,slide_index,design_id,url,exported) VALUES(?,?,'upload','',1)",(aid,i))
     selected=[n.strip() for n in (networks.split(',') if networks else []) if n.strip() in ('instagram','facebook','tiktok')]
-    explicit=networks_explicit.strip().lower() in ('1','true','yes','si','sí','on')
+    explicit=isinstance(networks_explicit,str) and networks_explicit.strip().lower() in ('1','true','yes','si','sí','on')
     nets=selected if explicit else (selected or None)
     if at.strip():
         try: res=await run_in_threadpool(schedule_article,aid,ScheduleIn(at=at.strip(),networks=nets))
@@ -1195,7 +1205,7 @@ def mark_ready(aid:int):
 
 @app.get('/api/to-publish',dependencies=[Depends(require_auth)])
 def to_publish(brand:str=''):
-    rows=db.rows("""SELECT a.id,a.brand,COALESCE(NULLIF(a.headline,''),''||c.title) headline,a.section,a.status,a.image_local,a.publish_url,c.planned_at,c.editorial_priority,c.id candidate_id,c.format,c.carousel_state,
+    rows=db.rows(f"""SELECT a.id,a.brand,COALESCE(NULLIF(a.headline,''),''||c.title) headline,a.section,a.status,a.image_local,a.publish_url,c.planned_at,c.editorial_priority,c.id candidate_id,c.format,c.carousel_state,
                       a.scheduled_at,a.scheduled_networks,a.schedule_error,a.updated_at,d.exported canva_exported,
                       (SELECT scheduled_at FROM scheduled_stories s WHERE s.article_id=a.id AND s.status IN ('scheduled','publishing','pending') ORDER BY s.id DESC LIMIT 1) story_scheduled_at,
                       (SELECT status FROM scheduled_stories s WHERE s.article_id=a.id AND s.status IN ('scheduled','publishing','pending','published','error') ORDER BY s.id DESC LIMIT 1) story_status,
@@ -1204,9 +1214,10 @@ def to_publish(brand:str=''):
                       FROM articles a LEFT JOIN candidates c ON c.id=a.candidate_id
                       LEFT JOIN canva_designs d ON d.article_id=a.id
                       WHERE (a.status IN ('review_ready','approved') AND COALESCE(a.hidden,0)=0
-                             AND ((d.exported=1 AND COALESCE(a.render_path,'')!='') OR EXISTS (SELECT 1 FROM videos v WHERE v.article_id=a.id)))
-                         OR (a.status='published' AND a.updated_at>=datetime('now','-40 day') AND COALESCE(a.hidden,0)=0)""")
-    rows=_bf(rows,brand)  # en Publicar solo lo revisado y con imagen final: lo «Sin revisar» o sin imagen sigue en Revisar
+                             AND ({_PUBLISH_IMAGE_SQL} OR EXISTS (SELECT 1 FROM videos v WHERE v.article_id=a.id)))
+                         OR (a.status='published' AND a.updated_at>=datetime('now','-40 day') AND COALESCE(a.hidden,0)=0)""",
+                 social_publish.UPLOADED_PHOTO_KINDS)
+    rows=_bf(rows,brand)
     for r in rows: r['has_photo']=bool(r.pop('image_local',None)); r['family']=stats._family(r.get('section'),r.get('headline'))
     posts=social_publish.posts_for([r['id'] for r in rows])
     for r in rows: r['networks']=posts.get(r['id'],{})
@@ -1668,8 +1679,9 @@ def approve(aid:int):
     if not a.get('image_local') or not Path(a['image_local']).is_file():
         raise HTTPException(400,'Elige una foto antes de aprobar')
     artwork=db.row('SELECT exported FROM canva_designs WHERE article_id=?',(aid,))
-    if not canva.ready() or not canva.connected() or not artwork or not artwork['exported'] or not (RENDER_DIR/f'article_{aid}.png').is_file():
-        raise HTTPException(400,'Crea y exporta primero el diseño final con la plantilla de Canva')
+    has_artwork=artwork and artwork['exported'] and (RENDER_DIR/f'article_{aid}.png').is_file()
+    if not has_artwork and not social_publish.uploaded_photo(a):
+        raise HTTPException(400,'Sube una foto o añade una imagen lista para publicar')
     db.exec_("UPDATE articles SET status='approved',updated_at=CURRENT_TIMESTAMP WHERE id=?",(aid,))
     return {'ok':True}
 @app.post('/api/articles/{aid}/reject',dependencies=[Depends(require_auth)])

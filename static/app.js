@@ -478,7 +478,7 @@ function launchBatchView(v) {
   const b0 = netBrand();
   v.innerHTML = `${modeSwitch()}<form class="up" id="lbForm">
     <div><h2>Lanzadera en lote</h2><p class="muted small">Sube el txt que ha redactado ChatGPT y las imágenes terminadas: la carpeta entera, un .zip o las imágenes sueltas. Cada imagen se une a su noticia por el ID del nombre del archivo o, si no, por el orden (1.png con la primera noticia, 2.png con la segunda…).</p>
-      <p class="small"><b>Portada de la web:</b> la imagen de Canva solo va a las redes. Para que la noticia lleve foto en la web, añade también la foto sin textos con el mismo número y la palabra «foto» en el nombre (por ejemplo <b>12-foto.jpg</b>). Si no la añades, en la web sale sin foto.</p></div>
+      <p class="small"><b>Foto para web y redes:</b> añade la foto sin textos con el número de la noticia y la palabra «foto» en el nombre (por ejemplo <b>12-foto.jpg</b>). Si también subes un diseño terminado, ese diseño se usa en redes.</p></div>
     ${BRANDS.length > 1 ? `<div><p class="small" style="font-weight:700;margin:0 0 6px">Medio (si el txt no lo dice)</p><div class="seg" id="lbBrand">${BRANDS.map(b => `<label><input type="radio" name="brand" value="${b.slug}" ${b.slug === b0 ? 'checked' : ''}><span>${esc(b.name)}</span></label>`).join('')}</div></div>` : ''}
     <label>Texto redactado (.txt)<input type="file" name="txt" accept=".txt,text/plain"></label>
     <label>O pégalo aquí<textarea name="text" rows="5" placeholder="TITULAR: …&#10;ENTRADILLA: …&#10;TEXTO: …&#10;---"></textarea></label>
@@ -515,18 +515,23 @@ async function drawLaunch() {
         <span class="small">cada</span><select id="lbStep"><option value="15">15 min</option><option value="30">30 min</option><option value="60">1 hora</option></select>
         <button class="btn" id="lbAllSched">Programar todas</button></div></section>
     <div class="list">${launchItems.map((it, i) => `<article class="rv-card lb-item" data-id="${it.id}">
-      <div class="lb-img" id="img-${it.id}">${it.has_image ? '' : '<span class="muted small">Sin imagen</span>'}</div>
+      <div class="lb-img" id="img-${it.id}">${it.has_image || it.has_web_photo ? '' : '<span class="muted small">Sin imagen</span>'}</div>
       <div class="lb-body"><div class="meta">${brandBadge(it.brand)}${it.section ? secBadge(it.section, it.brand) : ''}<span class="muted small" id="st-${it.id}">${it.state || ''}</span></div>
         <h3 class="go" data-go="#editor/${it.id}">${esc(it.headline)}</h3>${it.subtitle ? `<p class="rv-sub">${esc(it.subtitle)}</p>` : ''}
         <label class="small lb-change">Cambiar imagen<input type="file" accept="image/*" data-img="${it.id}"></label>
-        <p class="small ${it.has_web_photo ? '' : 'muted'}">${it.has_web_photo ? '✓ Foto para la web' : 'Sin foto para la web (sale sin portada)'}
-          <label class="lb-change">${it.has_web_photo ? 'Cambiar' : 'Añadir'} foto web<input type="file" accept="image/*" data-web="${it.id}"></label></p>
+        <p class="small ${it.has_web_photo ? '' : 'muted'}">${it.has_web_photo ? '✓ Foto subida' : 'Sin foto de portada'}
+          <label class="lb-change">${it.has_web_photo ? 'Cambiar' : 'Añadir'} foto<input type="file" accept="image/*" data-web="${it.id}"></label></p>
         <details class="alts"><summary>Carrusel de fotos · hasta 20</summary><div class="stack"><p class="muted small" data-carousel-count>No has subido un carrusel.</p><label>Imágenes JPG, PNG o WEBP<input type="file" accept="image/jpeg,image/png,image/webp" multiple data-carousel-files="${it.id}"></label><button class="btn small" type="button" data-carousel-upload="${it.id}">Subir carrusel</button><p class="muted small">Instagram admite hasta 20 con Buffer; Facebook y TikTok usan las 10 primeras.</p></div></details>
         <div class="row wrap">${whenPicker(it.id, nextQuarter(15 * i))}</div>
         ${networkPicker(it.id, availableNetworks(networkByBrand[it.brand || 'infolinense']))}
         ${storySummary(it)}
         <div class="rv-actions"><button class="btn small primary" data-now="${it.id}">Publicar ya</button><button class="btn small" data-sched="${it.id}">Programar</button>${storyAction(it)}</div></div></article>`).join('')}</div>`;
-  launchItems.forEach(async it => { if (it.has_image) { try { const u = await blobUrl(`/media/render/${it.id}.png?t=${Date.now()}`); $('#img-' + it.id).innerHTML = `<img src="${u}" alt="">` } catch (e) { } } });
+  launchItems.forEach(async it => {
+    const preview = it.has_image ? `/media/render/${it.id}.png?t=${Date.now()}`
+      : it.has_web_photo ? `/api/articles/${it.id}/photo/file` : '';
+    if (!preview) return;
+    try { const u = await blobUrl(preview); const img = $('#img-' + it.id); if (img) img.innerHTML = `<img src="${u}" alt="">` } catch (e) { }
+  });
   const mark = (id, t) => { const it = launchItems.find(x => x.id === id); if (it) it.state = t; const el = $('#st-' + id); if (el) el.textContent = t };
   box.querySelectorAll('.netpick[data-aid] input').forEach(input => input.onchange = () => rememberNetworks(input.closest('.netpick').dataset.aid, [...input.closest('.netpick').querySelectorAll('input:checked')].map(x => x.value)));
   const pubNow = async id => { mark(id, 'Publicando…'); try { const r = await api(`/api/articles/${id}/publish`, { method: 'POST', body: JSON.stringify({ networks: pickedNets(id) }) }); const bad = (r.results || []).filter(x => !x.ok && !x.skipped); mark(id, bad.length ? 'Error: ' + bad.map(x => x.message).join(' · ').slice(0, 120) : 'Publicada') } catch (e) { mark(id, 'Error: ' + e.message) } };
@@ -540,7 +545,7 @@ async function drawLaunch() {
   });
   box.querySelectorAll('[data-web]').forEach(inp => inp.onchange = async () => {
     const f = inp.files[0]; if (!f) return; const fd = new FormData(); fd.append('photo', f);
-    try { await api(`/api/articles/${inp.dataset.web}/web-photo`, { method: 'POST', body: fd }); const it = launchItems.find(x => x.id === +inp.dataset.web); it.has_web_photo = true; drawLaunch(); toast('Foto para la web añadida') } catch (e) { toast(e.message) }
+    try { await api(`/api/articles/${inp.dataset.web}/web-photo`, { method: 'POST', body: fd }); const it = launchItems.find(x => x.id === +inp.dataset.web); it.has_web_photo = true; drawLaunch(); toast('Foto añadida') } catch (e) { toast(e.message) }
   });
   box.querySelectorAll('[data-carousel-upload]').forEach(button => button.onclick = async () => {
     const card = button.closest('.lb-item'), id = button.dataset.carouselUpload, input = card.querySelector('[data-carousel-files]'), files = [...(input.files || [])];
@@ -562,10 +567,12 @@ async function drawLaunch() {
     e.target.disabled = false; toast('Programadas'); counts();
   };
 }
-let quickReady = true;
-const dropHint = () => quickReady ? 'Sube hasta 20 imágenes de Canva en el orden del carrusel (la primera será la portada)'
-  : 'Sube hasta 20 fotos en orden; la primera llevará el titular y el resto irá detrás';
-// Lanzadera: la noticia ya escrita (titular, entradilla, texto y foto) se publica tal cual con la imagen de Canva
+let quickImageMode = 'photo';
+const dropHint = () => ({
+  photo: 'Sube hasta 20 fotos en orden. La primera será la portada de la web.',
+  canva: 'Sube hasta 20 fotos en orden. Desk usará la primera para el diseño de Canva.',
+  ready: 'Sube hasta 20 imágenes de Canva en el orden del carrusel.',
+})[quickImageMode];
 async function quickView(v) {
   const b0 = netBrand();
   const quickNetworkState = { [b0]: await api('/api/networks?brand=' + encodeURIComponent(b0)).catch(() => ({})) };
@@ -574,16 +581,17 @@ async function quickView(v) {
   v.innerHTML = `${modeSwitch()}<form class="up" id="qForm">
     <div><h2>Lanzadera</h2><p class="muted small">Pones tu titular, texto e imagen y se publica tal cual en la web y en las redes del medio. No se cambia nada.</p></div>
     <div><p class="small" style="font-weight:700;margin:0 0 6px">Imagen</p><div class="seg" id="qKind">
-      <label><input type="radio" name="qkind" value="ready" ${quickReady ? 'checked' : ''}><span>Ya la traigo hecha de Canva</span></label>
-      <label><input type="radio" name="qkind" value="photo" ${quickReady ? '' : 'checked'}><span>Es una foto: haz tú la imagen</span></label></div></div>
+      <label><input type="radio" name="qkind" value="photo" ${quickImageMode === 'photo' ? 'checked' : ''}><span>Usar mi foto en web y redes</span></label>
+      <label><input type="radio" name="qkind" value="canva" ${quickImageMode === 'canva' ? 'checked' : ''}><span>Crear diseño en Canva</span></label>
+      <label><input type="radio" name="qkind" value="ready" ${quickImageMode === 'ready' ? 'checked' : ''}><span>Subir diseño terminado</span></label></div></div>
     ${BRANDS.length > 1 ? `<div><p class="small" style="font-weight:700;margin:0 0 6px">Medio</p><div class="seg" id="qBrand">${brandOpts}</div></div>` : ''}
     <label>Sección<select name="section" id="qSec">${sectionOptions(b0, '')}</select></label>
     <label>Titular <span class="muted" id="qFit"></span><textarea name="headline" rows="2" required placeholder="Titular de la noticia"></textarea></label>
     <label>Entradilla<textarea name="subtitle" rows="2" maxlength="300" placeholder="Opcional"></textarea></label>
     <label>Texto de la noticia<textarea name="body" rows="8" placeholder="Para la web y el pie de la publicación en redes"></textarea></label>
-    <div class="drop" id="qDrop" tabindex="0" role="button" aria-label="Elegir imagen"><b id="qDropTitle">${quickReady ? 'Imágenes de Canva terminadas' : 'Fotos'}</b><span class="muted small" id="qPhotoName">${dropHint()}</span><input type="file" id="qPhoto" accept="image/jpeg,image/png,image/webp" multiple></div>
+    <div class="drop" id="qDrop" tabindex="0" role="button" aria-label="Elegir imagen"><b id="qDropTitle">${quickImageMode === 'ready' ? 'Diseños terminados' : 'Fotos'}</b><span class="muted small" id="qPhotoName">${dropHint()}</span><input type="file" id="qPhoto" accept="image/jpeg,image/png,image/webp" multiple></div>
     <div class="qthumbs" id="qThumbs"></div>
-    <label id="qWebWrap" ${quickReady ? '' : 'hidden'}>Foto para la portada de la web (sin textos ni gráficos)
+    <label id="qWebWrap" ${quickImageMode === 'ready' ? '' : 'hidden'}>Foto para la portada de la web (sin textos ni gráficos)
       <input type="file" id="qWeb" accept="image/jpeg,image/png,image/webp">
       <span class="muted small">La imagen de Canva solo va a las redes. Sin esta foto, la noticia sale en la web sin portada.</span></label>
     <div><p class="small" style="font-weight:700;margin:0 0 6px">Redes de esta noticia</p><div id="qNetworks" class="row wrap"><span class="muted small">Cargando redes…</span></div><p class="muted small">Puedes desmarcarlas todas para publicar solo en la web. Facebook y TikTok usan como máximo 10 fotos; Instagram permite 20 con Buffer.</p></div>
@@ -632,11 +640,11 @@ async function quickView(v) {
   drop.ondrop = e => { e.preventDefault(); drop.classList.remove('over'); addFiles(e.dataTransfer.files) };
   const brandSel = () => (document.querySelector('#qBrand input:checked') || {}).value || b0;
   if ($('#qBrand')) $('#qBrand').onchange = () => { $('#qSec').innerHTML = sectionOptions(brandSel(), ''); drawQuickNetworks(brandSel()) };
-  const ta = $('#qForm').headline; ta.oninput = () => { const n = lines(ta.value); $('#qFit').textContent = ta.value && !quickReady ? (n <= 4 ? `${n} ${n === 1 ? 'línea' : 'líneas'} en la imagen` : `${n} líneas: no cabe, acórtalo`) : '' };
+  const ta = $('#qForm').headline; ta.oninput = () => { const n = lines(ta.value); $('#qFit').textContent = ta.value && quickImageMode === 'canva' ? (n <= 4 ? `${n} ${n === 1 ? 'línea' : 'líneas'} en la imagen` : `${n} líneas: no cabe, acórtalo`) : '' };
   $('#qKind').onchange = e => {
-    quickReady = e.target.value === 'ready'; ta.oninput();
-    $('#qDropTitle').textContent = quickReady ? 'Imágenes de Canva terminadas' : 'Fotos';
-    $('#qWebWrap').hidden = !quickReady;
+    quickImageMode = e.target.value; ta.oninput();
+    $('#qDropTitle').textContent = quickImageMode === 'ready' ? 'Diseños terminados' : 'Fotos';
+    $('#qWebWrap').hidden = quickImageMode !== 'ready';
     if (!files.length) $('#qPhotoName').textContent = dropHint();
   };
   const btnLabel = () => $('#qWhen input:checked').value === 'later' ? 'Programar' : 'Publicar ya';
@@ -653,14 +661,15 @@ async function quickView(v) {
   };
   $('#qForm').onsubmit = async e => {
     e.preventDefault();
-    if (!files.length) return toast(quickReady ? 'Falta la imagen' : 'Falta la foto');
+    if (!files.length) return toast(quickImageMode === 'ready' ? 'Falta el diseño' : 'Falta la foto');
     if ($('#qWhen input:checked').value === 'later' && !(e.target.at.value > madridNow())) return toast('Elige un día y una hora futuros');
     const storyAt = $('#qStoryToggle').checked ? $('#qStoryAt').value : '';
     if (storyAt && storyAt <= madridNow()) return toast('Elige un día y una hora futura para la Story');
     const fd = new FormData(e.target); fd.set('brand', brandSel()); fd.append('photo', files[0].f); files.slice(1).forEach(x => fd.append('extra', x.f)); fd.delete('qkind'); fd.delete('qwhen');
     fd.set('networks', [...(quickSelectedNetworks || [])].join(',')); fd.set('networks_explicit', '1'); fd.delete('story_at');
-    if (quickReady) { fd.set('ready', '1'); if ($('#qWeb').files[0]) fd.append('web_photo', $('#qWeb').files[0]) }
-    const b = $('#qBtn'); b.disabled = true; b.textContent = e.target.at.value ? 'Programando…' : quickReady ? 'Publicando…' : 'Creando imagen y publicando…';
+    if (quickImageMode === 'photo') fd.set('photo_only', '1');
+    if (quickImageMode === 'ready') { fd.set('ready', '1'); if ($('#qWeb').files[0]) fd.append('web_photo', $('#qWeb').files[0]) }
+    const b = $('#qBtn'); b.disabled = true; b.textContent = e.target.at.value ? 'Programando…' : quickImageMode === 'canva' ? 'Creando diseño y publicando…' : 'Publicando…';
     try {
       const r = await api('/api/quick', { method: 'POST', body: fd });
       let storyLine = '';
@@ -1117,7 +1126,7 @@ async function editor(v) {
   v.innerHTML = `<div class="editor">
     <section class="visual">
       <div class="frame" id="frame">${previewMarkup}</div>
-      ${kit.image_url ? '<p class="muted small">Este es el diseño original exportado desde Canva.</p>' : kit.photo_download_url ? '<p class="muted small">Foto seleccionada. El tamaño del titular y el encuadre se editan directamente en Canva.</p>' : ''}
+      ${kit.image_url ? '<p class="muted small">Diseño para redes.</p>' : kit.photo_download_url && ['user_upload', 'web_photo'].includes(kit.image_kind) ? '<p class="muted small">Tu foto está lista para la web y las redes.</p>' : ''}
       <div class="row wrap">
         <button class="btn small" onclick="photoPanel()">Cambiar foto</button>
         <button class="btn small" onclick="autoPhoto()">Foto automática</button>

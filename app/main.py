@@ -18,7 +18,7 @@ from .auth import login, require_auth
 from starlette.concurrency import run_in_threadpool
 from .config import BASE_DIR, RENDER_DIR, UPLOAD_DIR, SCAN_INTERVAL_MINUTES, AUTO_PIPELINE, OPENAI_API_KEY, ADMIN_PASSWORD, JWT_SECRET, PUBLISH_MODE, CORS_ORIGINS, PUBLIC_BASE_URL, AUTO_PUBLISH
 
-VERSION='7.13.7'
+VERSION='7.13.8'
 app=FastAPI(title='InfoLinense Desk',version=VERSION)
 app.include_router(chatgpt_import_router)
 
@@ -1205,7 +1205,7 @@ def mark_ready(aid:int):
 
 @app.get('/api/to-publish',dependencies=[Depends(require_auth)])
 def to_publish(brand:str=''):
-    rows=db.rows(f"""SELECT a.id,a.brand,COALESCE(NULLIF(a.headline,''),''||c.title) headline,a.section,a.status,a.image_local,a.publish_url,c.planned_at,c.editorial_priority,c.id candidate_id,c.format,c.carousel_state,
+    rows=db.rows(f"""SELECT a.id,a.brand,COALESCE(NULLIF(a.headline,''),''||c.title) headline,a.section,a.status,a.image_local,a.image_kind,a.publish_url,c.planned_at,c.editorial_priority,c.id candidate_id,c.format,c.carousel_state,
                       a.scheduled_at,a.scheduled_networks,a.schedule_error,a.updated_at,d.exported canva_exported,
                       (SELECT scheduled_at FROM scheduled_stories s WHERE s.article_id=a.id AND s.status IN ('scheduled','publishing','pending') ORDER BY s.id DESC LIMIT 1) story_scheduled_at,
                       (SELECT status FROM scheduled_stories s WHERE s.article_id=a.id AND s.status IN ('scheduled','publishing','pending','published','error') ORDER BY s.id DESC LIMIT 1) story_status,
@@ -1218,9 +1218,17 @@ def to_publish(brand:str=''):
                          OR (a.status='published' AND a.updated_at>=datetime('now','-40 day') AND COALESCE(a.hidden,0)=0)""",
                  social_publish.UPLOADED_PHOTO_KINDS)
     rows=_bf(rows,brand)
-    for r in rows: r['has_photo']=bool(r.pop('image_local',None)); r['family']=stats._family(r.get('section'),r.get('headline'))
     posts=social_publish.posts_for([r['id'] for r in rows])
-    for r in rows: r['networks']=posts.get(r['id'],{})
+    for r in rows:
+        r['networks']=posts.get(r['id'],{})
+        if social_publish.uploaded_photo(r):
+            r['schedule_error']=social_publish.uploaded_photo_retry_notice(r['schedule_error'])
+            for state in r['networks'].values():
+                if state['status']=='error':
+                    state['message']=social_publish.uploaded_photo_retry_notice(state['message'])
+        r.pop('image_kind',None)
+        r['has_photo']=bool(r.pop('image_local',None))
+        r['family']=stats._family(r.get('section'),r.get('headline'))
     rows.sort(key=lambda r:(r['status']=='published',r.get('planned_at') or '9999'))
     return rows
 

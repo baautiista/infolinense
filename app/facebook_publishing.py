@@ -90,6 +90,17 @@ def publish(article):
     aid = article['id']
     row = db.row("SELECT * FROM social_posts WHERE article_id=? AND network='facebook'", (aid,))
     delivery = db.row('SELECT * FROM facebook_delivery WHERE article_id=?', (aid,))
+    if (row and row['status'] == 'error' and not row.get('remote_id') and not delivery
+            and row.get('message') in sp.LEGACY_MISSING_ARTWORK and sp.uploaded_photo(article)):
+        # A legacy missing-photo error happened before sending anything to Meta.
+        db.exec_(
+            """DELETE FROM social_posts WHERE article_id=? AND network='facebook' AND status='error'
+               AND COALESCE(remote_id,'')='' AND message=?
+               AND NOT EXISTS (SELECT 1 FROM facebook_delivery WHERE article_id=?)""",
+            (aid, row['message'], aid),
+        )
+        row = db.row("SELECT * FROM social_posts WHERE article_id=? AND network='facebook'", (aid,))
+        delivery = db.row('SELECT * FROM facebook_delivery WHERE article_id=?', (aid,))
     remote = (row or {}).get('remote_id') or ''
     url = (row or {}).get('url') or ''
     started = False

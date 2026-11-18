@@ -46,6 +46,16 @@ class FacebookConfirmationTests(unittest.TestCase):
             self.assertFalse(sp.publish('facebook', self.article)['ok'])
             self.assertTrue(all(call.args[0] == 'GET' for call in graph.call_args_list))
 
+    def test_retry_after_old_photo_block_sends_once(self):
+        db.exec_("INSERT INTO social_posts(article_id,network,status,message) VALUES(77,'facebook','error',?)",
+                 (sp.LEGACY_MISSING_ARTWORK[0],))
+        article = dict(self.article, render_path='', image_local=str(self.card), image_kind='web_photo')
+        with patch.object(sp, '_graph', side_effect=self.fake()) as graph:
+            self.assertTrue(sp.publish('facebook', article)['ok'])
+            self.assertTrue(sp.publish('facebook', article)['ok'])
+        self.assertEqual([call.args[1] for call in graph.call_args_list if call.args[0] == 'POST'],
+                         ['/PAGE/photos', '/PAGE/feed'])
+
     def test_wrong_token_page_blocks_all_writes(self):
         with patch.object(sp, '_graph', return_value={'id': 'OTHER', 'is_published': True}) as graph:
             self.assertFalse(sp.publish('facebook', self.article)['ok'])

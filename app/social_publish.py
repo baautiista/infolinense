@@ -498,6 +498,18 @@ TIKTOK_ERRORS = {
 # ---------- imágenes públicas para las redes ----------
 
 UPLOADED_PHOTO_KINDS = ('user_upload', 'web_photo')
+LEGACY_MISSING_ARTWORK = (
+    'Falta la imagen final con el titular (la de Canva). Créala o súbela antes de publicar en redes: '
+    'la foto limpia de la web no se publica en redes.',
+    'Falta la imagen final. Crea la imagen en Canva antes de publicar en redes.',
+)
+
+
+def uploaded_photo_retry_notice(message):
+    for old_message in LEGACY_MISSING_ARTWORK:
+        if old_message in (message or ''):
+            message = message.replace(old_message, 'Tu foto ya está disponible para redes. Puedes reintentar la publicación.')
+    return message
 
 
 def uploaded_photo(article):

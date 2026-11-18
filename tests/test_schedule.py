@@ -88,6 +88,16 @@ class ScheduleTests(unittest.TestCase):
         a = db.row('SELECT status,scheduled_at,schedule_error FROM articles WHERE id=?', (self.aid,))
         self.assertIsNone(a['scheduled_at']); self.assertIn('web caída', a['schedule_error'])
 
+    def test_saved_missing_canva_warning_offers_retry_for_uploaded_photo(self):
+        old = sp.LEGACY_MISSING_ARTWORK[0]
+        db.exec_("UPDATE articles SET image_kind='web_photo',schedule_error=? WHERE id=?", (old, self.aid))
+        db.exec_("INSERT INTO social_posts (article_id,network,status,message) VALUES(?,'facebook','error',?)", (self.aid, old))
+        item = next(row for row in main.to_publish() if row['id'] == self.aid)
+        self.assertIn('Puedes reintentar', item['schedule_error'])
+        self.assertEqual(item['networks']['facebook']['status'], 'error')
+        self.assertIn('Puedes reintentar', item['networks']['facebook']['message'])
+        self.assertEqual(db.row('SELECT schedule_error FROM articles WHERE id=?', (self.aid,))['schedule_error'], old)
+
 
 class OnlyLaLineaTests(unittest.TestCase):
     def setUp(self):
